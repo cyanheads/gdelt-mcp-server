@@ -1,6 +1,6 @@
 # gdelt-mcp-server - Directory Structure
 
-Generated on: 2026-05-26 00:19:13
+Generated on: 2026-05-26 03:15:18
 
 ```text
 gdelt-mcp-server/
@@ -104,26 +104,47 @@ gdelt-mcp-server/
 │   └── tool-defs-analysis/
 │       └── SKILL.md
 ├── src/
+│   ├── config/
+│   │   └── server-config.ts
 │   ├── mcp-server/
 │   │   ├── prompts/
 │   │   │   └── definitions/
-│   │   │       └── echo.prompt.ts
 │   │   ├── resources/
 │   │   │   └── definitions/
-│   │   │       ├── echo-app-ui.app-resource.ts
-│   │   │       └── echo.resource.ts
 │   │   └── tools/
-│   │       └── definitions/
-│   │           ├── echo-app.app-tool.ts
-│   │           └── echo.tool.ts
+│   │       ├── definitions/
+│   │       │   ├── get-coverage-breakdown.tool.ts
+│   │       │   ├── get-coverage-timeline.tool.ts
+│   │       │   ├── get-tone-distribution.tool.ts
+│   │       │   ├── get-tv-clips.tool.ts
+│   │       │   ├── get-tv-context.tool.ts
+│   │       │   ├── get-tv-trending.tool.ts
+│   │       │   ├── index.ts
+│   │       │   ├── list-tv-stations.tool.ts
+│   │       │   ├── search-articles.tool.ts
+│   │       │   └── search-tv.tool.ts
+│   │       └── date-resolution.ts
+│   ├── services/
+│   │   └── gdelt/
+│   │       ├── gdelt-doc-service.ts
+│   │       ├── gdelt-fetch.ts
+│   │       ├── gdelt-tv-service.ts
+│   │       ├── rate-limiter.ts
+│   │       └── types.ts
 │   └── index.ts
 ├── tests/
 │   ├── prompts/
-│   │   └── echo.prompt.test.ts
 │   ├── resources/
-│   │   └── echo.resource.test.ts
 │   └── tools/
-│       └── echo.tool.test.ts
+│       ├── get-coverage-breakdown.tool.test.ts
+│       ├── get-coverage-timeline.tool.test.ts
+│       ├── get-tone-distribution.tool.test.ts
+│       ├── get-tv-clips.tool.test.ts
+│       ├── get-tv-context.tool.test.ts
+│       ├── get-tv-trending.tool.test.ts
+│       ├── list-tv-stations.tool.test.ts
+│       ├── search-articles.tool.test.ts
+│       └── search-tv.tool.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitignore
