@@ -75,7 +75,7 @@ export class GdeltTvService {
     normalized: boolean;
   }> {
     const urlParams = this.buildBaseParams(params.query, params.stations);
-    urlParams.set('mode', params.normalize !== false ? 'timelinenorm' : 'timeline');
+    urlParams.set('mode', params.normalize !== false ? 'timelinevolnorm' : 'timelinevol');
     if (params.smoothing != null) urlParams.set('smoothing', String(params.smoothing));
     applyTimeRange(urlParams, params.timespan, params.startDatetime, params.endDatetime);
 
@@ -122,7 +122,7 @@ export class GdeltTvService {
       date: c.date,
       snippet: c.snippet,
       archiveUrl: c.preview_url,
-      ...(c.thumbnail_url ? { thumbnail: c.thumbnail_url } : {}),
+      ...(c.preview_thumb ? { thumbnail: c.preview_thumb } : {}),
     }));
   }
 
@@ -140,8 +140,8 @@ export class GdeltTvService {
 
     const raw = await this.fetch<{ wordcloud?: RawTvWord[]; numclips?: number }>(urlParams, ctx);
     const words: TvContextWord[] = (raw.wordcloud ?? []).map((w) => ({
-      label: w.Label,
-      score: w.Score,
+      label: w.label,
+      score: w.count,
     }));
     return { words, clipsAnalyzed: raw.numclips ?? 0 };
   }
@@ -152,11 +152,14 @@ export class GdeltTvService {
     urlParams.set('mode', 'trendingtopics');
     urlParams.set('format', 'json');
 
-    const raw = await this.fetch<{ topics?: Array<{ label: string; score: number }> }>(
-      urlParams,
-      ctx,
-    );
-    return (raw.topics ?? []).map((t) => ({ label: t.label, score: t.score }));
+    const raw = await this.fetch<{
+      OverallTrendingTopics?: Array<{ label: string; score: number }>;
+      OverallTrendingPhrases?: Array<{ label: string; score: number }>;
+    }>(urlParams, ctx);
+    return (raw.OverallTrendingTopics ?? raw.OverallTrendingPhrases ?? []).map((t) => ({
+      label: t.label,
+      score: t.score,
+    }));
   }
 
   /** List all TV stations with metadata. */
@@ -165,10 +168,10 @@ export class GdeltTvService {
     urlParams.set('mode', 'stationdetails');
     urlParams.set('format', 'json');
 
-    const raw = await this.fetch<{ stations?: RawTvStation[] }>(urlParams, ctx);
+    const raw = await this.fetch<{ station_details?: RawTvStation[] }>(urlParams, ctx);
     const now = Date.now();
 
-    return (raw.stations ?? []).map((s) => {
+    return (raw.station_details ?? []).map((s) => {
       const endMs = parseGdeltDate(s.EndDate);
       const isActive = endMs != null && now - endMs < ACTIVE_THRESHOLD_MS;
       return {

@@ -53,6 +53,11 @@ function parseGdeltJson<T>(text: string, apiLabel: string): T {
       `${apiLabel} API returned HTML — likely rate-limited or unavailable. Retry after 5 seconds.`,
     );
   }
+  if (text.trim().length === 0) {
+    throw serviceUnavailable(
+      `${apiLabel} API returned an empty response — endpoint may be temporarily unavailable.`,
+    );
+  }
   try {
     return JSON.parse(text) as T;
   } catch {

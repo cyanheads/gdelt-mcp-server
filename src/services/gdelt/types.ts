@@ -44,7 +44,7 @@ export type RawTimelineSeries = {
 export type RawTimelineVolInfoPoint = {
   date: string;
   value: number;
-  articles?: RawArticle[];
+  toparts?: Array<{ url: string; title: string }>;
 };
 
 // ─── TV API types ─────────────────────────────────────────────────────────────
@@ -66,13 +66,13 @@ export type RawTvClip = {
   date: string;
   snippet: string;
   preview_url: string;
-  thumbnail_url?: string;
+  preview_thumb?: string;
 };
 
 /** Raw TV word cloud entry from GDELT TV wordcloud mode. */
 export type RawTvWord = {
-  Label: string;
-  Score: number;
+  label: string;
+  count: number;
 };
 
 /** Normalized TV station for tool output. */

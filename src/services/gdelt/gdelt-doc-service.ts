@@ -124,13 +124,13 @@ export class GdeltDocService {
       tonechart?: Array<{
         bin: number;
         count: number;
-        articles: Array<{ url: string; title: string }>;
+        toparts?: Array<{ url: string; title: string }>;
       }>;
     }>(urlParams, ctx);
     return (raw.tonechart ?? []).map((b) => ({
       bin: b.bin,
       count: b.count,
-      articles: b.articles ?? [],
+      articles: b.toparts ?? [],
     }));
   }
 
@@ -190,9 +190,9 @@ function parseVolInfoTimeline(raw: {
     data: (s.data ?? []).map((d) => ({
       date: d.date,
       value: d.value,
-      ...(d.articles?.length
+      ...(d.toparts?.length
         ? {
-            articles: d.articles.map((a) => ({ url: a.url, title: a.title })),
+            articles: d.toparts.map((a) => ({ url: a.url, title: a.title })),
           }
         : {}),
     })),

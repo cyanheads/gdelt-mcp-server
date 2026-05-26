@@ -24,7 +24,8 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
       code: JsonRpcErrorCode.NotFound,
       when: 'No TV clips matched the query in the specified time range.',
       recovery:
-        'Broaden the query, extend the timespan, or verify station IDs with gdelt_list_tv_stations.',
+        'TV data ends October 2024 — supply explicit startDatetime/endDatetime within 2009–2024, ' +
+        'or verify station IDs with gdelt_list_tv_stations.',
     },
     {
       reason: 'gdelt_unavailable',
@@ -128,7 +129,7 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
         recovery: {
           hint:
             `No TV clips for "${input.query}". TV data ends October 2024 — ` +
-            `verify station dates with gdelt_list_tv_stations or broaden the query.`,
+            `supply explicit startDatetime/endDatetime within 2009–2024, or verify station IDs with gdelt_list_tv_stations.`,
         },
       });
     }
