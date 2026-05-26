@@ -1,7 +1,8 @@
 {
   "name": "@cyanheads/gdelt-mcp-server",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Search and analyze global news coverage and US television transcripts via the GDELT Project's real-time APIs via MCP. STDIO or Streamable HTTP.",
+  "mcpName": "io.github.cyanheads/gdelt-mcp-server",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -34,7 +35,8 @@
     "test": "vitest run",
     "start": "node dist/index.js",
     "start:stdio": "MCP_TRANSPORT_TYPE=stdio node dist/index.js",
-    "start:http": "MCP_TRANSPORT_TYPE=http node dist/index.js"
+    "start:http": "MCP_TRANSPORT_TYPE=http node dist/index.js",
+    "publish-mcp": "mcp-publisher login github -token \"$(security find-generic-password -a \"$USER\" -s mcp-publisher-github-pat -w)\" && mcp-publisher publish"
   },
   "keywords": [
     "mcp",

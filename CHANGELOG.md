@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.2](changelog/0.1.x/0.1.2.md) — 2026-05-25
+
+Add mcpName to package.json and publish-mcp script; trim server.json description to fit MCP Registry 100-char limit
+
 ## [0.1.1](changelog/0.1.x/0.1.1.md) — 2026-05-25
 
 Fix 7 API contract bugs — wrong response keys, invalid query modes, and empty-response handling across TV and DOC tools

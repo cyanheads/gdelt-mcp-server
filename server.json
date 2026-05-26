@@ -1,19 +1,19 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.cyanheads/gdelt-mcp-server",
-  "description": "Search and analyze global news coverage and US television transcripts via the GDELT Project's real-time APIs.",
+  "description": "Search and analyze global news coverage and US TV transcripts via the GDELT Project APIs.",
   "repository": {
     "url": "https://github.com/cyanheads/gdelt-mcp-server",
     "source": "github"
   },
-  "version": "0.1.1",
+  "version": "0.1.2",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/gdelt-mcp-server",
       "runtimeHint": "node",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "packageArguments": [
         {
           "type": "positional",
@@ -42,7 +42,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/gdelt-mcp-server",
       "runtimeHint": "node",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "packageArguments": [
         {
           "type": "positional",
