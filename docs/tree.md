@@ -1,15 +1,16 @@
 # gdelt-mcp-server - Directory Structure
 
-Generated on: 2026-05-26 03:15:18
+Generated on: 2026-05-26 07:39:41
 
 ```text
 gdelt-mcp-server/
 ├── .claude/
 ├── .github/
-│   └── ISSUE_TEMPLATE/
-│       ├── bug_report.yml
-│       ├── config.yml
-│       └── feature_request.yml
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.yml
+│   │   ├── config.yml
+│   │   └── feature_request.yml
+│   └── FUNDING.yml
 ├── .vscode/
 │   ├── extensions.json
 │   └── settings.json
