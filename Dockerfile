@@ -38,7 +38,7 @@ ENV NODE_ENV=production
 
 # OCI image metadata (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
 LABEL org.opencontainers.image.title="gdelt-mcp-server"
-LABEL org.opencontainers.image.description=""
+LABEL org.opencontainers.image.description="Search and analyze global news coverage and US television transcripts via the GDELT Project's real-time APIs via MCP."
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 # Copy dependency manifests
