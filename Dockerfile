@@ -17,8 +17,10 @@ RUN bun install --frozen-lockfile
 # Copy the rest of the source code
 COPY . .
 
-# Build the application
-RUN bun run build
+# Build the application — invoke tsc + tsc-alias directly to avoid
+# tsx/Bun module resolution differences on Linux
+RUN node_modules/.bin/tsc -p tsconfig.build.json && \
+    node_modules/.bin/tsc-alias -p tsconfig.build.json
 
 
 # ==============================================================================
