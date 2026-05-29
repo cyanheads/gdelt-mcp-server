@@ -6,14 +6,20 @@
     "url": "https://github.com/cyanheads/gdelt-mcp-server",
     "source": "github"
   },
-  "version": "0.1.4",
+  "version": "0.1.5",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://gdelt.caseyjhand.com/mcp"
+    }
+  ],
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/gdelt-mcp-server",
       "runtimeHint": "node",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "packageArguments": [
         {
           "type": "positional",
@@ -42,7 +48,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/gdelt-mcp-server",
       "runtimeHint": "node",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "packageArguments": [
         {
           "type": "positional",

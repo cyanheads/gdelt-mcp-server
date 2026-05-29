@@ -35,6 +35,8 @@ await createApp({
   ],
   resources: [],
   prompts: [],
+  // Public catalog — serve full tool/resource/prompt inventory to unauthenticated callers.
+  landing: { requireAuth: false },
   instructions:
     'GDELT MCP Server — global news and TV transcript analysis.\n' +
     '- gdelt_search_articles: full-text news search (last 3 months, 65+ languages)\n' +

@@ -1,9 +1,15 @@
 {
   "manifest_version": "0.3",
   "name": "gdelt-mcp-server",
-  "version": "0.1.4",
-  "description": "",
-  "author": { "name": "" },
+  "version": "0.1.5",
+  "description": "Search and analyze global news coverage and US TV transcripts via the GDELT Project APIs.",
+  "author": { "name": "cyanheads" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cyanheads/gdelt-mcp-server"
+  },
+  "homepage": "https://github.com/cyanheads/gdelt-mcp-server#readme",
+  "license": "Apache-2.0",
   "server": {
     "type": "node",
     "entry_point": "dist/index.js",

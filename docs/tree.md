@@ -1,10 +1,15 @@
 # gdelt-mcp-server - Directory Structure
 
-Generated on: 2026-05-26 07:39:41
+Generated on: 2026-05-29 05:11:16
 
 ```text
 gdelt-mcp-server/
 ├── .claude/
+├── .claude-plugin/
+│   └── plugin.json
+├── .codex-plugin/
+│   ├── mcp.json
+│   └── plugin.json
 ├── .github/
 │   ├── ISSUE_TEMPLATE/
 │   │   ├── bug_report.yml
@@ -75,6 +80,8 @@ gdelt-mcp-server/
 │   │   └── SKILL.md
 │   ├── api-workers/
 │   │   └── SKILL.md
+│   ├── code-simplifier/
+│   │   └── SKILL.md
 │   ├── design-mcp-server/
 │   │   └── SKILL.md
 │   ├── field-test/
@@ -82,8 +89,6 @@ gdelt-mcp-server/
 │   ├── git-wrapup/
 │   │   └── SKILL.md
 │   ├── maintenance/
-│   │   └── SKILL.md
-│   ├── migrate-mcp-ts-template/
 │   │   └── SKILL.md
 │   ├── polish-docs-meta/
 │   │   ├── references/
@@ -154,6 +159,7 @@ gdelt-mcp-server/
 ├── bun.lock
 ├── bunfig.toml
 ├── CHANGELOG.md
+├── CITATION.cff
 ├── CLAUDE.md
 ├── devcheck.config.json
 ├── Dockerfile

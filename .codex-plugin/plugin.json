@@ -1,0 +1,25 @@
+{
+  "name": "@cyanheads/gdelt-mcp-server",
+  "version": "0.1.5",
+  "description": "Search and analyze global news coverage and US TV transcripts via the GDELT Project APIs.",
+  "author": {
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
+  },
+  "homepage": "https://github.com/cyanheads/gdelt-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/gdelt-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "gdelt", "global-news", "news-analytics", "media-monitoring"],
+  "mcpServers": "./.codex-plugin/mcp.json",
+  "interface": {
+    "displayName": "@cyanheads/gdelt-mcp-server",
+    "shortDescription": "Search and analyze global news coverage and US TV transcripts via the GDELT Project APIs.",
+    "longDescription": "Access the GDELT Project's real-time global news and TV transcript APIs. Search 65+ languages of news coverage from the last 3 months, retrieve coverage timelines and tone distributions, analyze geographic/language breakdowns, and search US TV news transcripts from 2009–2024.",
+    "developerName": "cyanheads",
+    "category": "data",
+    "capabilities": ["Read"],
+    "websiteURL": "https://github.com/cyanheads/gdelt-mcp-server",
+    "defaultPrompt": []
+  }
+}

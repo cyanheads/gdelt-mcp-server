@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: gdelt-mcp-server
+abstract: "Model Context Protocol (MCP) server for the GDELT Project, providing search and analysis of global news coverage and US television transcripts."
+type: software
+authors:
+  - family-names: Hand
+    given-names: Casey
+    orcid: "https://orcid.org/0009-0009-3726-568X"
+repository-code: "https://github.com/cyanheads/gdelt-mcp-server"
+license: Apache-2.0
+keywords:
+  - mcp
+  - model-context-protocol
+  - gdelt
+  - news-analysis
+  - media-monitoring
+  - television-transcripts

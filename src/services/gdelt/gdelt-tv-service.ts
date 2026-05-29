@@ -193,7 +193,7 @@ export class GdeltTvService {
     // TV API embeds station filters inside the query string
     let q = query;
     if (stations?.length) {
-      q += ' ' + stations.map((s) => `station:${s}`).join(' ');
+      q += ` ${stations.map((s) => `station:${s}`).join(' ')}`;
     }
     p.set('query', q);
     p.set('format', 'json');
