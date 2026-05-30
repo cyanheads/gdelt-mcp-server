@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/gdelt-mcp-server",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Search and analyze global news coverage and US television transcripts via the GDELT Project's real-time APIs via MCP. STDIO or Streamable HTTP.",
   "mcpName": "io.github.cyanheads/gdelt-mcp-server",
   "type": "module",
@@ -26,7 +26,8 @@
     "audit:refresh": "rm -f bun.lock && bun install && bun audit",
     "tree": "bun run scripts/tree.ts",
     "list-skills": "bun run scripts/list-skills.ts",
-    "format": "biome check --write --unsafe .",
+    "format": "biome check --write .",
+    "format:unsafe": "biome check --write --unsafe .",
     "lint:mcp": "bun run scripts/lint-mcp.ts",
     "lint:packaging": "bun run scripts/lint-packaging.ts",
     "bundle": "bun run build && npx -y @anthropic-ai/mcpb pack . dist/gdelt-mcp-server.mcpb",
@@ -83,7 +84,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@cyanheads/mcp-ts-core": "^0.9.13",
+    "@cyanheads/mcp-ts-core": "^0.9.16",
     "pino-pretty": "^13.1.3",
     "zod": "^4.4.3"
   },
