@@ -62,7 +62,6 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
   }),
 
   output: z.object({
-    query: z.string().describe('Echoed query string.'),
     histogram: z
       .array(
         z
@@ -96,11 +95,18 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
           .describe('Percentage of articles in the near-neutral range (bins -2 to +2).'),
       })
       .describe('Summary statistics derived from the histogram.'),
+  }),
+
+  // Agent-facing context — query echo and notice on empty results.
+  // Reaches structuredContent and content[] automatically; never in the domain return.
+  enrichment: {
+    effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
+    totalCount: z.number().describe('Total number of articles across all histogram bins.'),
     notice: z
       .string()
       .optional()
-      .describe('Recovery hint when no data was returned. Absent on successful responses.'),
-  }),
+      .describe('Recovery hint when no tone data was returned. Absent on successful responses.'),
+  },
 
   async handler(input, ctx) {
     ctx.log.info('gdelt_get_tone_distribution', { query: input.query });
@@ -146,19 +152,20 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
       neutralPct: totalCount > 0 ? Math.round((neutralCount / totalCount) * 100) : 0,
     };
 
+    ctx.enrich.echo(input.query);
+    ctx.enrich.total(totalCount);
+
     ctx.log.info('gdelt_get_tone_distribution completed', { bins: bins.length, totalCount });
-    return { query: input.query, histogram: bins, summary };
+    return { histogram: bins, summary };
   },
 
   format: (result) => {
     const lines: string[] = [
       `## GDELT Tone Distribution`,
-      `**Query:** ${result.query}`,
       `**Peak negative bin:** ${result.summary.peakNegativeBin}`,
       `**Peak positive bin:** ${result.summary.peakPositiveBin}`,
       `**Neutral articles (bins -2 to +2):** ${result.summary.neutralPct}%`,
     ];
-    if (result.notice) lines.push(`\n> ${result.notice}`);
     lines.push('\n### Histogram');
     for (const b of result.histogram) {
       const bar = '█'.repeat(Math.min(Math.ceil(b.count / 5), 20));

@@ -73,8 +73,6 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
   }),
 
   output: z.object({
-    query: z.string().describe('Echoed query string.'),
-    breakdownBy: z.enum(['language', 'country']).describe('Breakdown dimension used.'),
     dateResolution: z.enum(['hour', 'day']).describe('Temporal resolution of data points.'),
     topSeries: z
       .array(
@@ -108,12 +106,23 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       .describe(
         'Combined time series for all series beyond the top 10. Omitted when all series fit.',
       ),
-    seriesCount: z.number().describe('Total number of series before truncation to top 10.'),
+  }),
+
+  // Agent-facing context — query echo, breakdown dimension, total series count, and notice on empty results.
+  // Reaches structuredContent and content[] automatically; never in the domain return.
+  enrichment: {
+    effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
+    breakdownBy: z
+      .enum(['language', 'country'])
+      .describe('Breakdown dimension used for this response.'),
+    totalCount: z.number().describe('Total number of series returned before truncation to top 10.'),
     notice: z
       .string()
       .optional()
-      .describe('Recovery hint when no data was returned. Absent on successful responses.'),
-  }),
+      .describe(
+        'Recovery hint when no breakdown data was returned. Absent on successful responses.',
+      ),
+  },
 
   async handler(input, ctx) {
     ctx.log.info('gdelt_get_coverage_breakdown', {
@@ -173,29 +182,27 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
     const allDates = topSeries.flatMap((s) => s.data.map((d) => d.date));
     const dateResolution = inferDateResolution(allDates);
 
+    ctx.enrich.echo(input.query);
+    ctx.enrich.total(allSeries.length);
+    ctx.enrich({ breakdownBy: input.breakdownBy });
+
     ctx.log.info('gdelt_get_coverage_breakdown completed', {
       totalSeries: allSeries.length,
       topSeriesCount: topSeries.length,
     });
 
     return {
-      query: input.query,
-      breakdownBy: input.breakdownBy,
       dateResolution,
       topSeries,
       ...(otherAggregated ? { otherAggregated } : {}),
-      seriesCount: allSeries.length,
     };
   },
 
   format: (result) => {
     const lines: string[] = [
-      `## GDELT Coverage Breakdown by ${result.breakdownBy === 'language' ? 'Language' : 'Country'}`,
-      `**Query:** ${result.query}`,
-      `**Total series:** ${result.seriesCount} | **Showing top:** ${result.topSeries.length}`,
+      `## GDELT Coverage Breakdown`,
       `**Date Resolution:** ${result.dateResolution}`,
     ];
-    if (result.notice) lines.push(`\n> ${result.notice}`);
     for (const s of result.topSeries) {
       const total = s.data.reduce((sum, d) => sum + d.value, 0);
       lines.push(`\n### ${s.label} (total: ${total.toFixed(2)})`);
@@ -212,9 +219,8 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
         (max, d) => (d.value > max.value ? d : max),
         result.otherAggregated[0] ?? { date: '', value: 0 },
       );
-      lines.push(
-        `\n### Other (${result.seriesCount - result.topSeries.length} series, total: ${otherTotal.toFixed(2)})`,
-      );
+      lines.push(`\n### Other`);
+      lines.push(`Total: ${otherTotal.toFixed(2)}`);
       if (otherPeak.date) lines.push(`Peak: ${otherPeak.value.toFixed(3)} at ${otherPeak.date}`);
     }
     return [{ type: 'text', text: lines.join('\n') }];

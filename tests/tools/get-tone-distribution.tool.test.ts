@@ -3,7 +3,7 @@
  * @module tests/tools/get-tone-distribution.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetToneDistribution } from '@/mcp-server/tools/definitions/get-tone-distribution.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
@@ -25,11 +25,20 @@ describe('gdeltGetToneDistribution', () => {
     const ctx = createMockContext({ errors: gdeltGetToneDistribution.errors });
     const input = gdeltGetToneDistribution.input.parse({ query: 'climate' });
     const result = await gdeltGetToneDistribution.handler(input, ctx);
-    expect(result.query).toBe('climate');
     expect(result.histogram).toHaveLength(3);
     expect(result.summary.peakNegativeBin).toBe(-5);
     expect(result.summary.peakPositiveBin).toBe(3);
     expect(result.summary.neutralPct).toBeGreaterThan(0);
+  });
+
+  it('populates enrichment with query echo and total article count', async () => {
+    const ctx = createMockContext({ errors: gdeltGetToneDistribution.errors });
+    const input = gdeltGetToneDistribution.input.parse({ query: 'climate' });
+    await gdeltGetToneDistribution.handler(input, ctx);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.effectiveQuery).toBe('climate');
+    // Total count = 20 + 30 + 10 = 60
+    expect(enrichment.totalCount).toBe(60);
   });
 
   it('computes neutralPct from bins -2 to +2', async () => {
@@ -70,29 +79,15 @@ describe('gdeltGetToneDistribution', () => {
 
   it('formats output with histogram bins and summary', () => {
     const output = {
-      query: 'climate',
       histogram: BINS,
       summary: { peakNegativeBin: -5, peakPositiveBin: 3, neutralPct: 50 },
     };
     const blocks = gdeltGetToneDistribution.format!(output);
     const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('climate');
     expect(text).toContain('-5');
     expect(text).toContain('3');
     expect(text).toContain('50%');
     expect(text).toContain('Negative Article');
     expect(text).toContain('Positive Article');
-  });
-
-  it('formats output with notice when present', () => {
-    const output = {
-      query: 'test',
-      histogram: BINS,
-      summary: { peakNegativeBin: -5, peakPositiveBin: 3, neutralPct: 50 },
-      notice: 'No data found',
-    };
-    const blocks = gdeltGetToneDistribution.format!(output);
-    const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('No data found');
   });
 });

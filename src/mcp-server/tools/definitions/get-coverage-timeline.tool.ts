@@ -82,8 +82,6 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
   }),
 
   output: z.object({
-    query: z.string().describe('Echoed query string.'),
-    mode: z.enum(['volume', 'volume_with_articles', 'tone']).describe('Timeline mode used.'),
     dateResolution: z
       .enum(['hour', 'day'])
       .describe('Temporal resolution of the data points — hour for short windows, day for longer.'),
@@ -126,11 +124,23 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
       .describe(
         'One or more time series (typically one for volume/tone, one per label for breakdowns).',
       ),
+  }),
+
+  // Agent-facing context — query echo, mode used, date span covered, and notice on empty results.
+  // Reaches structuredContent and content[] automatically; never in the domain return.
+  enrichment: {
+    effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
+    mode: z
+      .enum(['volume', 'volume_with_articles', 'tone'])
+      .describe('Timeline mode used for this response.'),
+    totalCount: z.number().describe('Total number of data points across all series.'),
     notice: z
       .string()
       .optional()
-      .describe('Recovery hint when no data was returned. Absent on successful responses.'),
-  }),
+      .describe(
+        'Recovery hint when no timeline data was returned. Absent on successful responses.',
+      ),
+  },
 
   async handler(input, ctx) {
     ctx.log.info('gdelt_get_coverage_timeline', { query: input.query, mode: input.mode });
@@ -165,23 +175,25 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
     // Infer date resolution from data point spacing
     const allDates = series.flatMap((s) => s.data.map((d) => d.date));
     const dateResolution = inferDateResolution(allDates);
+    const totalPoints = series.reduce((sum, s) => sum + s.data.length, 0);
+
+    ctx.enrich.echo(input.query);
+    ctx.enrich.total(totalPoints);
+    ctx.enrich({ mode: input.mode });
 
     ctx.log.info('gdelt_get_coverage_timeline completed', {
       seriesCount: series.length,
       pointCount: series[0]?.data.length ?? 0,
     });
 
-    return { query: input.query, mode: input.mode, dateResolution, series };
+    return { dateResolution, series };
   },
 
   format: (result) => {
     const lines: string[] = [
       `## GDELT Coverage Timeline`,
-      `**Query:** ${result.query}`,
-      `**Mode:** ${result.mode}`,
       `**Date Resolution:** ${result.dateResolution}`,
     ];
-    if (result.notice) lines.push(`\n> ${result.notice}`);
     for (const s of result.series) {
       lines.push(`\n### ${s.label}`);
       const peakPoint = s.data.reduce(

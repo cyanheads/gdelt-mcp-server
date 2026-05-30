@@ -3,7 +3,7 @@
  * @module tests/tools/get-coverage-timeline.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetCoverageTimeline } from '@/mcp-server/tools/definitions/get-coverage-timeline.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
@@ -39,10 +39,18 @@ describe('gdeltGetCoverageTimeline', () => {
     const ctx = createMockContext({ errors: gdeltGetCoverageTimeline.errors });
     const input = gdeltGetCoverageTimeline.input.parse({ query: 'pandemic', mode: 'volume' });
     const result = await gdeltGetCoverageTimeline.handler(input, ctx);
-    expect(result.query).toBe('pandemic');
-    expect(result.mode).toBe('volume');
     expect(result.series).toHaveLength(1);
     expect(result.series[0]?.data).toHaveLength(2);
+  });
+
+  it('populates enrichment with query echo, mode, and total count', async () => {
+    const ctx = createMockContext({ errors: gdeltGetCoverageTimeline.errors });
+    const input = gdeltGetCoverageTimeline.input.parse({ query: 'pandemic', mode: 'volume' });
+    await gdeltGetCoverageTimeline.handler(input, ctx);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.effectiveQuery).toBe('pandemic');
+    expect(enrichment.mode).toBe('volume');
+    expect(enrichment.totalCount).toBe(2);
   });
 
   it('infers hour resolution from ISO datetime strings', async () => {
@@ -87,17 +95,13 @@ describe('gdeltGetCoverageTimeline', () => {
     });
   });
 
-  it('formats output with query, mode, resolution, and peak', () => {
+  it('formats output with resolution, series label, and peak', () => {
     const output = {
-      query: 'pandemic',
-      mode: 'volume' as const,
       dateResolution: 'day' as const,
       series: DAY_SERIES,
     };
     const blocks = gdeltGetCoverageTimeline.format!(output);
     const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('pandemic');
-    expect(text).toContain('volume');
     expect(text).toContain('day');
     expect(text).toContain('Volume Intensity');
     expect(text).toContain('1.200');
@@ -106,8 +110,6 @@ describe('gdeltGetCoverageTimeline', () => {
 
   it('formats volume_with_articles mode including article links', () => {
     const output = {
-      query: 'outbreak',
-      mode: 'volume_with_articles' as const,
       dateResolution: 'hour' as const,
       series: [
         {

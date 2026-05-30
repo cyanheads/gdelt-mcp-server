@@ -3,7 +3,7 @@
  * @module tests/tools/get-coverage-breakdown.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetCoverageBreakdown } from '@/mcp-server/tools/definitions/get-coverage-breakdown.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
@@ -39,17 +39,27 @@ describe('gdeltGetCoverageBreakdown', () => {
       breakdownBy: 'country',
     });
     const result = await gdeltGetCoverageBreakdown.handler(input, ctx);
-    expect(result.query).toBe('pandemic');
-    expect(result.breakdownBy).toBe('country');
     expect(result.topSeries).toHaveLength(2);
-    expect(result.seriesCount).toBe(2);
+  });
+
+  it('populates enrichment with query echo, breakdownBy, and total series count', async () => {
+    const ctx = createMockContext({ errors: gdeltGetCoverageBreakdown.errors });
+    const input = gdeltGetCoverageBreakdown.input.parse({
+      query: 'pandemic',
+      breakdownBy: 'country',
+    });
+    await gdeltGetCoverageBreakdown.handler(input, ctx);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.effectiveQuery).toBe('pandemic');
+    expect(enrichment.breakdownBy).toBe('country');
+    expect(enrichment.totalCount).toBe(2);
   });
 
   it('returns breakdown by language', async () => {
     const ctx = createMockContext({ errors: gdeltGetCoverageBreakdown.errors });
     const input = gdeltGetCoverageBreakdown.input.parse({ query: 'flu', breakdownBy: 'language' });
     const result = await gdeltGetCoverageBreakdown.handler(input, ctx);
-    expect(result.breakdownBy).toBe('language');
+    expect(result.topSeries).toHaveLength(2);
   });
 
   it('sorts topSeries by total volume descending', async () => {
@@ -78,7 +88,8 @@ describe('gdeltGetCoverageBreakdown', () => {
     const result = await gdeltGetCoverageBreakdown.handler(input, ctx);
     expect(result.topSeries).toHaveLength(10);
     expect(result.otherAggregated).toBeDefined();
-    expect(result.seriesCount).toBe(12);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(12);
   });
 
   it('omits otherAggregated when all series fit in top 10', async () => {
@@ -105,16 +116,11 @@ describe('gdeltGetCoverageBreakdown', () => {
 
   it('formats output with series labels and peaks', () => {
     const output = {
-      query: 'pandemic',
-      breakdownBy: 'country' as const,
       dateResolution: 'day' as const,
       topSeries: SERIES,
-      seriesCount: 2,
     };
     const blocks = gdeltGetCoverageBreakdown.format!(output);
     const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('pandemic');
-    expect(text).toContain('Country');
     expect(text).toContain('United States');
     expect(text).toContain('China');
     // Peak data point for US is 5.0
@@ -123,16 +129,12 @@ describe('gdeltGetCoverageBreakdown', () => {
 
   it('formats otherAggregated when present', () => {
     const output = {
-      query: 'test',
-      breakdownBy: 'language' as const,
       dateResolution: 'day' as const,
       topSeries: SERIES,
       otherAggregated: [{ date: '2024-01-01', value: 1.0 }],
-      seriesCount: 5,
     };
     const blocks = gdeltGetCoverageBreakdown.format!(output);
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('Other');
-    expect(text).toContain('3 series');
   });
 });

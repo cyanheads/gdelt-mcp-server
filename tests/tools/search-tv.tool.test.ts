@@ -3,7 +3,7 @@
  * @module tests/tools/search-tv.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltSearchTv } from '@/mcp-server/tools/definitions/search-tv.tool.js';
 import * as tvServiceModule from '@/services/gdelt/gdelt-tv-service.js';
@@ -34,10 +34,18 @@ describe('gdeltSearchTv', () => {
     const ctx = createMockContext({ errors: gdeltSearchTv.errors });
     const input = gdeltSearchTv.input.parse({ query: 'vaccine' });
     const result = await gdeltSearchTv.handler(input, ctx);
-    expect(result.query).toBe('vaccine');
     expect(result.series).toHaveLength(1);
     expect(result.series[0]?.station).toBe('CNN');
     expect(result.normalized).toBe(true);
+  });
+
+  it('populates enrichment with query echo and station count', async () => {
+    const ctx = createMockContext({ errors: gdeltSearchTv.errors });
+    const input = gdeltSearchTv.input.parse({ query: 'vaccine' });
+    await gdeltSearchTv.handler(input, ctx);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.effectiveQuery).toBe('vaccine');
+    expect(enrichment.totalCount).toBe(1);
   });
 
   it('passes stations filter to the service', async () => {
@@ -84,7 +92,6 @@ describe('gdeltSearchTv', () => {
 
   it('formats output with all required fields', () => {
     const output = {
-      query: 'vaccine',
       dateResolution: 'day' as const,
       timeRange: { start: '2024-01-01', end: '2024-01-02' },
       series: TV_RESULT.series,
@@ -92,7 +99,6 @@ describe('gdeltSearchTv', () => {
     };
     const blocks = gdeltSearchTv.format!(output);
     const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('vaccine');
     expect(text).toContain('day');
     expect(text).toContain('2024-01-01');
     expect(text).toContain('2024-01-02');

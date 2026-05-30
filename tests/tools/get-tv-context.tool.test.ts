@@ -3,7 +3,7 @@
  * @module tests/tools/get-tv-context.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetTvContext } from '@/mcp-server/tools/definitions/get-tv-context.tool.js';
 import * as tvServiceModule from '@/services/gdelt/gdelt-tv-service.js';
@@ -28,11 +28,18 @@ describe('gdeltGetTvContext', () => {
     const ctx = createMockContext({ errors: gdeltGetTvContext.errors });
     const input = gdeltGetTvContext.input.parse({ query: 'pandemic' });
     const result = await gdeltGetTvContext.handler(input, ctx);
-    expect(result.query).toBe('pandemic');
     expect(result.words).toHaveLength(3);
     expect(result.words[0]?.label).toBe('pandemic');
     expect(result.words[0]?.score).toBe(100);
-    expect(result.clipsAnalyzed).toBe(42);
+  });
+
+  it('populates enrichment with query echo and clips analyzed count', async () => {
+    const ctx = createMockContext({ errors: gdeltGetTvContext.errors });
+    const input = gdeltGetTvContext.input.parse({ query: 'pandemic' });
+    await gdeltGetTvContext.handler(input, ctx);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.effectiveQuery).toBe('pandemic');
+    expect(enrichment.totalCount).toBe(42);
   });
 
   it('sorts words by score even when service returns them out of order', async () => {
@@ -67,16 +74,10 @@ describe('gdeltGetTvContext', () => {
     });
   });
 
-  it('formats output with query, clips analyzed, and top terms', () => {
-    const output = {
-      query: 'pandemic',
-      words: CONTEXT_RESULT.words,
-      clipsAnalyzed: 42,
-    };
+  it('formats output with word count and top terms', () => {
+    const output = { words: CONTEXT_RESULT.words };
     const blocks = gdeltGetTvContext.format!(output);
     const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('pandemic');
-    expect(text).toContain('42');
     expect(text).toContain('100.0');
     expect(text).toContain('vaccine');
     expect(text).toContain('health');
@@ -84,7 +85,7 @@ describe('gdeltGetTvContext', () => {
 
   it('truncates to top 50 terms in format output', () => {
     const manyWords = Array.from({ length: 60 }, (_, i) => ({ label: `word${i}`, score: 60 - i }));
-    const output = { query: 'test', words: manyWords, clipsAnalyzed: 100 };
+    const output = { words: manyWords };
     const blocks = gdeltGetTvContext.format!(output);
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('10 more terms');

@@ -52,12 +52,19 @@ export const gdeltGetTvTrending = tool('gdelt_get_tv_trending', {
           .describe('A single trending topic with its relative score.'),
       )
       .describe('Trending topics sorted by score descending.'),
-    totalCount: z.number().describe('Number of trending topics returned.'),
+  }),
+
+  // Agent-facing context — total topic count and notice on empty results.
+  // Reaches structuredContent and content[] automatically; never in the domain return.
+  enrichment: {
+    totalCount: z.number().describe('Total number of trending topics returned.'),
     notice: z
       .string()
       .optional()
-      .describe('Recovery hint when no topics were returned. Absent on successful responses.'),
-  }),
+      .describe(
+        'Recovery hint when no trending topics were returned. Absent on successful responses.',
+      ),
+  },
 
   async handler(_input, ctx) {
     ctx.log.info('gdelt_get_tv_trending');
@@ -71,25 +78,24 @@ export const gdeltGetTvTrending = tool('gdelt_get_tv_trending', {
       });
     }
 
+    ctx.enrich.total(topics.length);
+
     ctx.log.info('gdelt_get_tv_trending completed', { count: topics.length });
     return {
       topics: topics.sort((a, b) => b.score - a.score),
-      totalCount: topics.length,
     };
   },
 
   format: (result) => {
     const lines: string[] = [
       `## GDELT TV Trending Topics`,
-      `**Total topics:** ${result.totalCount}`,
       `_Note: reflects the October 2024 TV archive cutoff, not a live feed_`,
     ];
-    if (result.notice) lines.push(`\n> ${result.notice}`);
     lines.push('\n### Trending Now');
     for (const t of result.topics.slice(0, 50)) {
       lines.push(`- **${t.label}** (score: ${t.score.toFixed(2)})`);
     }
-    if (result.totalCount > 50) lines.push(`\n_… ${result.totalCount - 50} more topics_`);
+    if (result.topics.length > 50) lines.push(`\n_… ${result.topics.length - 50} more topics_`);
     return [{ type: 'text', text: lines.join('\n') }];
   },
 });

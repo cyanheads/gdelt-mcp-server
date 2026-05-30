@@ -3,7 +3,7 @@
  * @module tests/tools/get-tv-trending.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetTvTrending } from '@/mcp-server/tools/definitions/get-tv-trending.tool.js';
 import * as tvServiceModule from '@/services/gdelt/gdelt-tv-service.js';
@@ -28,7 +28,14 @@ describe('gdeltGetTvTrending', () => {
     expect(result.topics).toHaveLength(3);
     expect(result.topics[0]?.label).toBe('Ukraine');
     expect(result.topics[0]?.score).toBe(8.5);
-    expect(result.totalCount).toBe(3);
+  });
+
+  it('populates enrichment with total topic count', async () => {
+    const ctx = createMockContext({ errors: gdeltGetTvTrending.errors });
+    const input = gdeltGetTvTrending.input.parse({});
+    await gdeltGetTvTrending.handler(input, ctx);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(3);
   });
 
   it('sorts topics even when service returns them out of order', async () => {
@@ -59,11 +66,10 @@ describe('gdeltGetTvTrending', () => {
     });
   });
 
-  it('formats output with all topic labels and scores', () => {
-    const output = { topics: TOPICS, totalCount: 3 };
+  it('formats output with topic labels and scores', () => {
+    const output = { topics: TOPICS };
     const blocks = gdeltGetTvTrending.format!(output);
     const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('3');
     expect(text).toContain('Ukraine');
     expect(text).toContain('8.50');
     expect(text).toContain('inflation');
@@ -76,7 +82,7 @@ describe('gdeltGetTvTrending', () => {
       label: `topic${i}`,
       score: 55 - i,
     }));
-    const output = { topics: manyTopics, totalCount: 55 };
+    const output = { topics: manyTopics };
     const blocks = gdeltGetTvTrending.format!(output);
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('5 more topics');

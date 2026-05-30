@@ -89,7 +89,6 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
   }),
 
   output: z.object({
-    query: z.string().describe('Echoed query string.'),
     dateResolution: z
       .enum(['hour', 'day', 'month'])
       .describe('Temporal resolution of data points.'),
@@ -119,11 +118,18 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       )
       .describe('One series per station or combined national coverage.'),
     normalized: z.boolean().describe('True when values are normalized coverage percentages.'),
+  }),
+
+  // Agent-facing context — query echo, station count, and notice on empty results.
+  // Reaches structuredContent and content[] automatically; never in the domain return.
+  enrichment: {
+    effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
+    totalCount: z.number().describe('Number of station series returned.'),
     notice: z
       .string()
       .optional()
-      .describe('Recovery hint when no coverage was found. Absent on successful responses.'),
-  }),
+      .describe('Recovery hint when no TV coverage was found. Absent on successful responses.'),
+  },
 
   async handler(input, ctx) {
     ctx.log.info('gdelt_search_tv', { query: input.query, stations: input.stations });
@@ -152,9 +158,11 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       });
     }
 
+    ctx.enrich.echo(input.query);
+    ctx.enrich.total(result.series.length);
+
     ctx.log.info('gdelt_search_tv completed', { seriesCount: result.series.length });
     return {
-      query: input.query,
       dateResolution: result.dateResolution,
       timeRange: result.timeRange,
       series: result.series,
@@ -165,13 +173,11 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
   format: (result) => {
     const lines: string[] = [
       `## GDELT TV News Coverage`,
-      `**Query:** ${result.query}`,
       `**Date Resolution:** ${result.dateResolution}`,
       `**Time Range:** ${result.timeRange.start} to ${result.timeRange.end}`,
       `**Normalized:** ${result.normalized ? 'Yes (% of airtime)' : 'No (raw count)'}`,
       `**Stations:** ${result.series.length}`,
     ];
-    if (result.notice) lines.push(`\n> ${result.notice}`);
     for (const s of result.series) {
       const peak = s.data.reduce(
         (max, d) => (d.value > max.value ? d : max),

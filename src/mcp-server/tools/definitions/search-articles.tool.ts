@@ -103,8 +103,14 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
           .describe('A single news article with metadata.'),
       )
       .describe('Matching articles sorted per the sort parameter.'),
-    totalReturned: z.number().describe('Number of articles returned in this response.'),
-    query: z.string().describe('Echoed query string for use in follow-up calls.'),
+  }),
+
+  // Agent-facing context — query echo, total count, optional timespan echo, and notice
+  // when no results. Reaches structuredContent and content[] automatically; never in the
+  // domain return.
+  enrichment: {
+    effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
+    totalCount: z.number().describe('Number of articles returned in this response.'),
     timespan: z.string().optional().describe('Echoed timespan parameter when provided.'),
     notice: z
       .string()
@@ -112,7 +118,7 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
       .describe(
         'Recovery hint when no articles matched — echoes filters and suggests how to broaden. Absent on successful responses.',
       ),
-  }),
+  },
 
   async handler(input, ctx) {
     ctx.log.info('gdelt_search_articles', { query: input.query });
@@ -137,23 +143,16 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
       });
     }
 
+    ctx.enrich.echo(input.query);
+    ctx.enrich.total(result.articles.length);
+    if (input.timespan) ctx.enrich({ timespan: input.timespan });
+
     ctx.log.info('gdelt_search_articles completed', { count: result.articles.length });
-    return {
-      articles: result.articles,
-      totalReturned: result.totalReturned,
-      query: input.query,
-      ...(input.timespan && { timespan: input.timespan }),
-    };
+    return { articles: result.articles };
   },
 
   format: (result) => {
-    const lines: string[] = [
-      `## GDELT Article Search`,
-      `**Query:** ${result.query}`,
-      ...(result.timespan ? [`**Timespan:** ${result.timespan}`] : []),
-      `**Articles returned:** ${result.totalReturned}`,
-    ];
-    if (result.notice) lines.push(`\n> ${result.notice}`);
+    const lines: string[] = [`## GDELT Article Search`];
     for (const a of result.articles) {
       lines.push(`\n### ${a.title}`);
       lines.push(`**URL:** ${a.url}`);

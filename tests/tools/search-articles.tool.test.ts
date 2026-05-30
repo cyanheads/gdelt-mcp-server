@@ -3,7 +3,7 @@
  * @module tests/tools/search-articles.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltSearchArticles } from '@/mcp-server/tools/definitions/search-articles.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
@@ -30,11 +30,18 @@ describe('gdeltSearchArticles', () => {
     const result = await gdeltSearchArticles.handler(input, ctx);
     expect(result.articles).toHaveLength(1);
     expect(result.articles[0]?.url).toBe(ARTICLE.url);
-    expect(result.totalReturned).toBe(1);
-    expect(result.query).toBe('bird flu');
   });
 
-  it('passes timespan to the service', async () => {
+  it('populates enrichment with query echo and total count', async () => {
+    const ctx = createMockContext({ errors: gdeltSearchArticles.errors });
+    const input = gdeltSearchArticles.input.parse({ query: 'bird flu' });
+    await gdeltSearchArticles.handler(input, ctx);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.effectiveQuery).toBe('bird flu');
+    expect(enrichment.totalCount).toBe(1);
+  });
+
+  it('populates enrichment with timespan when provided', async () => {
     const svc = {
       searchArticles: vi.fn().mockResolvedValue({ articles: [ARTICLE], totalReturned: 1 }),
     } as unknown as docServiceModule.GdeltDocService;
@@ -43,6 +50,8 @@ describe('gdeltSearchArticles', () => {
     const ctx = createMockContext({ errors: gdeltSearchArticles.errors });
     const input = gdeltSearchArticles.input.parse({ query: 'test', timespan: '7d' });
     await gdeltSearchArticles.handler(input, ctx);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.timespan).toBe('7d');
     expect(svc.searchArticles).toHaveBeenCalledWith(
       expect.objectContaining({ timespan: '7d' }),
       ctx,
@@ -72,41 +81,22 @@ describe('gdeltSearchArticles', () => {
   });
 
   it('formats output with all required fields', () => {
-    const output = {
-      articles: [ARTICLE],
-      totalReturned: 1,
-      query: 'bird flu',
-      timespan: '7d',
-    };
+    const output = { articles: [ARTICLE] };
     const blocks = gdeltSearchArticles.format!(output);
     expect(blocks).toHaveLength(1);
     const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('bird flu');
     expect(text).toContain(ARTICLE.url);
     expect(text).toContain(ARTICLE.title);
     expect(text).toContain(ARTICLE.domain);
     expect(text).toContain(ARTICLE.sourcecountry);
     expect(text).toContain(ARTICLE.language);
     expect(text).toContain(ARTICLE.seendate);
-    expect(text).toContain('7d');
-    expect(text).toContain('1');
-  });
-
-  it('formats output without timespan when omitted', () => {
-    const output = {
-      articles: [ARTICLE],
-      totalReturned: 1,
-      query: 'bird flu',
-    };
-    const blocks = gdeltSearchArticles.format!(output);
-    const text = (blocks[0] as { text: string }).text;
-    expect(text).not.toContain('Timespan:');
   });
 
   it('handles sparse article (no socialimage) without error', () => {
     const sparse = { ...ARTICLE };
     // socialimage omitted
-    const output = { articles: [sparse], totalReturned: 1, query: 'test' };
+    const output = { articles: [sparse] };
     const blocks = gdeltSearchArticles.format!(output);
     expect(blocks).toHaveLength(1);
   });

@@ -3,7 +3,7 @@
  * @module tests/tools/get-tv-clips.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetTvClips } from '@/mcp-server/tools/definitions/get-tv-clips.tool.js';
 import * as tvServiceModule from '@/services/gdelt/gdelt-tv-service.js';
@@ -28,10 +28,17 @@ describe('gdeltGetTvClips', () => {
     const ctx = createMockContext({ errors: gdeltGetTvClips.errors });
     const input = gdeltGetTvClips.input.parse({ query: 'vaccine' });
     const result = await gdeltGetTvClips.handler(input, ctx);
-    expect(result.query).toBe('vaccine');
     expect(result.clips).toHaveLength(1);
     expect(result.clips[0]?.station).toBe('CNN');
-    expect(result.totalReturned).toBe(1);
+  });
+
+  it('populates enrichment with query echo and clip count', async () => {
+    const ctx = createMockContext({ errors: gdeltGetTvClips.errors });
+    const input = gdeltGetTvClips.input.parse({ query: 'vaccine' });
+    await gdeltGetTvClips.handler(input, ctx);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.effectiveQuery).toBe('vaccine');
+    expect(enrichment.totalCount).toBe(1);
   });
 
   it('passes stations and maxRecords to the service', async () => {
@@ -67,27 +74,21 @@ describe('gdeltGetTvClips', () => {
   });
 
   it('formats output with all required clip fields', () => {
-    const output = {
-      query: 'vaccine',
-      clips: [CLIP],
-      totalReturned: 1,
-    };
+    const output = { clips: [CLIP] };
     const blocks = gdeltGetTvClips.format!(output);
     const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('vaccine');
     expect(text).toContain('Anderson Cooper 360');
     expect(text).toContain('CNN');
     expect(text).toContain(CLIP.date);
     expect(text).toContain(CLIP.snippet);
     expect(text).toContain(CLIP.archiveUrl);
     expect(text).toContain(CLIP.thumbnail);
-    expect(text).toContain('1');
   });
 
   it('handles sparse clip (no thumbnail) in format without error', () => {
     const sparseClip = { ...CLIP };
     delete (sparseClip as { thumbnail?: string }).thumbnail;
-    const output = { query: 'test', clips: [sparseClip], totalReturned: 1 };
+    const output = { clips: [sparseClip] };
     const blocks = gdeltGetTvClips.format!(output);
     expect(blocks).toHaveLength(1);
   });

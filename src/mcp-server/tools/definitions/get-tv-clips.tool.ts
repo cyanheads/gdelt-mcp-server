@@ -82,7 +82,6 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
   }),
 
   output: z.object({
-    query: z.string().describe('Echoed query string.'),
     clips: z
       .array(
         z
@@ -100,12 +99,18 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
           .describe('A single TV news clip with transcript excerpt and archive link.'),
       )
       .describe('Matching TV clips sorted per the sort parameter.'),
-    totalReturned: z.number().describe('Number of clips returned.'),
+  }),
+
+  // Agent-facing context — query echo, clip count, and notice on empty results.
+  // Reaches structuredContent and content[] automatically; never in the domain return.
+  enrichment: {
+    effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
+    totalCount: z.number().describe('Number of clips returned.'),
     notice: z
       .string()
       .optional()
       .describe('Recovery hint when no clips matched. Absent on successful responses.'),
-  }),
+  },
 
   async handler(input, ctx) {
     ctx.log.info('gdelt_get_tv_clips', { query: input.query, maxRecords: input.maxRecords });
@@ -134,17 +139,15 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
       });
     }
 
+    ctx.enrich.echo(input.query);
+    ctx.enrich.total(clips.length);
+
     ctx.log.info('gdelt_get_tv_clips completed', { count: clips.length });
-    return { query: input.query, clips, totalReturned: clips.length };
+    return { clips };
   },
 
   format: (result) => {
-    const lines: string[] = [
-      `## GDELT TV Clips`,
-      `**Query:** ${result.query}`,
-      `**Clips returned:** ${result.totalReturned}`,
-    ];
-    if (result.notice) lines.push(`\n> ${result.notice}`);
+    const lines: string[] = [`## GDELT TV Clips`];
     for (const c of result.clips) {
       lines.push(`\n### ${c.show} — ${c.station}`);
       lines.push(`**Date:** ${c.date}`);

@@ -59,7 +59,6 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
   }),
 
   output: z.object({
-    query: z.string().describe('Echoed query string.'),
     words: z
       .array(
         z
@@ -75,14 +74,20 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
           .describe('A co-occurring term with its relative frequency score.'),
       )
       .describe('Co-occurring terms sorted by score descending.'),
-    clipsAnalyzed: z
+  }),
+
+  // Agent-facing context — query echo, clips analyzed, and notice on empty results.
+  // Reaches structuredContent and content[] automatically; never in the domain return.
+  enrichment: {
+    effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
+    totalCount: z
       .number()
       .describe('Number of matching clips from which co-occurrences were computed.'),
     notice: z
       .string()
       .optional()
       .describe('Recovery hint when no context was found. Absent on successful responses.'),
-  }),
+  },
 
   async handler(input, ctx) {
     ctx.log.info('gdelt_get_tv_context', { query: input.query });
@@ -107,22 +112,20 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       });
     }
 
+    ctx.enrich.echo(input.query);
+    ctx.enrich.total(result.clipsAnalyzed);
+
     ctx.log.info('gdelt_get_tv_context completed', { wordCount: result.words.length });
     return {
-      query: input.query,
       words: result.words.sort((a, b) => b.score - a.score),
-      clipsAnalyzed: result.clipsAnalyzed,
     };
   },
 
   format: (result) => {
     const lines: string[] = [
       `## GDELT TV Context`,
-      `**Query:** ${result.query}`,
-      `**Clips analyzed:** ${result.clipsAnalyzed}`,
       `**Co-occurring terms:** ${result.words.length}`,
     ];
-    if (result.notice) lines.push(`\n> ${result.notice}`);
     lines.push('\n### Top Terms');
     for (const w of result.words.slice(0, 50)) {
       const bar = '█'.repeat(Math.round(w.score / 5));
