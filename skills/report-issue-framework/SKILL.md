@@ -4,7 +4,7 @@ description: >
   File a bug or feature request against @cyanheads/mcp-ts-core when you hit a framework issue. Use when a builder, utility, context method, or config behaves contrary to the documented API — not for server-specific application bugs.
 metadata:
   author: cyanheads
-  version: "1.6"
+  version: "1.7"
   audience: external
   type: workflow
 ---
@@ -30,8 +30,15 @@ For general `gh` CLI workflows outside issue filing (PRs, workflows, API access)
 4. **Search existing issues** — don't file duplicates:
 
 ```bash
-gh issue list -R cyanheads/mcp-ts-core --search "your error message or keyword"
+gh issue list -R cyanheads/mcp-ts-core --search "your error message or keyword" --state all
+
+# Assess a close match before commenting — is it already linked to a fix or referenced elsewhere?
+gh issue view <number> -R cyanheads/mcp-ts-core --comments
+gh api 'repos/cyanheads/mcp-ts-core/issues/<number>/timeline' --paginate \
+  --jq '.[] | select(.event=="cross-referenced") | .source.issue | "\(.repository.full_name)#\(.number) — \(.title)"'
 ```
+
+5. **For documentation- or contract-shaped requests, audit all three doc layers first** — proposals to add reference docs, public-API conventions, attribute/event catalogs, or stability commitments often duplicate surface that already exists. Check `src/` for behavior, `docs/` for human-facing reference, and `skills/` for agent-facing reference. Skill files marked `audience: external` are the framework's public contract — treat them as authoritative when evaluating whether a documentation gap exists. Also verify the constants or types you'd reference aren't already exported from `@cyanheads/mcp-ts-core` or one of its subpaths.
 
 ## Writing Well-Structured Issues
 
@@ -271,8 +278,8 @@ ISSUE
 ## Following Up
 
 ```bash
-# Check issue status
-gh issue view <number> -R cyanheads/mcp-ts-core
+# Check issue status (with comment thread)
+gh issue view <number> -R cyanheads/mcp-ts-core --comments
 
 # Add context or respond to maintainer questions
 gh issue comment <number> -R cyanheads/mcp-ts-core --body "Additional context..."
@@ -286,6 +293,7 @@ gh issue list -R cyanheads/mcp-ts-core --author @me
 - [ ] Confirmed bug is in `@cyanheads/mcp-ts-core`, not server code
 - [ ] Running latest (or documented) framework version
 - [ ] Searched existing issues — no duplicate found
+- [ ] If documentation or contract enhancement: confirmed `src/`, `docs/`, `skills/`, and public exports don't already cover the surface
 - [ ] All secrets, credentials, and tokens redacted
 - [ ] Primary label assigned (`bug` / `enhancement` / `documentation`)
 - [ ] If bug: version, runtime, repro code, actual vs expected behavior included
