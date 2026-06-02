@@ -1,6 +1,6 @@
 # gdelt-mcp-server - Directory Structure
 
-Generated on: 2026-05-29 05:11:16
+Generated on: 2026-06-02 14:23:43
 
 ```text
 gdelt-mcp-server/
@@ -30,12 +30,14 @@ gdelt-mcp-server/
 │   ├── build.ts
 │   ├── check-docs-sync.ts
 │   ├── check-framework-antipatterns.ts
+│   ├── check-skill-versions.ts
 │   ├── check-skills-sync.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
+│   ├── release-github.ts
 │   └── tree.ts
 ├── skills/
 │   ├── add-app-tool/
@@ -61,6 +63,8 @@ gdelt-mcp-server/
 │   ├── api-errors/
 │   │   └── SKILL.md
 │   ├── api-linter/
+│   │   └── SKILL.md
+│   ├── api-mirror/
 │   │   └── SKILL.md
 │   ├── api-services/
 │   │   ├── references/
@@ -89,6 +93,13 @@ gdelt-mcp-server/
 │   ├── git-wrapup/
 │   │   └── SKILL.md
 │   ├── maintenance/
+│   │   └── SKILL.md
+│   ├── orchestrations/
+│   │   ├── workflows/
+│   │   │   ├── field-test-fix.md
+│   │   │   ├── fix-wrapup-release.md
+│   │   │   ├── greenfield-build.md
+│   │   │   └── maintenance-release.md
 │   │   └── SKILL.md
 │   ├── polish-docs-meta/
 │   │   ├── references/
@@ -141,16 +152,25 @@ gdelt-mcp-server/
 ├── tests/
 │   ├── prompts/
 │   ├── resources/
+│   ├── services/
+│   │   ├── date-resolution.test.ts
+│   │   ├── gdelt-doc-service.test.ts
+│   │   ├── gdelt-fetch.test.ts
+│   │   ├── gdelt-tv-service.test.ts
+│   │   └── rate-limiter.test.ts
 │   └── tools/
+│       ├── error-propagation.test.ts
 │       ├── get-coverage-breakdown.tool.test.ts
 │       ├── get-coverage-timeline.tool.test.ts
 │       ├── get-tone-distribution.tool.test.ts
 │       ├── get-tv-clips.tool.test.ts
 │       ├── get-tv-context.tool.test.ts
 │       ├── get-tv-trending.tool.test.ts
+│       ├── input-validation.test.ts
 │       ├── list-tv-stations.tool.test.ts
 │       ├── search-articles.tool.test.ts
-│       └── search-tv.tool.test.ts
+│       ├── search-tv.tool.test.ts
+│       └── security.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitignore
