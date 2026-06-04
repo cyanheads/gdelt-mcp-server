@@ -33,13 +33,29 @@ describe('gdeltGetTvContext', () => {
     expect(result.words[0]?.score).toBe(100);
   });
 
-  it('populates enrichment with query echo and clips analyzed count', async () => {
+  it('populates enrichment with query echo and clips analyzed count when provided', async () => {
     const ctx = createMockContext({ errors: gdeltGetTvContext.errors });
     const input = gdeltGetTvContext.input.parse({ query: 'pandemic' });
     await gdeltGetTvContext.handler(input, ctx);
     const enrichment = getEnrichment(ctx);
     expect(enrichment.effectiveQuery).toBe('pandemic');
     expect(enrichment.totalCount).toBe(42);
+  });
+
+  it('omits totalCount from enrichment when service returns no clipsAnalyzed', async () => {
+    vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+      getTvContext: vi.fn().mockResolvedValue({
+        words: [{ label: 'test', score: 100 }],
+        // clipsAnalyzed intentionally absent — upstream field missing
+      }),
+    } as unknown as tvServiceModule.GdeltTvService);
+
+    const ctx = createMockContext({ errors: gdeltGetTvContext.errors });
+    const input = gdeltGetTvContext.input.parse({ query: 'test' });
+    await gdeltGetTvContext.handler(input, ctx);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.effectiveQuery).toBe('test');
+    expect(enrichment.totalCount).toBeUndefined();
   });
 
   it('sorts words by score even when service returns them out of order', async () => {

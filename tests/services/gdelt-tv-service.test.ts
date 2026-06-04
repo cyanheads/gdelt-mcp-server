@@ -135,7 +135,22 @@ describe('GdeltTvService.getTvClips', () => {
     expect(clips[0]).not.toHaveProperty('thumbnail');
   });
 
-  it('embeds station filters into the query string when stations are provided', async () => {
+  it('embeds a single station filter directly into the query string', async () => {
+    let capturedParams: URLSearchParams | undefined;
+    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockImplementationOnce(
+      (_baseUrl, params, _ctx, _op, _label) => {
+        capturedParams = params;
+        return Promise.resolve({ clips: [] });
+      },
+    );
+    const ctx = createMockContext();
+    const svc = makeService();
+    await svc.getTvClips({ query: 'vaccine', stations: ['CNN'] }, ctx);
+    const q = capturedParams?.get('query') ?? '';
+    expect(q).toBe('vaccine station:CNN');
+  });
+
+  it('joins multiple station filters with OR in parentheses', async () => {
     let capturedParams: URLSearchParams | undefined;
     vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockImplementationOnce(
       (_baseUrl, params, _ctx, _op, _label) => {
@@ -147,9 +162,7 @@ describe('GdeltTvService.getTvClips', () => {
     const svc = makeService();
     await svc.getTvClips({ query: 'vaccine', stations: ['CNN', 'FOXNEWS'] }, ctx);
     const q = capturedParams?.get('query') ?? '';
-    expect(q).toContain('station:CNN');
-    expect(q).toContain('station:FOXNEWS');
-    expect(q).toContain('vaccine');
+    expect(q).toBe('vaccine (station:CNN OR station:FOXNEWS)');
   });
 
   it('returns empty array when clips key is absent', async () => {
@@ -179,12 +192,12 @@ describe('GdeltTvService.getTvContext', () => {
     expect(result.clipsAnalyzed).toBe(42);
   });
 
-  it('defaults clipsAnalyzed to 0 when numclips is absent', async () => {
+  it('omits clipsAnalyzed when numclips is absent from the upstream response', async () => {
     vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({ wordcloud: [] });
     const ctx = createMockContext();
     const svc = makeService();
     const result = await svc.getTvContext({ query: 'test' }, ctx);
-    expect(result.clipsAnalyzed).toBe(0);
+    expect(result.clipsAnalyzed).toBeUndefined();
   });
 
   it('returns empty words array when wordcloud key is absent', async () => {

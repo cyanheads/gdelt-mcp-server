@@ -132,7 +132,8 @@ export class GdeltTvService {
     ctx: Context,
   ): Promise<{
     words: TvContextWord[];
-    clipsAnalyzed: number;
+    /** Present only when the upstream API returns a clip count. */
+    clipsAnalyzed?: number;
   }> {
     const urlParams = this.buildBaseParams(params.query, params.stations);
     urlParams.set('mode', 'wordcloud');
@@ -143,7 +144,9 @@ export class GdeltTvService {
       label: w.label,
       score: w.count,
     }));
-    return { words, clipsAnalyzed: raw.numclips ?? 0 };
+    // Only include clipsAnalyzed when the upstream API provides a value — defaulting
+    // to 0 falsely signals "zero clips analyzed" when the field is simply absent.
+    return { words, ...(raw.numclips != null ? { clipsAnalyzed: raw.numclips } : {}) };
   }
 
   /** Fetch currently trending topics on TV news. */
@@ -190,10 +193,14 @@ export class GdeltTvService {
 
   private buildBaseParams(query: string, stations?: string[]): URLSearchParams {
     const p = new URLSearchParams();
-    // TV API embeds station filters inside the query string
+    // TV API embeds station filters inside the query string.
+    // Multiple stations must be joined with OR inside parentheses — the API
+    // rejects multiple standalone station: selectors joined by spaces.
     let q = query;
-    if (stations?.length) {
-      q += ` ${stations.map((s) => `station:${s}`).join(' ')}`;
+    if (stations?.length === 1) {
+      q += ` station:${stations[0]}`;
+    } else if (stations && stations.length > 1) {
+      q += ` (${stations.map((s) => `station:${s}`).join(' OR ')})`;
     }
     p.set('query', q);
     p.set('format', 'json');

@@ -24,7 +24,7 @@ export const gdeltGetTvTrending = tool('gdelt_get_tv_trending', {
       code: JsonRpcErrorCode.NotFound,
       when: 'No trending topics returned — the endpoint returned an empty list.',
       recovery:
-        'The TV trending endpoint reflects the October 2024 archive cutoff. Retry after a short delay.',
+        'The TV archive is frozen at October 2024. For historical TV analysis, use gdelt_search_tv with startDatetime/endDatetime within the 2009–2024 window.',
     },
     {
       reason: 'gdelt_unavailable',

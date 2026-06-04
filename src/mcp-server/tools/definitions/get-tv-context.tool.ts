@@ -82,7 +82,11 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
     effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
     totalCount: z
       .number()
-      .describe('Number of matching clips from which co-occurrences were computed.'),
+      .optional()
+      .describe(
+        'Number of clips from which co-occurrences were computed. ' +
+          'Absent when the upstream API does not return a clip count.',
+      ),
     notice: z
       .string()
       .optional()
@@ -113,7 +117,7 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
     }
 
     ctx.enrich.echo(input.query);
-    ctx.enrich.total(result.clipsAnalyzed);
+    if (result.clipsAnalyzed != null) ctx.enrich.total(result.clipsAnalyzed);
 
     ctx.log.info('gdelt_get_tv_context completed', { wordCount: result.words.length });
     return {

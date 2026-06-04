@@ -66,6 +66,13 @@ describe('gdeltGetTvTrending', () => {
     });
   });
 
+  it('no_trending recovery hint directs to gdelt_search_tv, not retry', () => {
+    const contract = gdeltGetTvTrending.errors?.find((e) => e.reason === 'no_trending');
+    expect(contract).toBeDefined();
+    expect(contract?.recovery).toContain('gdelt_search_tv');
+    expect(contract?.recovery?.toLowerCase()).not.toContain('retry');
+  });
+
   it('formats output with topic labels and scores', () => {
     const output = { topics: TOPICS };
     const blocks = gdeltGetTvTrending.format!(output);
