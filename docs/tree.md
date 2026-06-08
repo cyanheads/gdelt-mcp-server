@@ -1,6 +1,6 @@
 # gdelt-mcp-server - Directory Structure
 
-Generated on: 2026-06-02 14:23:43
+Generated on: 2026-06-08 12:43:37
 
 ```text
 gdelt-mcp-server/
@@ -21,6 +21,7 @@ gdelt-mcp-server/
 │   └── settings.json
 ├── changelog/
 │   ├── 0.1.x/
+│   ├── 0.2.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md

@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-06-08
+
+Rate-limiter abort signal, get_tv_context date-range params, resolved-timespan echoes, cap-hit notices, @types/node bump
+
 ## [0.1.8](changelog/0.1.x/0.1.8.md) — 2026-06-04
 
 Fix multi-station TV query syntax, clipsAnalyzed false-zero, and trending recovery hint
