@@ -146,6 +146,12 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
     ctx.enrich.echo(input.query);
     ctx.enrich.total(result.articles.length);
     if (input.timespan) ctx.enrich({ timespan: input.timespan });
+    if (result.articles.length >= input.maxRecords) {
+      ctx.enrich.notice(
+        `Returned ${result.articles.length} articles (maxRecords cap reached — there may be more). ` +
+          `Increase maxRecords up to 250 to retrieve more.`,
+      );
+    }
 
     ctx.log.info('gdelt_search_articles completed', { count: result.articles.length });
     return { articles: result.articles };

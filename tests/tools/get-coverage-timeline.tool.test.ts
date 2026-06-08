@@ -108,6 +108,29 @@ describe('gdeltGetCoverageTimeline', () => {
     expect(text).toContain('2024-01-02');
   });
 
+  it('echoes startDatetime/endDatetime in enrichment when provided', async () => {
+    const ctx = createMockContext({ errors: gdeltGetCoverageTimeline.errors });
+    const input = gdeltGetCoverageTimeline.input.parse({
+      query: 'pandemic',
+      mode: 'volume',
+      startDatetime: '20240101000000',
+      endDatetime: '20240131235959',
+    });
+    await gdeltGetCoverageTimeline.handler(input, ctx);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.startDatetime).toBe('20240101000000');
+    expect(enrichment.endDatetime).toBe('20240131235959');
+  });
+
+  it('omits date echo from enrichment when dates are not provided', async () => {
+    const ctx = createMockContext({ errors: gdeltGetCoverageTimeline.errors });
+    const input = gdeltGetCoverageTimeline.input.parse({ query: 'pandemic', mode: 'volume' });
+    await gdeltGetCoverageTimeline.handler(input, ctx);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.startDatetime).toBeUndefined();
+    expect(enrichment.endDatetime).toBeUndefined();
+  });
+
   it('formats volume_with_articles mode including article links', () => {
     const output = {
       dateResolution: 'hour' as const,

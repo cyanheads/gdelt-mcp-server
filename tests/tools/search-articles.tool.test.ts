@@ -100,4 +100,30 @@ describe('gdeltSearchArticles', () => {
     const blocks = gdeltSearchArticles.format!(output);
     expect(blocks).toHaveLength(1);
   });
+
+  it('sets cap-hit notice when returned articles equal maxRecords', async () => {
+    const maxRecords = 3;
+    const articles = Array.from({ length: maxRecords }, (_, i) => ({
+      ...ARTICLE,
+      url: `https://example.com/a${i}`,
+    }));
+    vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+      searchArticles: vi.fn().mockResolvedValue({ articles, totalReturned: maxRecords }),
+    } as unknown as docServiceModule.GdeltDocService);
+
+    const ctx = createMockContext({ errors: gdeltSearchArticles.errors });
+    const input = gdeltSearchArticles.input.parse({ query: 'test', maxRecords });
+    await gdeltSearchArticles.handler(input, ctx);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toMatch(/cap reached/);
+  });
+
+  it('does not set notice when returned articles are below maxRecords', async () => {
+    const ctx = createMockContext({ errors: gdeltSearchArticles.errors });
+    const input = gdeltSearchArticles.input.parse({ query: 'bird flu', maxRecords: 10 });
+    // mock returns 1 article, maxRecords is 10
+    await gdeltSearchArticles.handler(input, ctx);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toBeUndefined();
+  });
 });

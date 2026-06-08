@@ -90,6 +90,43 @@ describe('gdeltGetTvContext', () => {
     });
   });
 
+  it('includes resolved date range in no_context error when timespan is provided', async () => {
+    vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+      getTvContext: vi.fn().mockResolvedValue({ words: [] }),
+    } as unknown as tvServiceModule.GdeltTvService);
+
+    const ctx = createMockContext({ errors: gdeltGetTvContext.errors });
+    const input = gdeltGetTvContext.input.parse({ query: 'noresults', timespan: '7d' });
+    const err = await gdeltGetTvContext.handler(input, ctx).catch((e: unknown) => e);
+    expect(err).toMatchObject({ data: { reason: 'no_context' } });
+    // recovery hint should contain the resolved date range
+    const hint: string = (err as { data: { recovery: { hint: string } } }).data.recovery.hint;
+    // e.g. 'Timespan "7d" resolved to 2026-06-01 – 2026-06-08'
+    expect(hint).toMatch(/Timespan "7d" resolved to \d{4}-\d{2}-\d{2} – \d{4}-\d{2}-\d{2}/);
+  });
+
+  it('passes startDatetime/endDatetime through to the service', async () => {
+    const mockGetTvContext = vi.fn().mockResolvedValue(CONTEXT_RESULT);
+    vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+      getTvContext: mockGetTvContext,
+    } as unknown as tvServiceModule.GdeltTvService);
+
+    const ctx = createMockContext({ errors: gdeltGetTvContext.errors });
+    const input = gdeltGetTvContext.input.parse({
+      query: 'test',
+      startDatetime: '20230101000000',
+      endDatetime: '20231231235959',
+    });
+    await gdeltGetTvContext.handler(input, ctx);
+    expect(mockGetTvContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        startDatetime: '20230101000000',
+        endDatetime: '20231231235959',
+      }),
+      ctx,
+    );
+  });
+
   it('formats output with word count and top terms', () => {
     const output = { words: CONTEXT_RESULT.words };
     const blocks = gdeltGetTvContext.format!(output);

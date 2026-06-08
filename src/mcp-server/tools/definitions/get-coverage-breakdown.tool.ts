@@ -116,6 +116,14 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       .enum(['language', 'country'])
       .describe('Breakdown dimension used for this response.'),
     totalCount: z.number().describe('Total number of series returned before truncation to top 10.'),
+    startDatetime: z
+      .string()
+      .optional()
+      .describe('Echoed start datetime when provided (YYYYMMDDHHMMSS).'),
+    endDatetime: z
+      .string()
+      .optional()
+      .describe('Echoed end datetime when provided (YYYYMMDDHHMMSS).'),
     notice: z
       .string()
       .optional()
@@ -184,7 +192,11 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
 
     ctx.enrich.echo(input.query);
     ctx.enrich.total(allSeries.length);
-    ctx.enrich({ breakdownBy: input.breakdownBy });
+    ctx.enrich({
+      breakdownBy: input.breakdownBy,
+      ...(input.startDatetime && { startDatetime: input.startDatetime }),
+      ...(input.endDatetime && { endDatetime: input.endDatetime }),
+    });
 
     ctx.log.info('gdelt_get_coverage_breakdown completed', {
       totalSeries: allSeries.length,

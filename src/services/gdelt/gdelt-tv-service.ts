@@ -40,6 +40,8 @@ export type TvContextParams = {
   query: string;
   stations?: string[];
   timespan?: string;
+  startDatetime?: string;
+  endDatetime?: string;
 };
 
 export type TvSearchSeries = {
@@ -137,7 +139,7 @@ export class GdeltTvService {
   }> {
     const urlParams = this.buildBaseParams(params.query, params.stations);
     urlParams.set('mode', 'wordcloud');
-    if (params.timespan) urlParams.set('timespan', params.timespan);
+    applyTimeRange(urlParams, params.timespan, params.startDatetime, params.endDatetime);
 
     const raw = await this.fetch<{ wordcloud?: RawTvWord[]; numclips?: number }>(urlParams, ctx);
     const words: TvContextWord[] = (raw.wordcloud ?? []).map((w) => ({

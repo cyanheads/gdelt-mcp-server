@@ -6,6 +6,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { formatDateShort, resolveTimespan } from '@/services/gdelt/gdelt-fetch.js';
 import { getGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
 
 export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
@@ -55,7 +56,21 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
     timespan: z
       .string()
       .optional()
-      .describe('Time window, e.g. "1m", "6m". TV data spans 2009–October 2024.'),
+      .describe(
+        'Time window, e.g. "1m", "6m". Ignored when startDatetime/endDatetime are set. ' +
+          'TV data spans 2009–October 2024.',
+      ),
+    startDatetime: z
+      .string()
+      .optional()
+      .describe(
+        'Start datetime in GDELT format YYYYMMDDHHMMSS. Must pair with endDatetime. ' +
+          'TV data spans 2009–October 2024.',
+      ),
+    endDatetime: z
+      .string()
+      .optional()
+      .describe('End datetime in GDELT format YYYYMMDDHHMMSS. Must pair with startDatetime.'),
   }),
 
   output: z.object({
@@ -102,15 +117,24 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
         query: input.query,
         ...(input.stations?.length && { stations: input.stations }),
         ...(input.timespan && { timespan: input.timespan }),
+        ...(input.startDatetime && { startDatetime: input.startDatetime }),
+        ...(input.endDatetime && { endDatetime: input.endDatetime }),
       },
       ctx,
     );
 
     if (result.words.length === 0) {
+      let rangeNote = '';
+      if (input.timespan && !input.startDatetime && !input.endDatetime) {
+        const range = resolveTimespan(input.timespan);
+        if (range) {
+          rangeNote = ` Timespan "${input.timespan}" resolved to ${formatDateShort(range.start)} – ${formatDateShort(range.end)}.`;
+        }
+      }
       throw ctx.fail('no_context', `No context words for "${input.query}"`, {
         recovery: {
           hint:
-            `No TV context data for "${input.query}". TV data ends October 2024 — ` +
+            `No TV context data for "${input.query}".${rangeNote} TV data ends October 2024 — ` +
             `broaden the query or use gdelt_list_tv_stations to check coverage.`,
         },
       });

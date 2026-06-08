@@ -6,6 +6,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { formatDateShort, resolveTimespan } from '@/services/gdelt/gdelt-fetch.js';
 import { getGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
 
 export const gdeltSearchTv = tool('gdelt_search_tv', {
@@ -149,10 +150,17 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
     );
 
     if (result.series.length === 0 || result.series.every((s) => s.data.length === 0)) {
+      let rangeNote = '';
+      if (input.timespan && !input.startDatetime && !input.endDatetime) {
+        const range = resolveTimespan(input.timespan);
+        if (range) {
+          rangeNote = ` Timespan "${input.timespan}" resolved to ${formatDateShort(range.start)} – ${formatDateShort(range.end)}.`;
+        }
+      }
       throw ctx.fail('no_tv_coverage', `No TV coverage found for "${input.query}"`, {
         recovery: {
           hint:
-            `No TV coverage for "${input.query}". Most TV data ends October 2024 — ` +
+            `No TV coverage for "${input.query}".${rangeNote} Most TV data ends October 2024 — ` +
             `use gdelt_list_tv_stations to check station active dates.`,
         },
       });

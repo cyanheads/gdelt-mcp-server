@@ -73,6 +73,46 @@ describe('gdeltGetTvClips', () => {
     });
   });
 
+  it('includes resolved date range in no_clips error when timespan is provided', async () => {
+    vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+      getTvClips: vi.fn().mockResolvedValue([]),
+    } as unknown as tvServiceModule.GdeltTvService);
+
+    const ctx = createMockContext({ errors: gdeltGetTvClips.errors });
+    const input = gdeltGetTvClips.input.parse({ query: 'noresults', timespan: '1y' });
+    const err = await gdeltGetTvClips.handler(input, ctx).catch((e: unknown) => e);
+    expect(err).toMatchObject({ data: { reason: 'no_clips' } });
+    const hint: string = (err as { data: { recovery: { hint: string } } }).data.recovery.hint;
+    expect(hint).toMatch(/Timespan "1y" resolved to \d{4}-\d{2}-\d{2} – \d{4}-\d{2}-\d{2}/);
+  });
+
+  it('sets cap-hit notice when returned clips equal maxRecords', async () => {
+    // Build an array of maxRecords clips
+    const maxRecords = 3;
+    const clips = Array.from({ length: maxRecords }, (_, i) => ({
+      ...CLIP,
+      date: `2024-01-${String(i + 1).padStart(2, '0')}T00:00:00Z`,
+    }));
+    vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+      getTvClips: vi.fn().mockResolvedValue(clips),
+    } as unknown as tvServiceModule.GdeltTvService);
+
+    const ctx = createMockContext({ errors: gdeltGetTvClips.errors });
+    const input = gdeltGetTvClips.input.parse({ query: 'test', maxRecords });
+    await gdeltGetTvClips.handler(input, ctx);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toMatch(/cap reached/);
+  });
+
+  it('does not set notice when returned clips are below maxRecords', async () => {
+    const ctx = createMockContext({ errors: gdeltGetTvClips.errors });
+    const input = gdeltGetTvClips.input.parse({ query: 'vaccine', maxRecords: 10 });
+    // mock returns 1 clip, maxRecords is 10
+    await gdeltGetTvClips.handler(input, ctx);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toBeUndefined();
+  });
+
   it('formats output with all required clip fields', () => {
     const output = { clips: [CLIP] };
     const blocks = gdeltGetTvClips.format!(output);

@@ -24,6 +24,43 @@ export function applyTimeRange(
   }
 }
 
+/**
+ * Resolve a GDELT timespan string (e.g. "1y", "6m", "7d", "24h", "15min") to an
+ * absolute `{ start, end }` date range anchored to now.
+ * Returns `undefined` when the string cannot be parsed.
+ */
+export function resolveTimespan(timespan: string): { start: Date; end: Date } | undefined {
+  const match = /^(\d+)(min|h|d|m|y)$/i.exec(timespan.trim());
+  if (!match) return;
+  const n = parseInt(match[1] as string, 10);
+  const unit = (match[2] as string).toLowerCase();
+  const end = new Date();
+  const start = new Date(end);
+  switch (unit) {
+    case 'min':
+      start.setMinutes(start.getMinutes() - n);
+      break;
+    case 'h':
+      start.setHours(start.getHours() - n);
+      break;
+    case 'd':
+      start.setDate(start.getDate() - n);
+      break;
+    case 'm':
+      start.setMonth(start.getMonth() - n);
+      break;
+    case 'y':
+      start.setFullYear(start.getFullYear() - n);
+      break;
+  }
+  return { start, end };
+}
+
+/** Format a Date as YYYY-MM-DD for human-readable display. */
+export function formatDateShort(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
 /** Fetch a GDELT endpoint with rate-limiting, retries, and JSON parsing. */
 export function gdeltFetch<T>(
   baseUrl: string,
@@ -36,7 +73,7 @@ export function gdeltFetch<T>(
   const rctx = ctx as unknown as RequestContextLike;
   return withRetry(
     async () => {
-      await limiter.acquire();
+      await limiter.acquire(ctx.signal);
       const url = `${baseUrl}?${params.toString()}`;
       ctx.log.debug(`${apiLabel} API request`, { url });
       const response = await fetchWithTimeout(url, 30_000, rctx, { signal: ctx.signal });

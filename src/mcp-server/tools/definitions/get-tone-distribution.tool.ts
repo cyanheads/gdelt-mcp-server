@@ -102,6 +102,14 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
   enrichment: {
     effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
     totalCount: z.number().describe('Total number of articles across all histogram bins.'),
+    startDatetime: z
+      .string()
+      .optional()
+      .describe('Echoed start datetime when provided (YYYYMMDDHHMMSS).'),
+    endDatetime: z
+      .string()
+      .optional()
+      .describe('Echoed end datetime when provided (YYYYMMDDHHMMSS).'),
     notice: z
       .string()
       .optional()
@@ -154,6 +162,10 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
 
     ctx.enrich.echo(input.query);
     ctx.enrich.total(totalCount);
+    ctx.enrich({
+      ...(input.startDatetime && { startDatetime: input.startDatetime }),
+      ...(input.endDatetime && { endDatetime: input.endDatetime }),
+    });
 
     ctx.log.info('gdelt_get_tone_distribution completed', { bins: bins.length, totalCount });
     return { histogram: bins, summary };

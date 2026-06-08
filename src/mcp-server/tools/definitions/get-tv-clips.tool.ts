@@ -6,6 +6,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { formatDateShort, resolveTimespan } from '@/services/gdelt/gdelt-fetch.js';
 import { getGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
 
 export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
@@ -130,10 +131,17 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
     );
 
     if (clips.length === 0) {
+      let rangeNote = '';
+      if (input.timespan && !input.startDatetime && !input.endDatetime) {
+        const range = resolveTimespan(input.timespan);
+        if (range) {
+          rangeNote = ` Timespan "${input.timespan}" resolved to ${formatDateShort(range.start)} – ${formatDateShort(range.end)}.`;
+        }
+      }
       throw ctx.fail('no_clips', `No TV clips matched "${input.query}"`, {
         recovery: {
           hint:
-            `No TV clips for "${input.query}". TV data ends October 2024 — ` +
+            `No TV clips for "${input.query}".${rangeNote} TV data ends October 2024 — ` +
             `supply explicit startDatetime/endDatetime within 2009–2024, or verify station IDs with gdelt_list_tv_stations.`,
         },
       });
@@ -141,6 +149,12 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
 
     ctx.enrich.echo(input.query);
     ctx.enrich.total(clips.length);
+    if (clips.length >= input.maxRecords) {
+      ctx.enrich.notice(
+        `Returned ${clips.length} clips (maxRecords cap reached — there may be more). ` +
+          `Increase maxRecords up to 3000 to retrieve more.`,
+      );
+    }
 
     ctx.log.info('gdelt_get_tv_clips completed', { count: clips.length });
     return { clips };

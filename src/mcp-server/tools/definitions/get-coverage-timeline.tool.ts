@@ -134,6 +134,14 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
       .enum(['volume', 'volume_with_articles', 'tone'])
       .describe('Timeline mode used for this response.'),
     totalCount: z.number().describe('Total number of data points across all series.'),
+    startDatetime: z
+      .string()
+      .optional()
+      .describe('Echoed start datetime when provided (YYYYMMDDHHMMSS).'),
+    endDatetime: z
+      .string()
+      .optional()
+      .describe('Echoed end datetime when provided (YYYYMMDDHHMMSS).'),
     notice: z
       .string()
       .optional()
@@ -179,7 +187,11 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
 
     ctx.enrich.echo(input.query);
     ctx.enrich.total(totalPoints);
-    ctx.enrich({ mode: input.mode });
+    ctx.enrich({
+      mode: input.mode,
+      ...(input.startDatetime && { startDatetime: input.startDatetime }),
+      ...(input.endDatetime && { endDatetime: input.endDatetime }),
+    });
 
     ctx.log.info('gdelt_get_coverage_timeline completed', {
       seriesCount: series.length,
