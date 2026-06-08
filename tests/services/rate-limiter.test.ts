@@ -55,4 +55,63 @@ describe('GdeltRateLimiter', () => {
     await Promise.all(tasks);
     expect(count).toBe(5);
   });
+
+  // ── Abort signal tests ────────────────────────────────────────────────────
+
+  it('rejects immediately when signal is already aborted before acquire', async () => {
+    const limiter = new GdeltRateLimiter(0);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(limiter.acquire(controller.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+  });
+
+  it('rejects with AbortError when signal fires while queued', async () => {
+    // Use a small delay so the second acquire has time to queue before we abort.
+    const limiter = new GdeltRateLimiter(50);
+    const controller = new AbortController();
+
+    // First acquire takes the slot; second will queue.
+    const first = limiter.acquire();
+    const second = limiter.acquire(controller.signal);
+
+    // Abort the second caller while it is queued.
+    controller.abort();
+
+    await first; // first should still resolve normally
+    await expect(second).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('does not block subsequent callers when a queued entry is aborted', async () => {
+    // With a 50 ms delay: first acquire takes 0 ms, second (aborted) is
+    // removed, third should proceed after ~50 ms — not ~100 ms.
+    const delayMs = 50;
+    const limiter = new GdeltRateLimiter(delayMs);
+    const controller = new AbortController();
+
+    const t0 = Date.now();
+    const first = limiter.acquire(); // resolves immediately
+    const second = limiter.acquire(controller.signal); // queued, will be aborted
+    const third = limiter.acquire(); // queued behind second
+
+    // Let the queue process the first slot, then abort second.
+    await first;
+    controller.abort();
+
+    // second rejects; third should resolve after one delay (~50 ms from first resolve)
+    await expect(second).rejects.toMatchObject({ name: 'AbortError' });
+    await third;
+
+    // Total elapsed should be ~delayMs, NOT ~2×delayMs
+    const elapsed = Date.now() - t0;
+    expect(elapsed).toBeGreaterThanOrEqual(delayMs - 10);
+    expect(elapsed).toBeLessThan(delayMs * 2 - 10);
+  });
+
+  it('resolves normally when signal is provided but never fired', async () => {
+    const limiter = new GdeltRateLimiter(0);
+    const controller = new AbortController();
+    await expect(limiter.acquire(controller.signal)).resolves.toBeUndefined();
+  });
 });

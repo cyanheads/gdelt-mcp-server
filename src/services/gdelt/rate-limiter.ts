@@ -12,10 +12,31 @@ export class GdeltRateLimiter {
 
   constructor(private readonly delayMs: number) {}
 
-  /** Acquire a rate-limit slot. Resolves when it is safe to issue the next request. */
-  acquire(): Promise<void> {
-    return new Promise<void>((resolve) => {
-      this.queue.push(resolve);
+  /**
+   * Acquire a rate-limit slot. Resolves when it is safe to issue the next request.
+   * If `signal` is already aborted, rejects immediately. If `signal` fires while
+   * this call is queued, the entry is spliced out and the promise rejects — the
+   * next queued caller is unblocked rather than waiting the full delay for a dead slot.
+   */
+  acquire(signal?: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new DOMException('Aborted', 'AbortError'));
+        return;
+      }
+      const entry = () => resolve();
+      this.queue.push(entry);
+      if (signal) {
+        signal.addEventListener(
+          'abort',
+          () => {
+            const idx = this.queue.indexOf(entry);
+            if (idx !== -1) this.queue.splice(idx, 1);
+            reject(new DOMException('Aborted', 'AbortError'));
+          },
+          { once: true },
+        );
+      }
       if (!this.processing) this.processQueue();
     });
   }
