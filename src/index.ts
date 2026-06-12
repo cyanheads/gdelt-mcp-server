@@ -22,6 +22,8 @@ import { initGdeltTvService } from './services/gdelt/gdelt-tv-service.js';
 import { initRateLimiter } from './services/gdelt/rate-limiter.js';
 
 await createApp({
+  name: 'gdelt-mcp-server',
+  title: 'gdelt-mcp-server',
   tools: [
     gdeltSearchArticles,
     gdeltGetCoverageTimeline,
