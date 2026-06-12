@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.1](changelog/0.2.x/0.2.1.md) — 2026-06-12
+
+Adopt mcp-ts-core ^0.10.6, set explicit createApp name/title identity, MCPB bundle hygiene (clean-mcpb + packaging guards), Dockerfile healthcheck and version labels
+
 ## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-06-08
 
 Rate-limiter abort signal, get_tv_context date-range params, resolved-timespan echoes, cap-hit notices, @types/node bump
