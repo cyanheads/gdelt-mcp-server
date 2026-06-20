@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.3",
   "name": "gdelt-mcp-server",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Search and analyze global news coverage and US TV transcripts via the GDELT Project APIs.",
   "author": { "name": "cyanheads" },
   "repository": {

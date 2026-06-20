@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.2](changelog/0.2.x/0.2.2.md) — 2026-06-20
+
+Maintenance: @cyanheads/mcp-ts-core ^0.10.6 → ^0.10.9, biome 2.5 + dev-dep refresh, re-synced framework skills/scripts, and the new dependency-specifier + plugin-manifest devcheck guards
+
 ## [0.2.1](changelog/0.2.x/0.2.1.md) — 2026-06-12
 
 Adopt mcp-ts-core ^0.10.6, set explicit createApp name/title identity, MCPB bundle hygiene (clean-mcpb + packaging guards), Dockerfile healthcheck and version labels
