@@ -185,13 +185,10 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       `## GDELT TV Context`,
       `**Co-occurring terms:** ${result.words.length}`,
     ];
-    lines.push('\n### Top Terms');
-    for (const w of result.words.slice(0, 50)) {
+    lines.push('\n### Terms');
+    for (const w of result.words) {
       const bar = '█'.repeat(Math.round(w.score / 5));
       lines.push(`- **${w.label}**: ${w.score.toFixed(1)} ${bar}`);
-    }
-    if (result.words.length > 50) {
-      lines.push(`\n_… ${result.words.length - 50} more terms_`);
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },

@@ -213,7 +213,7 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
     for (const b of result.histogram) {
       const bar = '█'.repeat(Math.min(Math.ceil(b.count / 5), 20));
       lines.push(`**Bin ${b.bin > 0 ? '+' : ''}${b.bin}:** ${b.count} articles ${bar}`);
-      for (const a of b.articles.slice(0, 2)) {
+      for (const a of b.articles) {
         lines.push(`  - [${a.title}](${a.url})`);
       }
     }

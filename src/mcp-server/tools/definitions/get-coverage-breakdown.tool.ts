@@ -21,6 +21,9 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
     'Shows which countries or languages drove early vs. late coverage — useful for tracing how a ' +
     'story propagated geographically or across language communities. ' +
     'Returns up to 10 series by total volume; remaining series are aggregated into an "Other" bucket. ' +
+    "Values are normalized: each point is the topic's share of media output, not an absolute article count. " +
+    'Small media markets with concentrated coverage therefore rank above large markets with diverse output — ' +
+    "a high value means the topic dominated that source's coverage, not that it published the most articles. " +
     'Use breakdownBy "country" with the signal-detection chain to map geographic attention, ' +
     'or "language" to detect non-English media surges.',
   annotations: { readOnlyHint: true, openWorldHint: true },
@@ -107,7 +110,12 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
                 z
                   .object({
                     date: z.string().describe('Timestep in ISO 8601 format.'),
-                    value: z.number().describe('Normalized coverage volume at this timestep.'),
+                    value: z
+                      .number()
+                      .describe(
+                        "Normalized coverage volume at this timestep — the topic's share of this " +
+                          "source's media output, not an absolute article count.",
+                      ),
                   })
                   .describe('A single data point for this series.'),
               )
@@ -121,7 +129,12 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
         z
           .object({
             date: z.string().describe('Timestep in ISO 8601 format.'),
-            value: z.number().describe('Aggregated coverage volume for all remaining series.'),
+            value: z
+              .number()
+              .describe(
+                'Aggregated normalized coverage volume for all remaining series — a share of ' +
+                  'media output, not an absolute article count.',
+              ),
           })
           .describe('A single aggregated data point for the "Other" bucket.'),
       )
@@ -245,6 +258,9 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
     const lines: string[] = [
       `## GDELT Coverage Breakdown`,
       `**Date Resolution:** ${result.dateResolution}`,
+      `**Values:** normalized — each value is the topic's share of that source's media output, ` +
+        `not an article count. Small media markets with concentrated coverage rank above large ` +
+        `markets with diverse output.`,
     ];
     for (const s of result.topSeries) {
       const total = s.data.reduce((sum, d) => sum + d.value, 0);
@@ -255,6 +271,9 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
         s.data[0] ?? { date: '', value: 0 },
       );
       if (peak.date) lines.push(`Peak: ${peak.value.toFixed(3)} at ${peak.date}`);
+      for (const d of s.data) {
+        lines.push(`- ${d.date}: ${d.value.toFixed(3)}`);
+      }
     }
     if (result.otherAggregated) {
       const otherTotal = result.otherAggregated.reduce((sum, d) => sum + d.value, 0);
@@ -265,6 +284,9 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       lines.push(`\n### Other`);
       lines.push(`Total: ${otherTotal.toFixed(2)}`);
       if (otherPeak.date) lines.push(`Peak: ${otherPeak.value.toFixed(3)} at ${otherPeak.date}`);
+      for (const d of result.otherAggregated) {
+        lines.push(`- ${d.date}: ${d.value.toFixed(3)}`);
+      }
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },

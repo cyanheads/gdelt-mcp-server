@@ -136,11 +136,29 @@ describe('gdeltGetTvContext', () => {
     expect(text).toContain('health');
   });
 
-  it('truncates to top 50 terms in format output', () => {
+  /**
+   * content[] must carry every term structuredContent carries — a text-surface client
+   * that reads only the rendered block must not see a shorter list than a structured one.
+   * Asserted per-element against a fixture larger than any previous render cap.
+   */
+  it('renders every term in format output, past the previous 50-term cap', () => {
     const manyWords = Array.from({ length: 60 }, (_, i) => ({ label: `word${i}`, score: 60 - i }));
-    const output = { words: manyWords };
-    const blocks = gdeltGetTvContext.format!(output);
+    const blocks = gdeltGetTvContext.format!({ words: manyWords });
     const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('10 more terms');
+    for (const w of manyWords) expect(text).toContain(`**${w.label}**`);
+    expect(text).not.toContain('more terms');
+  });
+
+  it('renders each term score, not just the label', () => {
+    const words = [
+      { label: 'alpha', score: 91.5 },
+      { label: 'beta', score: 42.25 },
+      { label: 'gamma', score: 7.75 },
+    ];
+    const blocks = gdeltGetTvContext.format!({ words });
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain('91.5');
+    expect(text).toContain('42.3');
+    expect(text).toContain('7.8');
   });
 });

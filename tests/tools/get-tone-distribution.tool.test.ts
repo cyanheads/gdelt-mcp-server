@@ -109,4 +109,48 @@ describe('gdeltGetToneDistribution', () => {
     expect(text).toContain('Negative Article');
     expect(text).toContain('Positive Article');
   });
+
+  /**
+   * content[] must carry every representative article structuredContent carries. The fixture
+   * gives each bin more articles than the previous 2-per-bin render cap and asserts each URL
+   * individually — "each bin includes representative article URLs" is the tool's stated value,
+   * so a bin rendering only its count is a lossy text surface.
+   */
+  it('renders every article in every bin, past the previous 2-per-bin cap', () => {
+    const histogram = Array.from({ length: 4 }, (_, b) => ({
+      bin: b - 2,
+      count: 6,
+      articles: Array.from({ length: 6 }, (_, i) => ({
+        url: `https://news.example/bin${b}/article${i}`,
+        title: `Bin ${b} Headline ${i}`,
+      })),
+    }));
+    const blocks = gdeltGetToneDistribution.format!({
+      histogram,
+      summary: { peakNegativeBin: -2, peakPositiveBin: 1, neutralPct: 25 },
+    });
+    const text = (blocks[0] as { text: string }).text;
+    for (const bin of histogram) {
+      for (const a of bin.articles) {
+        expect(text).toContain(a.url);
+        expect(text).toContain(a.title);
+      }
+    }
+  });
+
+  it('renders every bin label and count', () => {
+    const histogram = [
+      { bin: -7, count: 11, articles: [] },
+      { bin: 0, count: 22, articles: [] },
+      { bin: 9, count: 33, articles: [] },
+    ];
+    const blocks = gdeltGetToneDistribution.format!({
+      histogram,
+      summary: { peakNegativeBin: -7, peakPositiveBin: 9, neutralPct: 40 },
+    });
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain('**Bin -7:** 11 articles');
+    expect(text).toContain('**Bin 0:** 22 articles');
+    expect(text).toContain('**Bin +9:** 33 articles');
+  });
 });

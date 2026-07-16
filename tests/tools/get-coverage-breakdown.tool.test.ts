@@ -157,4 +157,62 @@ describe('gdeltGetCoverageBreakdown', () => {
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('Other');
   });
+
+  /**
+   * content[] must carry every point structuredContent carries. Previously only each series'
+   * total/peak was rendered, so a text-surface client saw an aggregate derived from the points
+   * but never the points themselves. Every date/value is asserted individually.
+   */
+  it('renders every data point of every topSeries', () => {
+    const topSeries = [
+      {
+        label: 'United States',
+        data: Array.from({ length: 15 }, (_, i) => ({
+          date: `2024-03-${String(i + 1).padStart(2, '0')}`,
+          value: (i + 1) / 4,
+        })),
+      },
+      {
+        label: 'China',
+        data: Array.from({ length: 15 }, (_, i) => ({
+          date: `2024-03-${String(i + 1).padStart(2, '0')}`,
+          value: (i + 1) / 16,
+        })),
+      },
+    ];
+    const blocks = gdeltGetCoverageBreakdown.format!({ dateResolution: 'day', topSeries });
+    const text = (blocks[0] as { text: string }).text;
+    for (const s of topSeries) {
+      for (const d of s.data) expect(text).toContain(`- ${d.date}: ${d.value.toFixed(3)}`);
+    }
+  });
+
+  it('renders every point of the otherAggregated bucket, not just its total and peak', () => {
+    const otherAggregated = Array.from({ length: 12 }, (_, i) => ({
+      date: `2024-04-${String(i + 1).padStart(2, '0')}`,
+      value: (i + 1) / 3,
+    }));
+    const blocks = gdeltGetCoverageBreakdown.format!({
+      dateResolution: 'day',
+      topSeries: SERIES,
+      otherAggregated,
+    });
+    const text = (blocks[0] as { text: string }).text;
+    for (const d of otherAggregated) expect(text).toContain(`- ${d.date}: ${d.value.toFixed(3)}`);
+  });
+
+  /**
+   * The values are normalized shares of media output, which is why small media markets can
+   * outrank large ones. The text surface must say so — an agent reading only content[] would
+   * otherwise have no way to interpret the ranking.
+   */
+  it('discloses in format output that values are normalized, not article counts', () => {
+    const blocks = gdeltGetCoverageBreakdown.format!({
+      dateResolution: 'day',
+      topSeries: SERIES,
+    });
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain('normalized');
+    expect(text).toContain('not an article count');
+  });
 });

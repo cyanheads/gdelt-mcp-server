@@ -84,14 +84,20 @@ describe('gdeltGetTvTrending', () => {
     expect(text).toContain('October 2024');
   });
 
-  it('truncates to top 50 in format output and shows remainder count', () => {
+  /**
+   * content[] must carry every topic structuredContent carries — a text-surface client
+   * that reads only the rendered block must not see a shorter list than a structured one.
+   * Asserted per-element against a fixture larger than any previous render cap.
+   */
+  it('renders every topic in format output, past the previous 50-topic cap', () => {
     const manyTopics = Array.from({ length: 55 }, (_, i) => ({
       label: `topic${i}`,
       score: 55 - i,
     }));
-    const output = { topics: manyTopics };
-    const blocks = gdeltGetTvTrending.format!(output);
+    const blocks = gdeltGetTvTrending.format!({ topics: manyTopics });
     const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('5 more topics');
+    for (const t of manyTopics)
+      expect(text).toContain(`**${t.label}** (score: ${t.score.toFixed(2)})`);
+    expect(text).not.toContain('more topics');
   });
 });

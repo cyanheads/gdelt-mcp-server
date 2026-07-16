@@ -92,10 +92,9 @@ export const gdeltGetTvTrending = tool('gdelt_get_tv_trending', {
       `_Note: reflects the October 2024 TV archive cutoff, not a live feed_`,
     ];
     lines.push('\n### Trending Now');
-    for (const t of result.topics.slice(0, 50)) {
+    for (const t of result.topics) {
       lines.push(`- **${t.label}** (score: ${t.score.toFixed(2)})`);
     }
-    if (result.topics.length > 50) lines.push(`\n_… ${result.topics.length - 50} more topics_`);
     return [{ type: 'text', text: lines.join('\n') }];
   },
 });

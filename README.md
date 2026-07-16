@@ -36,10 +36,10 @@ Nine tools across two GDELT APIs — DOC API for global print/web news (last 3 m
 | `gdelt_search_articles` | Search the last 3 months of global news coverage (65 languages) with full-text and filter operators. Returns up to 250 articles. |
 | `gdelt_get_coverage_timeline` | Retrieve a time series of coverage volume or average tone for a query. `volume_with_articles` mode includes top articles per spike timestep. |
 | `gdelt_get_tone_distribution` | Get a tone histogram (bins ~−30 to +30) showing whether coverage is uniformly negative, bimodal, or clustered near neutral. |
-| `gdelt_get_coverage_breakdown` | Break down coverage volume by source language or source country — a multi-series time series showing geographic propagation. |
+| `gdelt_get_coverage_breakdown` | Break down coverage volume by source language or source country — a multi-series time series showing geographic propagation. Values are normalized shares of media output, not article counts. |
 | `gdelt_search_tv` | Search US television news closed captions (2009–Oct 2024) and return per-station airtime time series. |
 | `gdelt_get_tv_clips` | Retrieve up to 3,000 matching TV clips with transcript excerpts and Internet Archive viewing links. |
-| `gdelt_get_tv_context` | Get the 200 most frequent co-occurring words and phrases from TV clips matching a query. |
+| `gdelt_get_tv_context` | Get the most frequent co-occurring words and phrases from TV clips matching a query. |
 | `gdelt_get_tv_trending` | Retrieve trending topics currently dominating US television news (updated every 15 minutes; no query required). |
 | `gdelt_list_tv_stations` | List all TV stations with market, network, and monitoring date ranges to verify station availability before querying. |
 
@@ -83,6 +83,7 @@ Multi-series time series showing which countries or languages drove coverage.
 
 - Break down by `language` or `country`
 - Top 10 series by total volume; remaining series aggregated into an "Other" bucket
+- Values are normalized — the topic's share of media output, not absolute article counts. Small media markets with concentrated coverage rank above large markets with diverse output, so a high value means the topic dominated that source's coverage rather than that it published the most articles
 - Use to trace how a story propagated geographically
 
 ---
@@ -112,7 +113,7 @@ Retrieve actual TV news clips driving a coverage signal.
 
 Vocabulary framing analysis for TV coverage of a topic.
 
-- Returns the 200 most frequent non-stopword terms from matching clips
+- Returns the most frequent non-stopword terms from matching clips
 - Relative frequency scores (query term = 100)
 - Use to identify narrative framing, related concepts, or follow-up search terms
 

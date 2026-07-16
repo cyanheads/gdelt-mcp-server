@@ -10,6 +10,16 @@ import { getGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
 import { GDELT_DATETIME_PATTERN, isUnpairedDateRange } from '../date-range.js';
 import { inferDateResolution } from '../date-resolution.js';
 
+/**
+ * Article links rendered per timestep in volume_with_articles mode. Every data point's
+ * date and value is rendered; only the per-point article list stays capped. GDELT returns
+ * up to 10 articles per timestep across as many as ~288 timesteps, so rendering them all
+ * would put ~450 KB of links in content[] and swamp the timeline itself. The complete set
+ * stays in structuredContent, and each point renders its true article count, so the gap
+ * between the count and the links shown is visible rather than silent.
+ */
+const ARTICLES_PER_POINT = 3;
+
 export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
   title: 'Get GDELT Coverage Timeline',
   description:
@@ -247,18 +257,15 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
       if (peakPoint.date) {
         lines.push(`**Peak:** ${peakPoint.value.toFixed(3)} at ${peakPoint.date}`);
       }
-      // Show first 10 data points to orient the agent
-      const preview = s.data.slice(0, 10);
-      for (const d of preview) {
+      for (const d of s.data) {
         const articlesNote = d.articles?.length ? ` (${d.articles.length} articles)` : '';
         lines.push(`- ${d.date}: ${d.value.toFixed(3)}${articlesNote}`);
         if (d.articles?.length) {
-          for (const a of d.articles.slice(0, 3)) {
+          for (const a of d.articles.slice(0, ARTICLES_PER_POINT)) {
             lines.push(`  - [${a.title}](${a.url})`);
           }
         }
       }
-      if (s.data.length > 10) lines.push(`- … ${s.data.length - 10} more points`);
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },
