@@ -8,7 +8,19 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatDateShort, resolveTimespan } from '@/services/gdelt/gdelt-fetch.js';
 import { getGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
-import { GDELT_DATETIME_PATTERN, isUnpairedDateRange } from '../date-range.js';
+import {
+  GDELT_DATETIME_PATTERN,
+  isUnpairedDateRange,
+  planWindowContinuation,
+  resolveEffectiveWindow,
+} from '../date-range.js';
+
+/**
+ * Hard ceiling GDELT's TV API serves in one clip request, and the `maxRecords` schema
+ * maximum. Past it there is no offset or cursor — the cap-hit disclosure switches from
+ * "raise maxRecords" to partitioning the date window.
+ */
+const MAX_RECORDS_CEILING = 3000;
 
 export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
   title: 'Get GDELT TV Clips',
@@ -17,6 +29,8 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
     'Television News Archive. Each clip includes show name, station, air timestamp, a 15-second ' +
     'transcript excerpt, and a direct link to view the full one-minute clip. ' +
     'Use after gdelt_search_tv to read the actual transcript content driving a coverage spike. ' +
+    '3,000 is a hard per-call ceiling and GDELT offers no cursor: when a query fills it, split the run ' +
+    'into narrower startDatetime/endDatetime windows — the response hands back the exact windows to use. ' +
     'Archive coverage spans 2009–October 2024.',
   annotations: { readOnlyHint: true, openWorldHint: true },
 
@@ -96,9 +110,13 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
       .number()
       .int()
       .min(1)
-      .max(3000)
+      .max(MAX_RECORDS_CEILING)
       .default(50)
-      .describe('Maximum number of clips to return (1–3000).'),
+      .describe(
+        "Maximum number of clips to return (1–3000). 3000 is GDELT's hard per-call ceiling, not a page " +
+          'size — there is no cursor past it, so a query that fills 3000 must be split into narrower ' +
+          'startDatetime/endDatetime windows instead.',
+      ),
     sort: z
       .enum(['relevance', 'dateDesc', 'dateAsc'])
       .default('relevance')
@@ -127,15 +145,50 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
       .describe('Matching TV clips sorted per the sort parameter.'),
   }),
 
-  // Agent-facing context — query echo, clip count, and notice on empty results.
-  // Reaches structuredContent and content[] automatically; never in the domain return.
+  // Agent-facing context — query echo, clip count, and the cap-hit disclosure with its
+  // continuation windows. Reaches structuredContent and content[] automatically; never
+  // in the domain return.
   enrichment: {
     effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
     totalCount: z.number().describe('Number of clips returned.'),
     notice: z
       .string()
       .optional()
-      .describe('Recovery hint when no clips matched. Absent on successful responses.'),
+      .describe(
+        'Disclosure that the maxRecords cap was reached and more clips may exist, naming the route to ' +
+          'them — a higher maxRecords below the 3000 ceiling, or a narrower date window at it. ' +
+          'Absent when the full result set fit under the cap.',
+      ),
+    continuationWindows: z
+      .array(
+        z
+          .object({
+            startDatetime: z
+              .string()
+              .describe('Start of this window in GDELT format YYYYMMDDHHMMSS.'),
+            endDatetime: z.string().describe('End of this window in GDELT format YYYYMMDDHHMMSS.'),
+          })
+          .describe('One window to re-query with the same query string.'),
+      )
+      .optional()
+      .describe(
+        'The queried window halved, to re-run this query against one pair at a time when maxRecords is at ' +
+          'its 3000 ceiling. The halves overlap by one second so no clip falls through the seam; a clip aired ' +
+          'on that second can come back in both, so de-duplicate by archiveUrl. Absent unless the ceiling was ' +
+          'reached with a window that is both known and wide enough to divide.',
+      ),
+  },
+
+  enrichmentTrailer: {
+    continuationWindows: {
+      render: (windows = []) =>
+        [
+          '**Continuation windows:**',
+          ...windows.map(
+            (w) => `- startDatetime: ${w.startDatetime}, endDatetime: ${w.endDatetime}`,
+          ),
+        ].join('\n'),
+    },
   },
 
   async handler(input, ctx) {
@@ -183,10 +236,19 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
     ctx.enrich.echo(input.query);
     ctx.enrich.total(clips.length);
     if (clips.length >= input.maxRecords) {
-      ctx.enrich.notice(
-        `Returned ${clips.length} clips (maxRecords cap reached — there may be more). ` +
-          `Increase maxRecords up to 3000 to retrieve more.`,
-      );
+      if (input.maxRecords < MAX_RECORDS_CEILING) {
+        ctx.enrich.notice(
+          `Returned ${clips.length} clips (maxRecords cap reached — there may be more). ` +
+            `Increase maxRecords up to ${MAX_RECORDS_CEILING} to retrieve more.`,
+        );
+      } else {
+        const continuation = planWindowContinuation(resolveEffectiveWindow(input));
+        if (continuation.windows) ctx.enrich({ continuationWindows: continuation.windows });
+        ctx.enrich.notice(
+          `Returned ${clips.length} clips — maxRecords is already at its ${MAX_RECORDS_CEILING} ceiling, ` +
+            `so more clips almost certainly matched. ${continuation.guidance}`,
+        );
+      }
     }
 
     ctx.log.info('gdelt_get_tv_clips completed', { count: clips.length });

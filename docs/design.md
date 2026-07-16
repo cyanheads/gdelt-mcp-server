@@ -6,12 +6,12 @@
 
 | Name | Description | Key Inputs | Annotations |
 |:-----|:------------|:-----------|:------------|
-| `gdelt_search_articles` | Search the last 3 months of global news coverage (65 languages) with full-text and filter operators. Query supports phrases, boolean OR, `sourcecountry:`, `sourcelang:`, `domain:`, `theme:` (GKG taxonomy), `tone<`/`tone>`, `near:`, and `repeat:` operators. Returns up to 250 articles with URL, title, source country, language, publication date, and social image URL. | `query`, `timespan`, `startDatetime`, `endDatetime`, `maxRecords`, `sort` | `readOnlyHint: true`, `openWorldHint: true` |
-| `gdelt_get_coverage_timeline` | Retrieve a time series showing when coverage of a topic spiked — either as normalized volume (% of all global coverage) or as average tone. Use `mode: volume_with_articles` for the signal-detection workflow: each timestep includes the top articles that drove that spike, so a single call reveals both the spike and its cause. Tone timeline shows sentiment shifts over time; combine with `gdelt_get_tone_distribution` for the full tonal picture. | `query`, `mode` (volume \| volume_with_articles \| tone), `timespan`, `startDatetime`, `endDatetime`, `smoothing` | `readOnlyHint: true`, `openWorldHint: true` |
+| `gdelt_search_articles` | Search the last 3 months of global news coverage (65 languages) with full-text and filter operators. Query supports phrases, boolean OR, `sourcecountry:`, `sourcelang:`, `domain:`, `theme:` (GKG taxonomy), `tone<`/`tone>`, `near:`, and `repeat:` operators. Returns up to 250 articles with URL, title, source country, language, publication date, and social image URL. 250 is a hard ceiling with no cursor past it — at the cap the response returns `continuationWindows` to re-query. | `query`, `timespan`, `startDatetime`, `endDatetime`, `maxRecords`, `sort` | `readOnlyHint: true`, `openWorldHint: true` |
+| `gdelt_get_coverage_timeline` | Retrieve a time series showing when coverage of a topic spiked — either as normalized volume (% of all global coverage) or as average tone. Use `mode: volume_with_articles` for the signal-detection workflow: each timestep includes the top articles that drove that spike, so a single call reveals both the spike and its cause. The text surface renders the first 3 links per timestep beside its true count; `points` renders named timesteps in full. Tone timeline shows sentiment shifts over time; combine with `gdelt_get_tone_distribution` for the full tonal picture. | `query`, `mode` (volume \| volume_with_articles \| tone), `timespan`, `startDatetime`, `endDatetime`, `smoothing`, `points` | `readOnlyHint: true`, `openWorldHint: true` |
 | `gdelt_get_tone_distribution` | Get the tonal distribution of articles matching a query as a histogram (bins from ~-30 to +30). Unlike a single average tone score, the histogram reveals whether coverage is uniformly negative, bimodal (some extremely positive, some extremely negative), or clustered near neutral. Each bin includes representative article URLs. Distinct from `gdelt_get_coverage_timeline` (mode: tone) — this is a snapshot distribution across all matching articles, not a time series. | `query`, `timespan`, `startDatetime`, `endDatetime` | `readOnlyHint: true`, `openWorldHint: true` |
-| `gdelt_get_coverage_breakdown` | Break down coverage volume over time by source language or source country, returning a multi-series time series (one series per language or country). Shows which countries or languages drove early vs. late coverage — useful for tracing how a story propagated geographically. Returns the top 10 series by total volume to keep output size manageable; remaining series are aggregated into an "Other" bucket. Values are normalized — the topic's share of media output, not absolute article counts, so small media markets with concentrated coverage rank above large markets with diverse output. | `query`, `breakdownBy` (language \| country), `timespan`, `startDatetime`, `endDatetime` | `readOnlyHint: true`, `openWorldHint: true` |
+| `gdelt_get_coverage_breakdown` | Break down coverage volume over time by source language or source country, returning a multi-series time series (one series per language or country). Shows which countries or languages drove early vs. late coverage — useful for tracing how a story propagated geographically. Returns the top 10 series by total volume to keep output size manageable; remaining series are aggregated into an "Other" bucket and named in `otherSeriesLabels`, so any of them can be retrieved complete via the `series` input. Values are normalized — the topic's share of media output, not absolute article counts, so small media markets with concentrated coverage rank above large markets with diverse output. | `query`, `breakdownBy` (language \| country), `timespan`, `startDatetime`, `endDatetime`, `series` | `readOnlyHint: true`, `openWorldHint: true` |
 | `gdelt_search_tv` | Search US television news closed captions (2009–Oct 2024, 150+ stations) for spoken mentions of a query. Returns a normalized per-station time series showing relative airtime devoted to the topic. Use `stations` to compare specific networks (e.g. CNN vs. FOXNEWS); omit to get combined national coverage. TV query also supports `market:`, `show:`, and `context:` operators. Note: most station monitoring ended Oct 2024 — use `gdelt_list_tv_stations` to verify active date ranges before querying recent events. | `query`, `stations` (array of station IDs), `timespan`, `startDatetime`, `endDatetime`, `smoothing`, `normalize` | `readOnlyHint: true`, `openWorldHint: true` |
-| `gdelt_get_tv_clips` | Retrieve the top matching TV news clips (up to 3,000) for a query from the Internet Archive's Television News Archive. Each clip includes show name, station, air timestamp, a 15-second transcript excerpt, and a direct link to view the full one-minute clip. Use after `gdelt_search_tv` to read the actual content driving a coverage spike. | `query`, `stations`, `timespan`, `maxRecords`, `sort` (relevance \| dateDesc \| dateAsc) | `readOnlyHint: true`, `openWorldHint: true` |
+| `gdelt_get_tv_clips` | Retrieve the top matching TV news clips (up to 3,000) for a query from the Internet Archive's Television News Archive. Each clip includes show name, station, air timestamp, a 15-second transcript excerpt, and a direct link to view the full one-minute clip. Use after `gdelt_search_tv` to read the actual content driving a coverage spike. 3,000 is a hard ceiling with no cursor past it — at the cap the response returns `continuationWindows` to re-query. | `query`, `stations`, `timespan`, `maxRecords`, `sort` (relevance \| dateDesc \| dateAsc) | `readOnlyHint: true`, `openWorldHint: true` |
 | `gdelt_get_tv_context` | Get the top co-occurring words and phrases from TV news clips matching a query — the vocabulary framing a topic on television. Returns the most frequent non-stopword terms from matching clips, with relative frequency scores. Use to understand narrative framing, identify related concepts, or generate follow-up search terms. | `query`, `stations`, `timespan` | `readOnlyHint: true`, `openWorldHint: true` |
 | `gdelt_get_tv_trending` | Retrieve trending topics, keywords, and phrases currently dominating US television news across national networks. Updated every 15 minutes. No query required — returns the top memes of the present news cycle. Note: coverage data ends Oct 2024; results reflect that archive endpoint, not a live feed. | *(none)* | `readOnlyHint: true`, `openWorldHint: true` |
 | `gdelt_list_tv_stations` | List all television stations available for TV search with their market, network, monitoring start date, and monitoring end date. Stations with an end date within the last 24 hours are considered active; stations with earlier end dates are discontinued. Use before querying to verify a station was active during the target time period. | *(none)* | `readOnlyHint: true`, `openWorldHint: false` |
@@ -114,11 +114,17 @@ Each step is independently testable.
     data: Array<{
       date: string;   // ISO 8601
       value: number;  // normalized % (volume) or avg score (tone), -100 to +100
-      articles?: Array<{ url: string; title: string }>;  // volume_with_articles only
+      articles?: Array<{ url: string; title: string }>;  // volume_with_articles only; always complete
     }>;
   }>;
+  expandedPoints?: string[];  // timestep dates rendered with their full article list; echoes the `points` input
 }
 ```
+
+`structuredContent` always carries every article for every timestep. `format()` renders the first
+3 per timestep next to that timestep's true count; the `points: string[]` input names timesteps to
+render in full. An unmatched date throws `unknown_point` listing the available dates. See
+[Per-point article rendering stays capped by default](#per-point-article-rendering-stays-capped-by-default).
 
 ### `gdelt_get_tone_distribution`
 ```ts
@@ -148,9 +154,18 @@ Each step is independently testable.
     data: Array<{ date: string; value: number }>;  // normalized share of media output, not article counts
   }>;
   otherAggregated?: Array<{ date: string; value: number }>;  // remaining series combined; same normalized scale
+  otherSeriesLabels?: string[];   // labels of every series folded into otherAggregated, ranked
+  selectedSeries?: Array<{        // complete series for each label passed to the `series` input
+    label: string;
+    data: Array<{ date: string; value: number }>;
+  }>;
   seriesCount: number;      // total series before truncation
 }
 ```
+
+The `series: string[]` input takes labels from `otherSeriesLabels` (or `topSeries[].label`) and
+returns each one complete under `selectedSeries`, alongside the unchanged overview. An unmatched
+label throws `unknown_series` listing the available labels rather than being skipped.
 
 ### `gdelt_search_tv`
 ```ts
@@ -295,6 +310,18 @@ The DOC API's `timelinevolinfo` mode returns top articles per timestep alongside
 ### TV trending requires no query
 
 `gdelt_get_tv_trending` is a zero-argument tool. The TV API's `trendingtopics` mode returns the current top memes without a query, and exposing it as a distinct tool (vs. a mode on `gdelt_search_tv`) makes it discoverable as a "what's happening right now on TV" entry point.
+
+### Record-cap overflow is a date partition, and the halves overlap by one second
+
+`gdelt_search_articles` (250) and `gdelt_get_tv_clips` (3,000) hit hard per-call ceilings that GDELT offers no cursor or offset past, so narrowing `startDatetime`/`endDatetime` is the only retrieval lever. At the ceiling both tools return `continuationWindows` — the queried window halved — instead of the old advice to raise a `maxRecords` already at its maximum.
+
+The halves **overlap by one second** rather than meeting at a shared midpoint. GDELT documents both boundaries as exclusive — STARTDATETIME considers "only articles published *after* this date/time stamp", ENDDATETIME "only articles published *before*" it, in both the DOC 2.0 and TV 2.0 API docs — so halves that merely touched would silently drop any record timestamped exactly on the seam. The overlap tiles the window exactly under that documented reading, and if the boundaries turn out to behave inclusively instead, it costs at most two seconds of duplicates, which a caller can see and de-duplicate. Gap-free either way; a visible duplicate beats a silent loss.
+
+Windows narrower than four seconds cannot yield two strictly-narrower halves, so the split stops there and the notice states plainly that the remainder is unreachable rather than implying the capped set was complete. A call that pinned no window at all gets guidance to pin one — the server never guesses GDELT's own default window.
+
+### Per-point article rendering stays capped by default
+
+`gdelt_get_coverage_timeline`'s `structuredContent` carries every article reference GDELT returns for every timestep; only `format()` caps the rendered links, at 3 per point. Measured with the real `format()` at the documented maximum (288 timesteps × 10 articles), rendering all of them produces **567 KB** of `content[]` against **180 KB** capped — roughly triple, and far past what any sibling tool emits. The cap therefore stays, but it is neither silent nor terminal: each point prints its true count alongside how many links it showed, and `points: [...]` renders named timesteps in full for **+1.4 KB** per point. Cheap selective expansion is what makes the default cap defensible.
 
 ---
 

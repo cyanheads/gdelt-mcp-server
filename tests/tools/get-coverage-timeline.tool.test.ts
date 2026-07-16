@@ -197,12 +197,12 @@ describe('gdeltGetCoverageTimeline', () => {
   });
 
   /**
-   * The per-point article list stays capped at ARTICLES_PER_POINT while every point renders
-   * (see the constant's rationale — a full render is ~450 KB of links). The cap is deliberate,
-   * not silent: each point renders its true upstream article count, so the gap between the
-   * count and the links shown is visible on the text surface. Tracked for a retrieval path.
+   * The per-point article list stays capped at ARTICLES_PER_POINT by default while every point
+   * renders (see the constant's rationale — rendering all of them measures 566 KB of links at
+   * the documented maximum). The cap is neither silent nor a dead end: each point renders its
+   * true upstream article count *and* how many links it showed, and `points` lifts the cap.
    */
-  it('discloses the true article count per point while capping rendered links at 3', () => {
+  it('discloses both the true article count and how many links it showed when capping', () => {
     const articles = Array.from({ length: 8 }, (_, i) => ({
       url: `https://news.example/${i}`,
       title: `Headline ${i}`,
@@ -217,10 +217,111 @@ describe('gdeltGetCoverageTimeline', () => {
       ],
     });
     const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('(8 articles)');
+    expect(text).toContain('(8 articles, 3 shown)');
     expect(text).toContain('Headline 0');
     expect(text).toContain('Headline 2');
     expect(text).not.toContain('Headline 3');
+    // The withheld five need a stated route, not just a count.
+    expect(text).toContain('points:');
+  });
+
+  it('does not claim links were withheld when every article fit under the cap', () => {
+    const blocks = gdeltGetCoverageTimeline.format!({
+      dateResolution: 'hour',
+      series: [
+        {
+          label: 'Volume Intensity',
+          data: [
+            {
+              date: '2024-01-01T00:00:00Z',
+              value: 2.5,
+              articles: [{ url: 'https://news.example/0', title: 'Headline 0' }],
+            },
+          ],
+        },
+      ],
+    });
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain('(1 articles)');
+    expect(text).not.toContain('shown');
+  });
+
+  /**
+   * Point expansion. structuredContent always carried every reference; format() capped them
+   * at 3 with no way to ask for the rest, so a content[]-only client could see that 8 articles
+   * drove a spike and reach exactly 3 of them. `points` is that missing route.
+   */
+  describe('point expansion', () => {
+    const ARTICLES = Array.from({ length: 8 }, (_, i) => ({
+      url: `https://news.example/${i}`,
+      title: `Headline ${i}`,
+    }));
+    const SPIKE_SERIES = [
+      {
+        label: 'Volume Intensity',
+        data: [
+          { date: '2024-01-01T00:00:00Z', value: 2.5, articles: ARTICLES },
+          { date: '2024-01-01T01:00:00Z', value: 0.5, articles: ARTICLES },
+        ],
+      },
+    ];
+
+    beforeEach(() => {
+      vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+        getTimeline: vi.fn().mockResolvedValue(SPIKE_SERIES),
+      } as unknown as docServiceModule.GdeltDocService);
+    });
+
+    it('renders every article of a named point while other points stay capped', () => {
+      const blocks = gdeltGetCoverageTimeline.format!({
+        dateResolution: 'hour',
+        series: SPIKE_SERIES,
+        expandedPoints: ['2024-01-01T00:00:00Z'],
+      });
+      const text = (blocks[0] as { text: string }).text;
+      // The expanded point reaches every article — including the five past the cap.
+      for (const a of ARTICLES) expect(text).toContain(`[${a.title}](${a.url})`);
+      // …and the point that was not named still shows 3 of its 8.
+      expect(text).toContain('(8 articles, 3 shown)');
+      expect(text).toContain('**Fully expanded timesteps:** 2024-01-01T00:00:00Z');
+    });
+
+    it('echoes points into expandedPoints so format() can act on the selection', async () => {
+      const ctx = createMockContext({ errors: gdeltGetCoverageTimeline.errors });
+      const input = gdeltGetCoverageTimeline.input.parse({
+        query: 'pandemic',
+        mode: 'volume_with_articles',
+        points: ['2024-01-01T01:00:00Z'],
+      });
+      const result = await gdeltGetCoverageTimeline.handler(input, ctx);
+      expect(result.expandedPoints).toEqual(['2024-01-01T01:00:00Z']);
+    });
+
+    it('omits expandedPoints when points is not supplied', async () => {
+      const ctx = createMockContext({ errors: gdeltGetCoverageTimeline.errors });
+      const input = gdeltGetCoverageTimeline.input.parse({
+        query: 'pandemic',
+        mode: 'volume_with_articles',
+      });
+      const result = await gdeltGetCoverageTimeline.handler(input, ctx);
+      expect(result.expandedPoints).toBeUndefined();
+    });
+
+    it('rejects a date matching no timestep rather than expanding nothing in silence', async () => {
+      const ctx = createMockContext({ errors: gdeltGetCoverageTimeline.errors });
+      const input = gdeltGetCoverageTimeline.input.parse({
+        query: 'pandemic',
+        mode: 'volume_with_articles',
+        points: ['2024-06-01T00:00:00Z'],
+      });
+      const err = await gdeltGetCoverageTimeline.handler(input, ctx).catch((e: unknown) => e);
+      expect(err).toMatchObject({
+        data: { reason: 'unknown_point', unknownPoints: ['2024-06-01T00:00:00Z'] },
+      });
+      const hint: string = (err as { data: { recovery: { hint: string } } }).data.recovery.hint;
+      expect(hint).toContain('2024-01-01T00:00:00Z');
+      expect(hint).toContain('2024-01-01T01:00:00Z');
+    });
   });
 
   it('formats volume_with_articles mode including article links', () => {

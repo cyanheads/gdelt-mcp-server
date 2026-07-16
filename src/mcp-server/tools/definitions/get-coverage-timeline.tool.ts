@@ -11,12 +11,15 @@ import { GDELT_DATETIME_PATTERN, isUnpairedDateRange } from '../date-range.js';
 import { inferDateResolution } from '../date-resolution.js';
 
 /**
- * Article links rendered per timestep in volume_with_articles mode. Every data point's
- * date and value is rendered; only the per-point article list stays capped. GDELT returns
- * up to 10 articles per timestep across as many as ~288 timesteps, so rendering them all
- * would put ~450 KB of links in content[] and swamp the timeline itself. The complete set
- * stays in structuredContent, and each point renders its true article count, so the gap
- * between the count and the links shown is visible rather than silent.
+ * Article links rendered per timestep in volume_with_articles mode, for timesteps the
+ * caller did not name in `points`. Every data point's date and value is rendered; only
+ * the per-point article list stays capped by default. GDELT returns up to 10 articles per
+ * timestep across as many as ~288 timesteps, so rendering them all unconditionally would
+ * put ~450 KB of links in content[] and swamp the timeline itself.
+ *
+ * The complete set always rides in structuredContent, each point renders its true article
+ * count next to how many links it showed, and `points` lifts the cap for named timesteps —
+ * so the gap is both visible and retrievable rather than a silent truncation.
  */
 const ARTICLES_PER_POINT = 3;
 
@@ -30,6 +33,8 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
     'avoiding a follow-up gdelt_search_articles call. ' +
     'Use mode "tone" for average sentiment score per timestep (negative = hostile/fearful, positive = celebratory). ' +
     'Date resolution is automatically chosen based on timespan: hours for short windows, days for longer ones. ' +
+    'In volume_with_articles mode the text surface shows the first 3 article links per timestep next to that ' +
+    "timestep's true article count; name a timestep's date in points to render its full list. " +
     'Note: DOC API covers only the last 3 months.',
   annotations: { readOnlyHint: true, openWorldHint: true },
 
@@ -39,6 +44,13 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
       code: JsonRpcErrorCode.NotFound,
       when: 'No timeline data returned for the query and time range.',
       recovery: 'Broaden the query, extend the timespan, or verify query operators are correct.',
+    },
+    {
+      reason: 'unknown_point',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'A date passed in the points input matches no timestep in this timeline.',
+      recovery:
+        'Read the timestep dates listed in the error and retry points with exact matches from that list.',
     },
     {
       reason: 'invalid_date_range',
@@ -112,6 +124,16 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
         'Smoothing window in timesteps (0 = none, 1–5 = moving average width). ' +
           'Reduces noise for spotty topics.',
       ),
+    points: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Timestep dates whose complete article list should be rendered in the text surface, e.g. ' +
+          '["2024-01-05T12:00:00Z"]. Take them verbatim from series[].data[].date in a prior response, or ' +
+          'from the list an unknown_point error prints. Only affects volume_with_articles rendering — every ' +
+          'timestep already carries its full article list in structuredContent regardless. Timesteps not named ' +
+          'here show their first 3 links; a date matching no timestep is rejected rather than silently ignored.',
+      ),
   }),
 
   output: z.object({
@@ -156,6 +178,14 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
       )
       .describe(
         'One or more time series (typically one for volume/tone, one per label for breakdowns).',
+      ),
+    expandedPoints: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Timestep dates whose full article list is rendered in the text surface instead of the first 3, ' +
+          'echoing the points input. Omitted when points was not supplied. Purely a rendering concern — ' +
+          'structuredContent carries every article for every timestep either way.',
       ),
   }),
 
@@ -226,6 +256,24 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
     const dateResolution = inferDateResolution(allDates);
     const totalPoints = series.reduce((sum, s) => sum + s.data.length, 0);
 
+    // A points value that matches no timestep would expand nothing and say nothing —
+    // the same silent withholding the selector exists to remove. Reject it instead.
+    if (input.points?.length) {
+      const available = new Set(allDates);
+      const unknown = input.points.filter((date) => !available.has(date));
+      if (unknown.length > 0) {
+        const named = unknown.map((date) => `"${date}"`).join(', ');
+        throw ctx.fail('unknown_point', `No timestep at ${named}`, {
+          unknownPoints: unknown,
+          recovery: {
+            hint:
+              `This timeline has no timestep at ${named}. Dates are exact, at ${dateResolution} resolution. ` +
+              `Available: ${[...available].join(', ')}.`,
+          },
+        });
+      }
+    }
+
     ctx.enrich.echo(input.query);
     ctx.enrich.total(totalPoints);
     ctx.enrich({
@@ -239,14 +287,38 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
       pointCount: series[0]?.data.length ?? 0,
     });
 
-    return { dateResolution, series };
+    return {
+      dateResolution,
+      series,
+      ...(input.points?.length ? { expandedPoints: input.points } : {}),
+    };
   },
 
+  /**
+   * Renders each field on its own presence, never as an `if`/`else if` chain — the
+   * format-parity linter populates every optional field at once in its synthetic sample,
+   * so a mutually-exclusive branch would leave the untaken one unverified.
+   */
   format: (result) => {
+    const expanded = new Set(result.expandedPoints ?? []);
     const lines: string[] = [
       `## GDELT Coverage Timeline`,
       `**Date Resolution:** ${result.dateResolution}`,
     ];
+
+    const capped = result.series.some((s) =>
+      s.data.some((d) => (d.articles?.length ?? 0) > ARTICLES_PER_POINT && !expanded.has(d.date)),
+    );
+    if (capped) {
+      lines.push(
+        `**Article links:** first ${ARTICLES_PER_POINT} per timestep, with each timestep's true total ` +
+          `beside it. Re-call with points: ["<date>"] to render a timestep's full list.`,
+      );
+    }
+    if (result.expandedPoints?.length) {
+      lines.push(`**Fully expanded timesteps:** ${result.expandedPoints.join(', ')}`);
+    }
+
     for (const s of result.series) {
       lines.push(`\n### ${s.label}`);
       const peakPoint = s.data.reduce(
@@ -258,13 +330,13 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
         lines.push(`**Peak:** ${peakPoint.value.toFixed(3)} at ${peakPoint.date}`);
       }
       for (const d of s.data) {
-        const articlesNote = d.articles?.length ? ` (${d.articles.length} articles)` : '';
+        const shown = expanded.has(d.date) ? d.articles : d.articles?.slice(0, ARTICLES_PER_POINT);
+        const withheld = (d.articles?.length ?? 0) - (shown?.length ?? 0);
+        const articlesNote = d.articles?.length
+          ? ` (${d.articles.length} articles${withheld > 0 ? `, ${shown?.length} shown` : ''})`
+          : '';
         lines.push(`- ${d.date}: ${d.value.toFixed(3)}${articlesNote}`);
-        if (d.articles?.length) {
-          for (const a of d.articles.slice(0, ARTICLES_PER_POINT)) {
-            lines.push(`  - [${a.title}](${a.url})`);
-          }
-        }
+        for (const a of shown ?? []) lines.push(`  - [${a.title}](${a.url})`);
       }
     }
     return [{ type: 'text', text: lines.join('\n') }];

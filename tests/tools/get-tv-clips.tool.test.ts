@@ -132,4 +132,79 @@ describe('gdeltGetTvClips', () => {
     const blocks = gdeltGetTvClips.format!(output);
     expect(blocks).toHaveLength(1);
   });
+
+  /**
+   * Cap-hit overflow at the schema ceiling. The notice used to say "Increase maxRecords up to
+   * 3000" unconditionally — including at maxRecords: 3000, where it instructed the caller to
+   * raise the value already in use. GDELT has no cursor, so the only real route past 3000 is a
+   * narrower date window; these cases pin that the ceiling branch says so and hands back the
+   * exact windows to use.
+   */
+  describe('overflow at the 3000 ceiling', () => {
+    const CEILING = 3000;
+
+    async function runAtCeiling(extra: Record<string, unknown>) {
+      const clips = Array.from({ length: CEILING }, (_, i) => ({
+        ...CLIP,
+        archiveUrl: `https://archive.org/details/CNN_${i}`,
+      }));
+      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+        getTvClips: vi.fn().mockResolvedValue(clips),
+      } as unknown as tvServiceModule.GdeltTvService);
+
+      const ctx = createMockContext({ errors: gdeltGetTvClips.errors });
+      const input = gdeltGetTvClips.input.parse({
+        query: 'vaccine',
+        stations: ['CNN'],
+        maxRecords: CEILING,
+        ...extra,
+      });
+      await gdeltGetTvClips.handler(input, ctx);
+      return getEnrichment(ctx);
+    }
+
+    it('never tells the caller to raise maxRecords once it is already at 3000', async () => {
+      const enrichment = await runAtCeiling({
+        startDatetime: '20200101000000',
+        endDatetime: '20200201000000',
+      });
+      expect(enrichment.notice).not.toMatch(/[Ii]ncrease maxRecords/);
+      expect(enrichment.notice).toMatch(/ceiling/);
+    });
+
+    it('hands back the window halved, overlapping by a second so nothing falls through', async () => {
+      const enrichment = await runAtCeiling({
+        startDatetime: '20200101000000',
+        endDatetime: '20200103000000',
+      });
+      expect(enrichment.continuationWindows).toEqual([
+        { startDatetime: '20200101000000', endDatetime: '20200102000000' },
+        { startDatetime: '20200101235959', endDatetime: '20200103000000' },
+      ]);
+      expect(enrichment.notice).toMatch(/de-duplicate/);
+    });
+
+    it('says how to pin a window when the call never set one, and emits no windows', async () => {
+      const enrichment = await runAtCeiling({});
+      expect(enrichment.continuationWindows).toBeUndefined();
+      expect(enrichment.notice).toMatch(/startDatetime\/endDatetime/);
+    });
+
+    it('still recommends raising maxRecords below the ceiling', async () => {
+      const clips = Array.from({ length: 50 }, (_, i) => ({
+        ...CLIP,
+        archiveUrl: `https://archive.org/details/CNN_${i}`,
+      }));
+      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+        getTvClips: vi.fn().mockResolvedValue(clips),
+      } as unknown as tvServiceModule.GdeltTvService);
+
+      const ctx = createMockContext({ errors: gdeltGetTvClips.errors });
+      const input = gdeltGetTvClips.input.parse({ query: 'vaccine', maxRecords: 50 });
+      await gdeltGetTvClips.handler(input, ctx);
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.notice).toMatch(/Increase maxRecords up to 3000/);
+      expect(enrichment.continuationWindows).toBeUndefined();
+    });
+  });
 });

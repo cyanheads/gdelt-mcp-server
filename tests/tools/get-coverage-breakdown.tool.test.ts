@@ -25,11 +25,27 @@ const SERIES = [
   },
 ];
 
+/**
+ * 12 series ranked by descending value, so Country10 and Country11 fall outside the
+ * top 10 — the two whose identities the "Other" bucket used to dissolve.
+ */
+const MANY_SERIES = Array.from({ length: 12 }, (_, i) => ({
+  label: `Country${i}`,
+  data: [
+    { date: '2024-01-01', value: 12 - i },
+    { date: '2024-01-02', value: 6 - i / 2 },
+  ],
+}));
+
+function mockBreakdown(series: unknown) {
+  vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+    getBreakdown: vi.fn().mockResolvedValue(series),
+  } as unknown as docServiceModule.GdeltDocService);
+}
+
 describe('gdeltGetCoverageBreakdown', () => {
   beforeEach(() => {
-    vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
-      getBreakdown: vi.fn().mockResolvedValue(SERIES),
-    } as unknown as docServiceModule.GdeltDocService);
+    mockBreakdown(SERIES);
   });
 
   it('returns breakdown by country', async () => {
@@ -214,5 +230,125 @@ describe('gdeltGetCoverageBreakdown', () => {
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('normalized');
     expect(text).toContain('not an article count');
+  });
+
+  /**
+   * Series selection. The top-10 ranking used to discard the omitted series' identities
+   * outright — only the summed otherAggregated survived — so a caller could see that N
+   * series existed but never learn their names or reach their data. These cases pin the
+   * disclose-then-select-by-label contract that replaced that dead end.
+   */
+  describe('series selection', () => {
+    beforeEach(() => {
+      mockBreakdown(MANY_SERIES);
+    });
+
+    it('names every series folded into Other, ranked, so each one is selectable', async () => {
+      const ctx = createMockContext({ errors: gdeltGetCoverageBreakdown.errors });
+      const input = gdeltGetCoverageBreakdown.input.parse({
+        query: 'global',
+        breakdownBy: 'country',
+      });
+      const result = await gdeltGetCoverageBreakdown.handler(input, ctx);
+      expect(result.otherSeriesLabels).toEqual(['Country10', 'Country11']);
+    });
+
+    it('omits otherSeriesLabels when every series fits in the top 10', async () => {
+      mockBreakdown(SERIES);
+      const ctx = createMockContext({ errors: gdeltGetCoverageBreakdown.errors });
+      const input = gdeltGetCoverageBreakdown.input.parse({
+        query: 'test',
+        breakdownBy: 'country',
+      });
+      const result = await gdeltGetCoverageBreakdown.handler(input, ctx);
+      expect(result.otherSeriesLabels).toBeUndefined();
+    });
+
+    it('returns the complete, untruncated series for a label folded into Other', async () => {
+      const ctx = createMockContext({ errors: gdeltGetCoverageBreakdown.errors });
+      const input = gdeltGetCoverageBreakdown.input.parse({
+        query: 'global',
+        breakdownBy: 'country',
+        series: ['Country11'],
+      });
+      const result = await gdeltGetCoverageBreakdown.handler(input, ctx);
+      expect(result.selectedSeries).toEqual([MANY_SERIES[11]]);
+    });
+
+    it('returns selected series in the order requested, top-10 labels included', async () => {
+      const ctx = createMockContext({ errors: gdeltGetCoverageBreakdown.errors });
+      const input = gdeltGetCoverageBreakdown.input.parse({
+        query: 'global',
+        breakdownBy: 'country',
+        series: ['Country11', 'Country0'],
+      });
+      const result = await gdeltGetCoverageBreakdown.handler(input, ctx);
+      expect(result.selectedSeries?.map((s) => s.label)).toEqual(['Country11', 'Country0']);
+    });
+
+    it('keeps the ranked overview alongside a selection', async () => {
+      const ctx = createMockContext({ errors: gdeltGetCoverageBreakdown.errors });
+      const input = gdeltGetCoverageBreakdown.input.parse({
+        query: 'global',
+        breakdownBy: 'country',
+        series: ['Country10'],
+      });
+      const result = await gdeltGetCoverageBreakdown.handler(input, ctx);
+      expect(result.topSeries).toHaveLength(10);
+      expect(result.otherAggregated).toBeDefined();
+    });
+
+    it('omits selectedSeries when series is not supplied', async () => {
+      const ctx = createMockContext({ errors: gdeltGetCoverageBreakdown.errors });
+      const input = gdeltGetCoverageBreakdown.input.parse({
+        query: 'global',
+        breakdownBy: 'country',
+      });
+      const result = await gdeltGetCoverageBreakdown.handler(input, ctx);
+      expect(result.selectedSeries).toBeUndefined();
+    });
+
+    it('rejects an unknown label, naming every miss and listing what is available', async () => {
+      const ctx = createMockContext({ errors: gdeltGetCoverageBreakdown.errors });
+      const input = gdeltGetCoverageBreakdown.input.parse({
+        query: 'global',
+        breakdownBy: 'country',
+        series: ['country0', 'Atlantis'],
+      });
+      const err = await gdeltGetCoverageBreakdown.handler(input, ctx).catch((e: unknown) => e);
+      expect(err).toMatchObject({
+        data: { reason: 'unknown_series', unknownLabels: ['country0', 'Atlantis'] },
+      });
+      const hint: string = (err as { data: { recovery: { hint: string } } }).data.recovery.hint;
+      expect(hint).toContain('"country0"');
+      expect(hint).toContain('"Atlantis"');
+      // The recovery has to carry the labels — a rejection has no response body to read them from.
+      expect(hint).toContain('Country0');
+      expect(hint).toContain('Country11');
+    });
+
+    it('renders every point of every selected series, and the folded-in labels', () => {
+      const selectedSeries = [
+        {
+          label: 'Country11',
+          data: Array.from({ length: 20 }, (_, i) => ({
+            date: `2024-05-${String(i + 1).padStart(2, '0')}`,
+            value: (i + 1) / 7,
+          })),
+        },
+      ];
+      const blocks = gdeltGetCoverageBreakdown.format!({
+        dateResolution: 'day',
+        topSeries: SERIES,
+        otherSeriesLabels: ['Country10', 'Country11'],
+        selectedSeries,
+      });
+      const text = (blocks[0] as { text: string }).text;
+      for (const d of selectedSeries[0]!.data) {
+        expect(text).toContain(`- ${d.date}: ${d.value.toFixed(3)}`);
+      }
+      expect(text).toContain('Country10');
+      expect(text).toContain('series:');
+    });
   });
 });

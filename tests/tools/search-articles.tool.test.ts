@@ -126,4 +126,101 @@ describe('gdeltSearchArticles', () => {
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toBeUndefined();
   });
+
+  /**
+   * Cap-hit overflow at the schema ceiling. The notice used to say "Increase maxRecords up to
+   * 250" unconditionally — including at maxRecords: 250, where it instructed the caller to
+   * raise the value already in use. GDELT has no cursor, so the only real route past 250 is a
+   * narrower date window; these cases pin that the ceiling branch says so and hands back the
+   * exact windows to use.
+   */
+  describe('overflow at the 250 ceiling', () => {
+    const CEILING = 250;
+
+    function mockFullPage() {
+      const articles = Array.from({ length: CEILING }, (_, i) => ({
+        ...ARTICLE,
+        url: `https://example.com/a${i}`,
+      }));
+      vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+        searchArticles: vi.fn().mockResolvedValue({ articles, totalReturned: CEILING }),
+      } as unknown as docServiceModule.GdeltDocService);
+    }
+
+    async function runAtCeiling(extra: Record<string, unknown>) {
+      mockFullPage();
+      const ctx = createMockContext({ errors: gdeltSearchArticles.errors });
+      const input = gdeltSearchArticles.input.parse({
+        query: 'test',
+        maxRecords: CEILING,
+        ...extra,
+      });
+      await gdeltSearchArticles.handler(input, ctx);
+      return getEnrichment(ctx);
+    }
+
+    it('never tells the caller to raise maxRecords once it is already at 250', async () => {
+      const enrichment = await runAtCeiling({
+        startDatetime: '20240101000000',
+        endDatetime: '20240131000000',
+      });
+      expect(enrichment.notice).not.toMatch(/[Ii]ncrease maxRecords/);
+      expect(enrichment.notice).toMatch(/ceiling/);
+    });
+
+    it('hands back the window halved, overlapping by a second so nothing falls through', async () => {
+      const enrichment = await runAtCeiling({
+        startDatetime: '20240101000000',
+        endDatetime: '20240103000000',
+      });
+      expect(enrichment.continuationWindows).toEqual([
+        { startDatetime: '20240101000000', endDatetime: '20240102000000' },
+        { startDatetime: '20240101235959', endDatetime: '20240103000000' },
+      ]);
+      expect(enrichment.notice).toMatch(/de-duplicate/);
+    });
+
+    it('derives the continuation window from a timespan when no explicit dates were pinned', async () => {
+      const enrichment = await runAtCeiling({ timespan: '7d' });
+      const windows = enrichment.continuationWindows as Array<{ startDatetime: string }>;
+      expect(windows).toHaveLength(2);
+      expect(windows[0]?.startDatetime).toMatch(/^\d{14}$/);
+    });
+
+    it('says how to pin a window when the call never set one, and emits no windows', async () => {
+      const enrichment = await runAtCeiling({});
+      expect(enrichment.continuationWindows).toBeUndefined();
+      expect(enrichment.notice).toMatch(/startDatetime\/endDatetime/);
+    });
+
+    /**
+     * The honest terminal case: a window already at GDELT's resolution still full at 250 means
+     * the remainder is unreachable. Saying nothing would imply the 250 were complete.
+     */
+    it('discloses that the rest is unreachable when the window cannot be narrowed further', async () => {
+      const enrichment = await runAtCeiling({
+        startDatetime: '20240101000000',
+        endDatetime: '20240101000002',
+      });
+      expect(enrichment.continuationWindows).toBeUndefined();
+      expect(enrichment.notice).toMatch(/not retrievable/);
+    });
+
+    it('still recommends raising maxRecords below the ceiling', async () => {
+      const articles = Array.from({ length: 75 }, (_, i) => ({
+        ...ARTICLE,
+        url: `https://example.com/a${i}`,
+      }));
+      vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+        searchArticles: vi.fn().mockResolvedValue({ articles, totalReturned: 75 }),
+      } as unknown as docServiceModule.GdeltDocService);
+
+      const ctx = createMockContext({ errors: gdeltSearchArticles.errors });
+      const input = gdeltSearchArticles.input.parse({ query: 'test', maxRecords: 75 });
+      await gdeltSearchArticles.handler(input, ctx);
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.notice).toMatch(/Increase maxRecords up to 250/);
+      expect(enrichment.continuationWindows).toBeUndefined();
+    });
+  });
 });

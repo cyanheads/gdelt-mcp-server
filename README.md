@@ -33,12 +33,12 @@ Nine tools across two GDELT APIs — DOC API for global print/web news (last 3 m
 
 | Tool | Description |
 |:---|:---|
-| `gdelt_search_articles` | Search the last 3 months of global news coverage (65 languages) with full-text and filter operators. Returns up to 250 articles. |
-| `gdelt_get_coverage_timeline` | Retrieve a time series of coverage volume or average tone for a query. `volume_with_articles` mode includes top articles per spike timestep. |
+| `gdelt_search_articles` | Search the last 3 months of global news coverage (65 languages) with full-text and filter operators. Returns up to 250 articles, and hands back the date windows to re-query when that ceiling is hit. |
+| `gdelt_get_coverage_timeline` | Retrieve a time series of coverage volume or average tone for a query. `volume_with_articles` mode includes top articles per spike timestep, with `points` to render a timestep's full article list. |
 | `gdelt_get_tone_distribution` | Get a tone histogram (bins ~−30 to +30) showing whether coverage is uniformly negative, bimodal, or clustered near neutral. |
 | `gdelt_get_coverage_breakdown` | Break down coverage volume by source language or source country — a multi-series time series showing geographic propagation. Values are normalized shares of media output, not article counts. |
 | `gdelt_search_tv` | Search US television news closed captions (2009–Oct 2024) and return per-station airtime time series. |
-| `gdelt_get_tv_clips` | Retrieve up to 3,000 matching TV clips with transcript excerpts and Internet Archive viewing links. |
+| `gdelt_get_tv_clips` | Retrieve up to 3,000 matching TV clips with transcript excerpts and Internet Archive viewing links, and the date windows to re-query when that ceiling is hit. |
 | `gdelt_get_tv_context` | Get the most frequent co-occurring words and phrases from TV clips matching a query. |
 | `gdelt_get_tv_trending` | Retrieve trending topics currently dominating US television news (updated every 15 minutes; no query required). |
 | `gdelt_list_tv_stations` | List all TV stations with market, network, and monitoring date ranges to verify station availability before querying. |
@@ -52,6 +52,7 @@ Search the last 3 months of global news with GDELT's full query syntax.
 - Proximity and repetition: `near20:"flu virus"`, `repeat3:"outbreak"`
 - Configurable sort (relevance, date) and result count (up to 250)
 - Returns URL, title, publication date, domain, language, source country, and social image URL
+- 250 is a hard per-call ceiling, not a page size — GDELT exposes no cursor. Fill it and the response returns `continuationWindows`: the queried window halved, ready to re-query. The halves overlap by a second so nothing falls through the seam; de-duplicate by `url`
 - Query is echoed in response for chaining
 
 ---
@@ -63,6 +64,7 @@ Retrieve when coverage of a topic spiked, with three modes:
 - `volume` — normalized percentage of all global coverage per timestep
 - `volume_with_articles` — volume plus top articles driving each spike; use for signal detection without a follow-up search call
 - `tone` — average sentiment score per timestep (combine with `gdelt_get_tone_distribution` for the full picture)
+- Every article reference is always in `structuredContent`; the text surface renders the first 3 links per timestep beside that timestep's true count, and `points: ["<date>"]` renders named timesteps in full
 - Configurable smoothing and time range
 
 ---
@@ -82,7 +84,8 @@ Snapshot tone histogram across all articles matching a query.
 Multi-series time series showing which countries or languages drove coverage.
 
 - Break down by `language` or `country`
-- Top 10 series by total volume; remaining series aggregated into an "Other" bucket
+- Top 10 series by total volume; remaining series aggregated into an "Other" bucket and named in `otherSeriesLabels`
+- Nothing is dissolved into "Other" anonymously — pass any label to `series: ["<label>"]` and that series comes back complete under `selectedSeries`, alongside the usual overview
 - Values are normalized — the topic's share of media output, not absolute article counts. Small media markets with concentrated coverage rank above large markets with diverse output, so a high value means the topic dominated that source's coverage rather than that it published the most articles
 - Use to trace how a story propagated geographically
 
@@ -105,6 +108,7 @@ Retrieve actual TV news clips driving a coverage signal.
 
 - Up to 3,000 clips per call
 - Each clip: show name, station, air timestamp, 15-second transcript excerpt, direct Archive.org link, and optional thumbnail
+- 3,000 is a hard per-call ceiling, not a page size — GDELT exposes no cursor. Fill it and the response returns `continuationWindows`: the queried window halved, ready to re-query. The halves overlap by a second so nothing falls through the seam; de-duplicate by `archiveUrl`
 - Sort by relevance, date descending, or date ascending
 
 ---

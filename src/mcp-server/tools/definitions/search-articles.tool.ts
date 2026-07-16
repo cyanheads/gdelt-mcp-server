@@ -7,7 +7,19 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
-import { GDELT_DATETIME_PATTERN, isUnpairedDateRange } from '../date-range.js';
+import {
+  GDELT_DATETIME_PATTERN,
+  isUnpairedDateRange,
+  planWindowContinuation,
+  resolveEffectiveWindow,
+} from '../date-range.js';
+
+/**
+ * Hard ceiling GDELT's DOC API serves in one article request, and the `maxRecords`
+ * schema maximum. Past it there is no offset or cursor — the cap-hit disclosure
+ * switches from "raise maxRecords" to partitioning the date window.
+ */
+const MAX_RECORDS_CEILING = 250;
 
 export const gdeltSearchArticles = tool('gdelt_search_articles', {
   title: 'Search GDELT Articles',
@@ -17,6 +29,8 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
     'Query supports full GDELT syntax: phrases ("bird flu"), boolean OR ((flu OR pandemic)), source country (sourcecountry:china), ' +
     'source language (sourcelang:spanish), domain (domain:who.int), GKG theme (theme:DISEASE_OUTBREAK), ' +
     'tone filter (tone<-5 for negative), proximity (near20:"flu virus"), and repeat (repeat3:"outbreak"). ' +
+    '250 is a hard per-call ceiling and GDELT offers no cursor: when a query fills it, split the run into ' +
+    'narrower startDatetime/endDatetime windows — the response hands back the exact windows to use. ' +
     'Note: this API covers only the most recent 3 months — use gdelt_search_tv for historical TV transcripts back to 2009.',
   annotations: { readOnlyHint: true, openWorldHint: true },
 
@@ -88,9 +102,13 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
       .number()
       .int()
       .min(1)
-      .max(250)
+      .max(MAX_RECORDS_CEILING)
       .default(75)
-      .describe('Maximum number of articles to return (1–250).'),
+      .describe(
+        "Maximum number of articles to return (1–250). 250 is GDELT's hard per-call ceiling, not a " +
+          'page size — there is no cursor past it, so a query that fills 250 must be split into narrower ' +
+          'startDatetime/endDatetime windows instead.',
+      ),
     sort: z
       .enum(['date', 'relevance', 'social'])
       .default('relevance')
@@ -124,9 +142,9 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
       .describe('Matching articles sorted per the sort parameter.'),
   }),
 
-  // Agent-facing context — query echo, total count, optional timespan echo, and notice
-  // when no results. Reaches structuredContent and content[] automatically; never in the
-  // domain return.
+  // Agent-facing context — query echo, total count, optional timespan echo, and the
+  // cap-hit disclosure with its continuation windows. Reaches structuredContent and
+  // content[] automatically; never in the domain return.
   enrichment: {
     effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
     totalCount: z.number().describe('Number of articles returned in this response.'),
@@ -135,8 +153,40 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
       .string()
       .optional()
       .describe(
-        'Recovery hint when no articles matched — echoes filters and suggests how to broaden. Absent on successful responses.',
+        'Disclosure that the maxRecords cap was reached and more articles may exist, naming the route ' +
+          'to them — a higher maxRecords below the 250 ceiling, or a narrower date window at it. ' +
+          'Absent when the full result set fit under the cap.',
       ),
+    continuationWindows: z
+      .array(
+        z
+          .object({
+            startDatetime: z
+              .string()
+              .describe('Start of this window in GDELT format YYYYMMDDHHMMSS.'),
+            endDatetime: z.string().describe('End of this window in GDELT format YYYYMMDDHHMMSS.'),
+          })
+          .describe('One window to re-query with the same query string.'),
+      )
+      .optional()
+      .describe(
+        'The queried window halved, to re-run this query against one pair at a time when maxRecords is at ' +
+          'its 250 ceiling. The halves overlap by one second so no article falls through the seam; an article ' +
+          'published on that second can come back in both, so de-duplicate by url. Absent unless the ceiling ' +
+          'was reached with a window that is both known and wide enough to divide.',
+      ),
+  },
+
+  enrichmentTrailer: {
+    continuationWindows: {
+      render: (windows = []) =>
+        [
+          '**Continuation windows:**',
+          ...windows.map(
+            (w) => `- startDatetime: ${w.startDatetime}, endDatetime: ${w.endDatetime}`,
+          ),
+        ].join('\n'),
+    },
   },
 
   async handler(input, ctx) {
@@ -174,10 +224,19 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
     ctx.enrich.total(result.articles.length);
     if (input.timespan) ctx.enrich({ timespan: input.timespan });
     if (result.articles.length >= input.maxRecords) {
-      ctx.enrich.notice(
-        `Returned ${result.articles.length} articles (maxRecords cap reached — there may be more). ` +
-          `Increase maxRecords up to 250 to retrieve more.`,
-      );
+      if (input.maxRecords < MAX_RECORDS_CEILING) {
+        ctx.enrich.notice(
+          `Returned ${result.articles.length} articles (maxRecords cap reached — there may be more). ` +
+            `Increase maxRecords up to ${MAX_RECORDS_CEILING} to retrieve more.`,
+        );
+      } else {
+        const continuation = planWindowContinuation(resolveEffectiveWindow(input));
+        if (continuation.windows) ctx.enrich({ continuationWindows: continuation.windows });
+        ctx.enrich.notice(
+          `Returned ${result.articles.length} articles — maxRecords is already at its ${MAX_RECORDS_CEILING} ceiling, ` +
+            `so more articles almost certainly matched. ${continuation.guidance}`,
+        );
+      }
     }
 
     ctx.log.info('gdelt_search_articles completed', { count: result.articles.length });
