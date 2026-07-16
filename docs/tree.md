@@ -1,6 +1,6 @@
 # gdelt-mcp-server - Directory Structure
 
-Generated on: 2026-06-20 11:44:59
+Generated on: 2026-07-16 00:24:05
 
 ```text
 gdelt-mcp-server/
@@ -15,7 +15,8 @@ gdelt-mcp-server/
 │   │   ├── bug_report.yml
 │   │   ├── config.yml
 │   │   └── feature_request.yml
-│   └── FUNDING.yml
+│   ├── FUNDING.yml
+│   └── SECURITY.md
 ├── .vscode/
 │   ├── extensions.json
 │   └── settings.json
@@ -147,6 +148,7 @@ gdelt-mcp-server/
 │   │       │   ├── list-tv-stations.tool.ts
 │   │       │   ├── search-articles.tool.ts
 │   │       │   └── search-tv.tool.ts
+│   │       ├── date-range.ts
 │   │       └── date-resolution.ts
 │   ├── services/
 │   │   └── gdelt/
@@ -180,6 +182,7 @@ gdelt-mcp-server/
 │       └── security.test.ts
 ├── .dockerignore
 ├── .env.example
+├── .gitattributes
 ├── .gitignore
 ├── .mcpbignore
 ├── biome.json
@@ -190,6 +193,7 @@ gdelt-mcp-server/
 ├── CLAUDE.md
 ├── devcheck.config.json
 ├── Dockerfile
+├── LICENSE
 ├── manifest.json
 ├── package.json
 ├── README.md

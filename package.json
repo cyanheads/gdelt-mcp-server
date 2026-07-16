@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/gdelt-mcp-server",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Search and analyze global news coverage and US television transcripts via the GDELT Project's real-time APIs via MCP. STDIO or Streamable HTTP.",
   "mcpName": "io.github.cyanheads/gdelt-mcp-server",
   "type": "module",

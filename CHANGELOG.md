@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.3](changelog/0.2.x/0.2.3.md) — 2026-07-15
+
+Fixed: unpaired date-range boundaries silently ignored (#22) and confusing GDELT query-rejection errors (#18); mcp-ts-core ^0.10.9 → ^0.10.14 clears 8 transitive advisories; new install-time supply-chain guard
+
 ## [0.2.2](changelog/0.2.x/0.2.2.md) — 2026-06-20
 
 Maintenance: @cyanheads/mcp-ts-core ^0.10.6 → ^0.10.9, biome 2.5 + dev-dep refresh, re-synced framework skills/scripts, and the new dependency-specifier + plugin-manifest devcheck guards
