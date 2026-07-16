@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.5](changelog/0.2.x/0.2.5.md) — 2026-07-15
+
+Added: selectable series (#20) and named point expansion (#24); search_articles/get_tv_clips return continuationWindows instead of a dead-end cap notice (#21)
+
 ## [0.2.4](changelog/0.2.x/0.2.4.md) — 2026-07-15
 
 Fixed: content[] omitted array data five tools returned in full in structuredContent (#19); gdelt_get_coverage_breakdown now documents its normalized values (#10)
