@@ -92,6 +92,26 @@ describe('gdeltGetCoverageBreakdown', () => {
     expect(enrichment.totalCount).toBe(12);
   });
 
+  /**
+   * The echo is unconditional on the input being present, so before the pairing guard it
+   * confirmed a boundary that applyTimeRange had silently dropped. The guard now rejects
+   * first, making the echo accurate by construction.
+   */
+  it('never echoes an unpaired boundary — the pairing guard rejects before enrichment', async () => {
+    const ctx = createMockContext({ errors: gdeltGetCoverageBreakdown.errors });
+    const input = gdeltGetCoverageBreakdown.input.parse({
+      query: 'global',
+      breakdownBy: 'country',
+      startDatetime: '20240101000000',
+    });
+    await expect(gdeltGetCoverageBreakdown.handler(input, ctx)).rejects.toMatchObject({
+      data: { reason: 'invalid_date_range' },
+    });
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.startDatetime).toBeUndefined();
+    expect(enrichment.endDatetime).toBeUndefined();
+  });
+
   it('omits otherAggregated when all series fit in top 10', async () => {
     const ctx = createMockContext({ errors: gdeltGetCoverageBreakdown.errors });
     const input = gdeltGetCoverageBreakdown.input.parse({ query: 'test', breakdownBy: 'country' });

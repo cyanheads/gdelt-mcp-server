@@ -41,6 +41,25 @@ describe('gdeltGetToneDistribution', () => {
     expect(enrichment.totalCount).toBe(60);
   });
 
+  /**
+   * The echo is unconditional on the input being present, so before the pairing guard it
+   * confirmed a boundary that applyTimeRange had silently dropped. The guard now rejects
+   * first, making the echo accurate by construction.
+   */
+  it('never echoes an unpaired boundary — the pairing guard rejects before enrichment', async () => {
+    const ctx = createMockContext({ errors: gdeltGetToneDistribution.errors });
+    const input = gdeltGetToneDistribution.input.parse({
+      query: 'climate',
+      endDatetime: '20240131235959',
+    });
+    await expect(gdeltGetToneDistribution.handler(input, ctx)).rejects.toMatchObject({
+      data: { reason: 'invalid_date_range' },
+    });
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.startDatetime).toBeUndefined();
+    expect(enrichment.endDatetime).toBeUndefined();
+  });
+
   it('computes neutralPct from bins -2 to +2', async () => {
     const ctx = createMockContext({ errors: gdeltGetToneDistribution.errors });
     const input = gdeltGetToneDistribution.input.parse({ query: 'test' });

@@ -1,9 +1,13 @@
 /**
  * @fileoverview Tests that upstream errors (non-200s, malformed payloads, network failures)
- * are surfaced correctly and not swallowed for all tools.
+ * are surfaced correctly and not swallowed for all tools, and that the invalid_query reason
+ * parseGdeltJson raises reaches the wire unchanged through each tool's handler.
  * @module tests/tools/error-propagation.test
  */
 
+import type { Context } from '@cyanheads/mcp-ts-core';
+import type { ErrorContract } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { gdeltGetCoverageBreakdown } from '@/mcp-server/tools/definitions/get-coverage-breakdown.tool.js';
@@ -15,6 +19,7 @@ import { gdeltGetTvTrending } from '@/mcp-server/tools/definitions/get-tv-trendi
 import { gdeltSearchArticles } from '@/mcp-server/tools/definitions/search-articles.tool.js';
 import { gdeltSearchTv } from '@/mcp-server/tools/definitions/search-tv.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
+import { parseGdeltJson } from '@/services/gdelt/gdelt-fetch.js';
 import * as tvServiceModule from '@/services/gdelt/gdelt-tv-service.js';
 
 describe('error propagation — doc service tools', () => {
@@ -94,6 +99,116 @@ describe('error propagation — tv service tools', () => {
     const input = gdeltSearchTv.input.parse({ query: 'test' });
     await expect(gdeltSearchTv.handler(input, ctx)).rejects.toThrow();
   });
+});
+
+/**
+ * parseGdeltJson raises invalid_query from the service layer, below ctx.fail, so no lint
+ * rule proves each tool's declared reason is reachable — these cases stand in for that,
+ * pinning that every handler lets the error bubble untouched and `data.reason` stays stable
+ * per tool. The fixture is produced by the real parseGdeltJson rather than a hand-written
+ * double, so it cannot drift from what the service actually throws.
+ */
+function gdeltRejection(body: string, apiLabel: string): unknown {
+  try {
+    parseGdeltJson(body, apiLabel);
+  } catch (err) {
+    return err;
+  }
+  throw new Error(`Expected parseGdeltJson to reject: ${body}`);
+}
+
+const DOC_REJECTION = () => gdeltRejection('Your query was too short or too long.', 'GDELT DOC');
+const TV_REJECTION = () =>
+  gdeltRejection('Your query must contain at least one station.', 'GDELT TV');
+
+const mockDoc = (impl: Record<string, unknown>) =>
+  vi
+    .spyOn(docServiceModule, 'getGdeltDocService')
+    .mockReturnValue(impl as unknown as docServiceModule.GdeltDocService);
+
+const mockTv = (impl: Record<string, unknown>) =>
+  vi
+    .spyOn(tvServiceModule, 'getGdeltTvService')
+    .mockReturnValue(impl as unknown as tvServiceModule.GdeltTvService);
+
+const REJECTION_CASES: ReadonlyArray<{
+  name: string;
+  errors: readonly ErrorContract[];
+  arrange: () => void;
+  run: (ctx: Context) => Promise<unknown>;
+}> = [
+  {
+    name: 'gdelt_search_articles',
+    errors: gdeltSearchArticles.errors,
+    arrange: () => mockDoc({ searchArticles: vi.fn().mockRejectedValue(DOC_REJECTION()) }),
+    run: (ctx) => gdeltSearchArticles.handler(gdeltSearchArticles.input.parse({ query: 'x' }), ctx),
+  },
+  {
+    name: 'gdelt_get_coverage_timeline',
+    errors: gdeltGetCoverageTimeline.errors,
+    arrange: () => mockDoc({ getTimeline: vi.fn().mockRejectedValue(DOC_REJECTION()) }),
+    run: (ctx) =>
+      gdeltGetCoverageTimeline.handler(
+        gdeltGetCoverageTimeline.input.parse({ query: 'x', mode: 'volume' }),
+        ctx,
+      ),
+  },
+  {
+    name: 'gdelt_get_tone_distribution',
+    errors: gdeltGetToneDistribution.errors,
+    arrange: () => mockDoc({ getToneDistribution: vi.fn().mockRejectedValue(DOC_REJECTION()) }),
+    run: (ctx) =>
+      gdeltGetToneDistribution.handler(gdeltGetToneDistribution.input.parse({ query: 'x' }), ctx),
+  },
+  {
+    name: 'gdelt_get_coverage_breakdown',
+    errors: gdeltGetCoverageBreakdown.errors,
+    arrange: () => mockDoc({ getBreakdown: vi.fn().mockRejectedValue(DOC_REJECTION()) }),
+    run: (ctx) =>
+      gdeltGetCoverageBreakdown.handler(
+        gdeltGetCoverageBreakdown.input.parse({ query: 'x', breakdownBy: 'country' }),
+        ctx,
+      ),
+  },
+  {
+    name: 'gdelt_search_tv',
+    errors: gdeltSearchTv.errors,
+    arrange: () => mockTv({ searchTv: vi.fn().mockRejectedValue(TV_REJECTION()) }),
+    run: (ctx) => gdeltSearchTv.handler(gdeltSearchTv.input.parse({ query: 'climate' }), ctx),
+  },
+  {
+    name: 'gdelt_get_tv_clips',
+    errors: gdeltGetTvClips.errors,
+    arrange: () => mockTv({ getTvClips: vi.fn().mockRejectedValue(TV_REJECTION()) }),
+    run: (ctx) => gdeltGetTvClips.handler(gdeltGetTvClips.input.parse({ query: 'climate' }), ctx),
+  },
+  {
+    name: 'gdelt_get_tv_context',
+    errors: gdeltGetTvContext.errors,
+    arrange: () => mockTv({ getTvContext: vi.fn().mockRejectedValue(TV_REJECTION()) }),
+    run: (ctx) =>
+      gdeltGetTvContext.handler(gdeltGetTvContext.input.parse({ query: 'climate' }), ctx),
+  },
+];
+
+describe('invalid_query propagates from parseGdeltJson to the wire', () => {
+  for (const { name, errors, arrange, run } of REJECTION_CASES) {
+    it(`${name} surfaces reason invalid_query as a ValidationError`, async () => {
+      arrange();
+      const ctx = createMockContext({ errors });
+      await expect(run(ctx)).rejects.toMatchObject({
+        code: JsonRpcErrorCode.ValidationError,
+        data: {
+          reason: 'invalid_query',
+          recovery: { hint: expect.any(String) },
+        },
+      });
+    });
+
+    it(`${name} declares invalid_query in its error contract`, () => {
+      expect(errors.map((e) => e.reason)).toContain('invalid_query');
+    });
+  }
 });
 
 describe('empty/sparse payload edge cases', () => {

@@ -7,6 +7,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
+import { GDELT_DATETIME_PATTERN, isUnpairedDateRange } from '../date-range.js';
 
 export const gdeltSearchArticles = tool('gdelt_search_articles', {
   title: 'Search GDELT Articles',
@@ -25,6 +26,20 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
       code: JsonRpcErrorCode.NotFound,
       when: 'No articles matched the query within the specified time range.',
       recovery: 'Broaden the query, remove operators, extend timespan, or try synonym terms.',
+    },
+    {
+      reason: 'invalid_date_range',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Exactly one of startDatetime / endDatetime was supplied.',
+      recovery:
+        'Supply both startDatetime and endDatetime to pin an explicit window, or omit both and use timespan instead.',
+    },
+    {
+      reason: 'invalid_query',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'GDELT rejected the query string as malformed — bad keyword length, unbalanced parentheses, or an illegal character.',
+      recovery:
+        'Read the recovery hint for the specific rule GDELT rejected, then fix the query and retry.',
     },
     {
       reason: 'gdelt_unavailable',
@@ -53,17 +68,21 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
       ),
     startDatetime: z
       .string()
+      .regex(GDELT_DATETIME_PATTERN, 'startDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
       .optional()
       .describe(
-        'Start of date range in GDELT format YYYYMMDDHHMMSS (e.g. 20240101000000). ' +
-          'Must be used together with endDatetime.',
+        'Start of date range in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
+          '(e.g. 20240101000000). Must be supplied together with endDatetime; supplying only one ' +
+          'of the two is rejected.',
       ),
     endDatetime: z
       .string()
+      .regex(GDELT_DATETIME_PATTERN, 'endDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
       .optional()
       .describe(
-        'End of date range in GDELT format YYYYMMDDHHMMSS (e.g. 20240131235959). ' +
-          'Must be used together with startDatetime.',
+        'End of date range in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
+          '(e.g. 20240131235959). Must be supplied together with startDatetime; supplying only one ' +
+          'of the two is rejected.',
       ),
     maxRecords: z
       .number()
@@ -121,6 +140,14 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
   },
 
   async handler(input, ctx) {
+    if (isUnpairedDateRange(input.startDatetime, input.endDatetime)) {
+      throw ctx.fail(
+        'invalid_date_range',
+        'startDatetime and endDatetime must be supplied together',
+        ctx.recoveryFor('invalid_date_range'),
+      );
+    }
+
     ctx.log.info('gdelt_search_articles', { query: input.query });
     const svc = getGdeltDocService();
     const result = await svc.searchArticles(

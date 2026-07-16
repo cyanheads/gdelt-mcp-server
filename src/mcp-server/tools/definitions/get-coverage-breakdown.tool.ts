@@ -7,6 +7,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
+import { GDELT_DATETIME_PATTERN, isUnpairedDateRange } from '../date-range.js';
 import { inferDateResolution } from '../date-resolution.js';
 
 /** Maximum number of series to include before aggregating the rest into "Other". */
@@ -31,6 +32,20 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       when: 'No breakdown data returned for the query.',
       recovery:
         'Broaden the query, extend the timespan, or verify the query operators are correct.',
+    },
+    {
+      reason: 'invalid_date_range',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Exactly one of startDatetime / endDatetime was supplied.',
+      recovery:
+        'Supply both startDatetime and endDatetime to pin an explicit window, or omit both and use timespan instead.',
+    },
+    {
+      reason: 'invalid_query',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'GDELT rejected the query string as malformed — bad keyword length, unbalanced parentheses, or an illegal character.',
+      recovery:
+        'Read the recovery hint for the specific rule GDELT rejected, then fix the query and retry.',
     },
     {
       reason: 'gdelt_unavailable',
@@ -64,12 +79,20 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       ),
     startDatetime: z
       .string()
+      .regex(GDELT_DATETIME_PATTERN, 'startDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
       .optional()
-      .describe('Start datetime in GDELT format YYYYMMDDHHMMSS. Must pair with endDatetime.'),
+      .describe(
+        'Start datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
+          '(e.g. 20240101000000). Must pair with endDatetime; supplying only one of the two is rejected.',
+      ),
     endDatetime: z
       .string()
+      .regex(GDELT_DATETIME_PATTERN, 'endDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
       .optional()
-      .describe('End datetime in GDELT format YYYYMMDDHHMMSS. Must pair with startDatetime.'),
+      .describe(
+        'End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
+          '(e.g. 20240131235959). Must pair with startDatetime; supplying only one of the two is rejected.',
+      ),
   }),
 
   output: z.object({
@@ -133,6 +156,14 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
   },
 
   async handler(input, ctx) {
+    if (isUnpairedDateRange(input.startDatetime, input.endDatetime)) {
+      throw ctx.fail(
+        'invalid_date_range',
+        'startDatetime and endDatetime must be supplied together',
+        ctx.recoveryFor('invalid_date_range'),
+      );
+    }
+
     ctx.log.info('gdelt_get_coverage_breakdown', {
       query: input.query,
       breakdownBy: input.breakdownBy,

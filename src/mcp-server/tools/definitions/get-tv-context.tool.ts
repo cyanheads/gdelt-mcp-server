@@ -8,6 +8,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatDateShort, resolveTimespan } from '@/services/gdelt/gdelt-fetch.js';
 import { getGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
+import { GDELT_DATETIME_PATTERN, isUnpairedDateRange } from '../date-range.js';
 
 export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
   title: 'Get GDELT TV Context',
@@ -30,6 +31,20 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
         'Broaden the query, extend the timespan, or verify station IDs with gdelt_list_tv_stations.',
     },
     {
+      reason: 'invalid_date_range',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Exactly one of startDatetime / endDatetime was supplied.',
+      recovery:
+        'Supply both startDatetime and endDatetime to pin an explicit window, or omit both and use timespan instead.',
+    },
+    {
+      reason: 'invalid_query',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'GDELT rejected the query — no station was selected, or the query string is malformed.',
+      recovery:
+        'Read the recovery hint for the specific rule GDELT rejected; when no station was selected, list valid IDs with gdelt_list_tv_stations.',
+    },
+    {
       reason: 'gdelt_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
       when: 'GDELT TV API is unreachable or rate-limited.',
@@ -50,7 +65,9 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       .array(z.string())
       .optional()
       .describe(
-        'Station IDs to filter to. Omit for all stations. ' +
+        'Station IDs to filter to (e.g. ["CNN", "FOXNEWS"]). ' +
+          'The GDELT TV API requires at least one station — supply it here, or embed a station: ' +
+          'selector directly in query. Omitting both is rejected; it does not fall back to all stations. ' +
           'Use gdelt_list_tv_stations to see valid IDs.',
       ),
     timespan: z
@@ -62,15 +79,21 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       ),
     startDatetime: z
       .string()
+      .regex(GDELT_DATETIME_PATTERN, 'startDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
       .optional()
       .describe(
-        'Start datetime in GDELT format YYYYMMDDHHMMSS. Must pair with endDatetime. ' +
+        'Start datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
+          '(e.g. 20200101000000). Must pair with endDatetime; supplying only one of the two is rejected. ' +
           'TV data spans 2009–October 2024.',
       ),
     endDatetime: z
       .string()
+      .regex(GDELT_DATETIME_PATTERN, 'endDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
       .optional()
-      .describe('End datetime in GDELT format YYYYMMDDHHMMSS. Must pair with startDatetime.'),
+      .describe(
+        'End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
+          '(e.g. 20200131235959). Must pair with startDatetime; supplying only one of the two is rejected.',
+      ),
   }),
 
   output: z.object({
@@ -109,6 +132,14 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
   },
 
   async handler(input, ctx) {
+    if (isUnpairedDateRange(input.startDatetime, input.endDatetime)) {
+      throw ctx.fail(
+        'invalid_date_range',
+        'startDatetime and endDatetime must be supplied together',
+        ctx.recoveryFor('invalid_date_range'),
+      );
+    }
+
     ctx.log.info('gdelt_get_tv_context', { query: input.query });
     const svc = getGdeltTvService();
 

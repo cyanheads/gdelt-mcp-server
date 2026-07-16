@@ -1,11 +1,16 @@
 /**
  * @fileoverview Tests for the gdelt-fetch helpers: applyTimeRange, resolveTimespan,
- * and formatDateShort.
+ * formatDateShort, and parseGdeltJson.
  * @module tests/services/gdelt-fetch.test
  */
 
 import { describe, expect, it } from 'vitest';
-import { applyTimeRange, formatDateShort, resolveTimespan } from '@/services/gdelt/gdelt-fetch.js';
+import {
+  applyTimeRange,
+  formatDateShort,
+  parseGdeltJson,
+  resolveTimespan,
+} from '@/services/gdelt/gdelt-fetch.js';
 
 describe('applyTimeRange', () => {
   it('sets timespan when only timespan is provided', () => {
@@ -38,17 +43,31 @@ describe('applyTimeRange', () => {
     expect(params.toString()).toBe('');
   });
 
-  it('does not set date range when only startDatetime is provided (missing pair)', () => {
+  /**
+   * An unpaired boundary is rejected by every tool handler before the service layer
+   * runs (`isUnpairedDateRange` → `ctx.fail('invalid_date_range')`), so these two cases
+   * are a backstop, not the caller-facing contract: they pin that a lone boundary is
+   * never silently widened into a half-open range against GDELT's default window.
+   * The rejection callers actually see lives in tests/tools/input-validation.test.ts.
+   */
+  it('refuses to build a range from a lone startDatetime', () => {
     const params = new URLSearchParams();
     applyTimeRange(params, undefined, '20240101000000', undefined);
-    // neither startdatetime nor enddatetime should be set — condition requires both
     expect(params.has('startdatetime')).toBe(false);
     expect(params.has('enddatetime')).toBe(false);
   });
 
-  it('does not set date range when only endDatetime is provided (missing pair)', () => {
+  it('refuses to build a range from a lone endDatetime', () => {
     const params = new URLSearchParams();
     applyTimeRange(params, undefined, undefined, '20240131235959');
+    expect(params.has('startdatetime')).toBe(false);
+    expect(params.has('enddatetime')).toBe(false);
+  });
+
+  it('falls back to timespan when a lone boundary accompanies it', () => {
+    const params = new URLSearchParams();
+    applyTimeRange(params, '7d', '20240101000000', undefined);
+    expect(params.get('timespan')).toBe('7d');
     expect(params.has('startdatetime')).toBe(false);
     expect(params.has('enddatetime')).toBe(false);
   });
@@ -115,5 +134,109 @@ describe('formatDateShort', () => {
   it('formats a Date as YYYY-MM-DD', () => {
     const d = new Date('2024-10-15T12:30:00Z');
     expect(formatDateShort(d)).toBe('2024-10-15');
+  });
+});
+
+describe('parseGdeltJson', () => {
+  it('parses a well-formed JSON body', () => {
+    const parsed = parseGdeltJson<{ articles: Array<{ title: string }> }>(
+      '{"articles":[{"title":"Example"}]}',
+      'GDELT DOC',
+    );
+    expect(parsed.articles[0]?.title).toBe('Example');
+  });
+
+  describe('upstream trouble — retryable, not the caller’s fault', () => {
+    it('maps an HTML body to ServiceUnavailable', () => {
+      expect(() =>
+        parseGdeltJson('<!DOCTYPE html><html><body>nope</body></html>', 'GDELT DOC'),
+      ).toThrow(/returned HTML/);
+    });
+
+    it('maps an empty body to ServiceUnavailable', () => {
+      expect(() => parseGdeltJson('   ', 'GDELT DOC')).toThrow(/empty response/);
+    });
+  });
+
+  /**
+   * GDELT serves query rejections as HTTP 200 with a bare plain-text sentence, so they
+   * reach parseGdeltJson and must be reclassified from SerializationError (server fault)
+   * to ValidationError (caller fault). Bodies below are the verbatim strings the live
+   * API returns for each trigger.
+   */
+  describe('query rejections — HTTP 200 plain text', () => {
+    const CASES = [
+      {
+        trigger: 'no station selected (TV clipgallery / wordcloud / timelinevolnorm)',
+        body: 'Your query must contain at least one station.',
+        apiLabel: 'GDELT TV',
+        hint: /gdelt_list_tv_stations/,
+      },
+      {
+        trigger: 'single-character keyword (DOC artlist)',
+        body: 'Your query was too short or too long.',
+        apiLabel: 'GDELT DOC',
+        hint: /too short/i,
+      },
+      {
+        trigger: 'unbalanced parenthesis (DOC artlist)',
+        body: 'One or more of your parenthetical clauses had an error in it.',
+        apiLabel: 'GDELT DOC',
+        hint: /parenthesis/i,
+      },
+      {
+        trigger: 'unquoted special character (DOC artlist)',
+        body:
+          'One or more of your keywords contained an illegal character. ' +
+          'To use a dash in a word, place it in quotes like "f-16".',
+        apiLabel: 'GDELT DOC',
+        hint: /double quotes/i,
+      },
+    ] as const;
+
+    for (const { trigger, body, apiLabel, hint } of CASES) {
+      it(`classifies "${trigger}" as invalid_query with a tailored hint`, () => {
+        expect(() => parseGdeltJson(body, apiLabel)).toThrowError(
+          expect.objectContaining({
+            data: expect.objectContaining({
+              reason: 'invalid_query',
+              recovery: expect.objectContaining({ hint: expect.stringMatching(hint) }),
+            }),
+          }),
+        );
+      });
+
+      it(`echoes the GDELT rejection text for "${trigger}"`, () => {
+        expect(() => parseGdeltJson(body, apiLabel)).toThrow(/rejected the query/);
+      });
+    }
+  });
+
+  /**
+   * The marker list must not become a blanket "non-JSON 200 = bad input" rule — a
+   * truncated or otherwise broken upstream body is also a non-JSON 200 and would then
+   * be misreported to the caller as their fault.
+   */
+  describe('non-matching non-JSON bodies stay on the SerializationError path', () => {
+    const NON_MATCHING = [
+      { label: 'a truncated JSON payload', body: '{"articles":[{"title":"Exam' },
+      { label: 'an opaque gateway string', body: 'upstream connect error or disconnect/reset' },
+      {
+        label: 'the rate-limit body (reaches here only if a 429 ever arrives as 200)',
+        body: 'Please limit requests to one every 5 seconds.',
+      },
+    ] as const;
+
+    for (const { label, body } of NON_MATCHING) {
+      it(`does not classify ${label} as invalid_query`, () => {
+        expect(() => parseGdeltJson(body, 'GDELT DOC')).toThrow(/unparseable response/);
+        try {
+          parseGdeltJson(body, 'GDELT DOC');
+          expect.unreachable('parseGdeltJson should have thrown');
+        } catch (err) {
+          expect((err as { data?: { reason?: string } }).data?.reason).toBeUndefined();
+        }
+      });
+    }
   });
 });

@@ -1,9 +1,13 @@
 /**
  * @fileoverview Input validation tests for all tool schemas. Verifies that missing,
- * malformed, and out-of-range inputs are rejected by the Zod schemas before handlers run.
+ * malformed, and out-of-range inputs are rejected by the Zod schemas before handlers run,
+ * plus the cross-field date-range pairing rule the handlers enforce on top.
  * @module tests/tools/input-validation.test
  */
 
+import type { Context } from '@cyanheads/mcp-ts-core';
+import type { ErrorContract } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it } from 'vitest';
 import { gdeltGetCoverageBreakdown } from '@/mcp-server/tools/definitions/get-coverage-breakdown.tool.js';
 import { gdeltGetCoverageTimeline } from '@/mcp-server/tools/definitions/get-coverage-timeline.tool.js';
@@ -192,4 +196,145 @@ describe('gdeltSearchTv input validation', () => {
     expect(parsed.query).toBe('vaccine');
     expect(parsed.stations).toEqual(['CNN']);
   });
+});
+
+/**
+ * Structural slice of a tool definition the shared date-range cases exercise. The seven
+ * tools carry unrelated input/output generics, so the table erases them.
+ */
+type DateRangeTool = {
+  input: { parse: (value: unknown) => Record<string, unknown> };
+  errors: readonly ErrorContract[];
+  handler: (input: Record<string, unknown>, ctx: Context) => Promise<unknown>;
+};
+
+/** Every tool accepting an explicit window, with the minimum otherwise-valid input for each. */
+const DATE_RANGE_TOOLS: ReadonlyArray<{
+  name: string;
+  tool: DateRangeTool;
+  base: Record<string, unknown>;
+}> = [
+  {
+    name: 'gdelt_search_articles',
+    tool: gdeltSearchArticles as unknown as DateRangeTool,
+    base: { query: 'test' },
+  },
+  {
+    name: 'gdelt_get_coverage_timeline',
+    tool: gdeltGetCoverageTimeline as unknown as DateRangeTool,
+    base: { query: 'test', mode: 'volume' },
+  },
+  {
+    name: 'gdelt_get_tone_distribution',
+    tool: gdeltGetToneDistribution as unknown as DateRangeTool,
+    base: { query: 'test' },
+  },
+  {
+    name: 'gdelt_get_coverage_breakdown',
+    tool: gdeltGetCoverageBreakdown as unknown as DateRangeTool,
+    base: { query: 'test', breakdownBy: 'country' },
+  },
+  {
+    name: 'gdelt_search_tv',
+    tool: gdeltSearchTv as unknown as DateRangeTool,
+    base: { query: 'test' },
+  },
+  {
+    name: 'gdelt_get_tv_clips',
+    tool: gdeltGetTvClips as unknown as DateRangeTool,
+    base: { query: 'test' },
+  },
+  {
+    name: 'gdelt_get_tv_context',
+    tool: gdeltGetTvContext as unknown as DateRangeTool,
+    base: { query: 'test' },
+  },
+];
+
+const VALID_START = '20240101000000';
+const VALID_END = '20240131235959';
+
+describe('date-range format — enforced by the Zod field regex', () => {
+  for (const { name, tool, base } of DATE_RANGE_TOOLS) {
+    describe(name, () => {
+      it('accepts a complete 14-digit range', () => {
+        expect(() =>
+          tool.input.parse({ ...base, startDatetime: VALID_START, endDatetime: VALID_END }),
+        ).not.toThrow();
+      });
+
+      it.each([
+        ['thirteen digits', '2024010100000'],
+        ['fifteen digits', '202401010000000'],
+        ['ISO 8601 rather than GDELT format', '2024-01-01T00:00:00'],
+        ['date only', '20240101'],
+        ['trailing non-digit', '2024010100000x'],
+        ['empty string', ''],
+      ])('rejects a startDatetime of %s', (_label, value) => {
+        expect(() =>
+          tool.input.parse({ ...base, startDatetime: value, endDatetime: VALID_END }),
+        ).toThrow();
+      });
+
+      it.each([
+        ['thirteen digits', '2024013123595'],
+        ['ISO 8601 rather than GDELT format', '2024-01-31T23:59:59'],
+        ['empty string', ''],
+      ])('rejects an endDatetime of %s', (_label, value) => {
+        expect(() =>
+          tool.input.parse({ ...base, startDatetime: VALID_START, endDatetime: value }),
+        ).toThrow();
+      });
+
+      /**
+       * Pairing is a cross-field rule, so it deliberately does not live in the schema —
+       * a lone boundary parses cleanly here and is rejected by the handler instead.
+       * Keeping it out of the schema preserves the reason + recovery.hint contract that a
+       * Zod object-level refinement would strip from the wire.
+       */
+      it('parses a lone boundary — pairing is the handler’s job, not the schema’s', () => {
+        expect(() => tool.input.parse({ ...base, startDatetime: VALID_START })).not.toThrow();
+        expect(() => tool.input.parse({ ...base, endDatetime: VALID_END })).not.toThrow();
+      });
+    });
+  }
+});
+
+/**
+ * The handler guard runs before the service is resolved, so these cases need no service
+ * mock: if the guard ever stops firing, the call falls through to an uninitialized-service
+ * plain Error carrying no `data.reason`, and the assertions below fail rather than pass.
+ */
+describe('date-range pairing — enforced in the handler', () => {
+  for (const { name, tool, base } of DATE_RANGE_TOOLS) {
+    describe(name, () => {
+      it('rejects a start-only window with invalid_date_range', async () => {
+        const ctx = createMockContext({ errors: tool.errors });
+        const input = tool.input.parse({ ...base, startDatetime: VALID_START });
+        await expect(tool.handler(input, ctx)).rejects.toMatchObject({
+          data: { reason: 'invalid_date_range' },
+        });
+      });
+
+      it('rejects an end-only window with invalid_date_range', async () => {
+        const ctx = createMockContext({ errors: tool.errors });
+        const input = tool.input.parse({ ...base, endDatetime: VALID_END });
+        await expect(tool.handler(input, ctx)).rejects.toMatchObject({
+          data: { reason: 'invalid_date_range' },
+        });
+      });
+
+      it('surfaces a recovery hint naming both boundaries and the timespan fallback', async () => {
+        const ctx = createMockContext({ errors: tool.errors });
+        const input = tool.input.parse({ ...base, startDatetime: VALID_START });
+        await expect(tool.handler(input, ctx)).rejects.toMatchObject({
+          data: {
+            recovery: {
+              hint: expect.stringMatching(/startDatetime.*endDatetime.*timespan/s),
+            },
+          },
+        });
+      });
+    });
+  }
 });
