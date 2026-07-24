@@ -1,6 +1,6 @@
 # gdelt-mcp-server - Directory Structure
 
-Generated on: 2026-07-16 01:50:48
+Generated on: 2026-07-24 13:03:23
 
 ```text
 gdelt-mcp-server/
@@ -164,6 +164,7 @@ gdelt-mcp-server/
 │   ├── services/
 │   │   ├── date-resolution.test.ts
 │   │   ├── gdelt-doc-service.test.ts
+│   │   ├── gdelt-fetch-retry.test.ts
 │   │   ├── gdelt-fetch.test.ts
 │   │   ├── gdelt-tv-service.test.ts
 │   │   └── rate-limiter.test.ts
