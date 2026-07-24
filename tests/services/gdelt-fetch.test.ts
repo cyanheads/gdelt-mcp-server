@@ -153,8 +153,44 @@ describe('parseGdeltJson', () => {
       ).toThrow(/returned HTML/);
     });
 
-    it('maps an empty body to ServiceUnavailable', () => {
+    it('marks the HTML rate-limit body non-retryable so withRetry fails fast', () => {
+      try {
+        parseGdeltJson('<!DOCTYPE html><html><body>nope</body></html>', 'GDELT DOC');
+        expect.unreachable('parseGdeltJson should have thrown');
+      } catch (err) {
+        expect((err as { data?: { retryable?: boolean } }).data?.retryable).toBe(false);
+      }
+    });
+
+    it('maps an empty body to ServiceUnavailable and keeps it retryable', () => {
       expect(() => parseGdeltJson('   ', 'GDELT DOC')).toThrow(/empty response/);
+      try {
+        parseGdeltJson('   ', 'GDELT DOC');
+        expect.unreachable('parseGdeltJson should have thrown');
+      } catch (err) {
+        // A blank body is a genuine transient blip — it must NOT be opted out of retry.
+        expect((err as { data?: { retryable?: boolean } }).data?.retryable).toBeUndefined();
+      }
+    });
+  });
+
+  /**
+   * GDELT sometimes serves a rate-limit notice as an HTTP-200 plain-text sentence. It is
+   * transient infrastructure, not caller error, so it must fail fast as a non-retryable
+   * ServiceUnavailable — never be misread as an invalid_query by the positive-ID fallback.
+   */
+  describe('rate-limit notices — transient infra, fail fast', () => {
+    it('routes an HTTP-200 rate-limit body to a non-retryable ServiceUnavailable', () => {
+      const body = 'Please limit requests to one every 5 seconds.';
+      expect(() => parseGdeltJson(body, 'GDELT DOC')).toThrow(/rate-limited/);
+      try {
+        parseGdeltJson(body, 'GDELT DOC');
+        expect.unreachable('parseGdeltJson should have thrown');
+      } catch (err) {
+        const data = (err as { data?: { reason?: string; retryable?: boolean } }).data;
+        expect(data?.retryable).toBe(false);
+        expect(data?.reason).toBeUndefined();
+      }
     });
   });
 
@@ -185,6 +221,18 @@ describe('parseGdeltJson', () => {
         hint: /parenthesis/i,
       },
       {
+        trigger: "OR'd terms not wrapped in () (DOC artlist)",
+        body: "Queries containing OR'd terms must be surrounded by ().",
+        apiLabel: 'GDELT DOC',
+        hint: /climate OR energy/,
+      },
+      {
+        trigger: 'boolean OR outside a () clause (TV)',
+        body: "Boolean OR's may only appear inside of a () clause.",
+        apiLabel: 'GDELT TV',
+        hint: /climate OR energy/,
+      },
+      {
         trigger: 'unquoted special character (DOC artlist)',
         body:
           'One or more of your keywords contained an illegal character. ' +
@@ -213,18 +261,34 @@ describe('parseGdeltJson', () => {
   });
 
   /**
-   * The marker list must not become a blanket "non-JSON 200 = bad input" rule — a
-   * truncated or otherwise broken upstream body is also a non-JSON 200 and would then
-   * be misreported to the caller as their fault.
+   * Positive identification: an unenumerated rejection wording (no marker match) is still the
+   * caller's fault when it reads like a GDELT rejection sentence, so it classifies as
+   * invalid_query with a generic hint instead of regressing to a server-fault SerializationError.
+   */
+  describe('unenumerated query rejections — positive identification', () => {
+    it('classifies an unknown rejection sentence as invalid_query with a generic hint', () => {
+      const body = 'Your query contained an unsupported operator.';
+      expect(() => parseGdeltJson(body, 'GDELT DOC')).toThrowError(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            reason: 'invalid_query',
+            recovery: expect.objectContaining({ hint: expect.stringMatching(/query syntax/i) }),
+          }),
+        }),
+      );
+      expect(() => parseGdeltJson(body, 'GDELT DOC')).toThrow(/rejected the query/);
+    });
+  });
+
+  /**
+   * The positive-ID rule must not become a blanket "non-JSON 200 = bad input" rule — a
+   * truncated or otherwise broken upstream body is also a non-JSON 200 but is NOT sentence-like,
+   * so it stays on the SerializationError path instead of being misreported as the caller's fault.
    */
   describe('non-matching non-JSON bodies stay on the SerializationError path', () => {
     const NON_MATCHING = [
       { label: 'a truncated JSON payload', body: '{"articles":[{"title":"Exam' },
       { label: 'an opaque gateway string', body: 'upstream connect error or disconnect/reset' },
-      {
-        label: 'the rate-limit body (reaches here only if a 429 ever arrives as 200)',
-        body: 'Please limit requests to one every 5 seconds.',
-      },
     ] as const;
 
     for (const { label, body } of NON_MATCHING) {

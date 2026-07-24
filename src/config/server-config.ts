@@ -16,8 +16,10 @@ const ServerConfigSchema = z.object({
     .number()
     .int()
     .min(0)
-    .default(5100)
-    .describe('Minimum milliseconds between API requests to satisfy 1 req/5s rate limit'),
+    .default(5300)
+    .describe(
+      "Minimum milliseconds between API requests to satisfy GDELT's 1 req/5s limit, with headroom above the 5000ms floor for clock jitter",
+    ),
 });
 
 export type ServerConfig = z.infer<typeof ServerConfigSchema>;
