@@ -1,10 +1,9 @@
 # gdelt-mcp-server - Directory Structure
 
-Generated on: 2026-07-24 13:03:23
+Generated on: 2026-08-22 14:11:07
 
 ```text
 gdelt-mcp-server/
-├── .claude/
 ├── .claude-plugin/
 │   └── plugin.json
 ├── .codex-plugin/
@@ -15,6 +14,8 @@ gdelt-mcp-server/
 │   │   ├── bug_report.yml
 │   │   ├── config.yml
 │   │   └── feature_request.yml
+│   ├── CODE_OF_CONDUCT.md
+│   ├── CONTRIBUTING.md
 │   ├── FUNDING.yml
 │   └── SECURITY.md
 ├── .vscode/

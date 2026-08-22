@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.7](changelog/0.2.x/0.2.7.md) — 2026-08-22
+
+Modern MCP protocol support and strict tool-input validation with mcp-ts-core 0.12.3.
+
 ## [0.2.6](changelog/0.2.x/0.2.6.md) — 2026-07-24
 
 Fixed: unenumerated GDELT query-rejection sentences no longer serialize as server errors (#25); rate-limit responses fail fast instead of burning the retry budget (#26); mcp-ts-core ^0.10.15 clears 2 of 3 bun audit advisories
