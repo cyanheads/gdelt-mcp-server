@@ -10,11 +10,11 @@ import { describe, expect, it, vi } from 'vitest';
 import * as gdeltFetchModule from '@/services/gdelt/gdelt-fetch.js';
 import { GdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
 
-const MOCK_CONFIG = {} as Parameters<typeof GdeltTvService.prototype.constructor>[0];
-const MOCK_STORAGE = {} as Parameters<typeof GdeltTvService.prototype.constructor>[1];
-const MOCK_SERVER_CONFIG = { baseUrl: 'https://api.gdeltproject.org' } as Parameters<
-  typeof GdeltTvService.prototype.constructor
->[2];
+const MOCK_CONFIG = {} as ConstructorParameters<typeof GdeltTvService>[0];
+const MOCK_STORAGE = {} as ConstructorParameters<typeof GdeltTvService>[1];
+const MOCK_SERVER_CONFIG = {
+  baseUrl: 'https://api.gdeltproject.org',
+} as ConstructorParameters<typeof GdeltTvService>[2];
 
 function makeService(): GdeltTvService {
   return new GdeltTvService(MOCK_CONFIG, MOCK_STORAGE, MOCK_SERVER_CONFIG);

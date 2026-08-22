@@ -97,7 +97,9 @@ describe('gdeltGetTvContext', () => {
 
     const ctx = createMockContext({ errors: gdeltGetTvContext.errors });
     const input = gdeltGetTvContext.input.parse({ query: 'noresults', timespan: '7d' });
-    const err = await gdeltGetTvContext.handler(input, ctx).catch((e: unknown) => e);
+    const err = await Promise.resolve(gdeltGetTvContext.handler(input, ctx)).catch(
+      (e: unknown) => e,
+    );
     expect(err).toMatchObject({ data: { reason: 'no_context' } });
     // recovery hint should contain the resolved date range
     const hint: string = (err as { data: { recovery: { hint: string } } }).data.recovery.hint;

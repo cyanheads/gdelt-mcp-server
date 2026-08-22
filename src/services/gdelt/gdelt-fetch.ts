@@ -12,7 +12,7 @@ import {
   serviceUnavailable,
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
-import { fetchWithTimeout, type RequestContextLike, withRetry } from '@cyanheads/mcp-ts-core/utils';
+import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { getRateLimiter } from './rate-limiter.js';
 
 /** Apply timespan or explicit date range to URL params. */
@@ -76,20 +76,19 @@ export function gdeltFetch<T>(
   apiLabel: string,
 ): Promise<T> {
   const limiter = getRateLimiter();
-  const rctx = ctx as unknown as RequestContextLike;
   return withRetry(
     async () => {
       await limiter.acquire(ctx.signal);
       const url = `${baseUrl}?${params.toString()}`;
       ctx.log.debug(`${apiLabel} API request`, { url });
-      const response = await fetchWithTimeout(url, 30_000, rctx, {
+      const response = await fetchWithTimeout(url, 30_000, ctx, {
         signal: ctx.signal,
         expectedStatuses: [429],
       }).catch(failFastOnRateLimit);
       const text = await response.text();
       return parseGdeltJson<T>(text, apiLabel);
     },
-    { operation, context: rctx, baseDelayMs: 5100, signal: ctx.signal },
+    { operation, context: ctx, baseDelayMs: 5100, signal: ctx.signal },
   );
 }
 

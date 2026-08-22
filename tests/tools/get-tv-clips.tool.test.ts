@@ -80,7 +80,7 @@ describe('gdeltGetTvClips', () => {
 
     const ctx = createMockContext({ errors: gdeltGetTvClips.errors });
     const input = gdeltGetTvClips.input.parse({ query: 'noresults', timespan: '1y' });
-    const err = await gdeltGetTvClips.handler(input, ctx).catch((e: unknown) => e);
+    const err = await Promise.resolve(gdeltGetTvClips.handler(input, ctx)).catch((e: unknown) => e);
     expect(err).toMatchObject({ data: { reason: 'no_clips' } });
     const hint: string = (err as { data: { recovery: { hint: string } } }).data.recovery.hint;
     expect(hint).toMatch(/Timespan "1y" resolved to \d{4}-\d{2}-\d{2} – \d{4}-\d{2}-\d{2}/);

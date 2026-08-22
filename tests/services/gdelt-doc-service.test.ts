@@ -10,11 +10,11 @@ import { GdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
 import * as gdeltFetchModule from '@/services/gdelt/gdelt-fetch.js';
 
 /** Minimal stubs — GdeltDocService only reads `baseUrl` from serverConfig. */
-const MOCK_CONFIG = {} as Parameters<typeof GdeltDocService.prototype.constructor>[0];
-const MOCK_STORAGE = {} as Parameters<typeof GdeltDocService.prototype.constructor>[1];
-const MOCK_SERVER_CONFIG = { baseUrl: 'https://api.gdeltproject.org' } as Parameters<
-  typeof GdeltDocService.prototype.constructor
->[2];
+const MOCK_CONFIG = {} as ConstructorParameters<typeof GdeltDocService>[0];
+const MOCK_STORAGE = {} as ConstructorParameters<typeof GdeltDocService>[1];
+const MOCK_SERVER_CONFIG = {
+  baseUrl: 'https://api.gdeltproject.org',
+} as ConstructorParameters<typeof GdeltDocService>[2];
 
 function makeService(): GdeltDocService {
   return new GdeltDocService(MOCK_CONFIG, MOCK_STORAGE, MOCK_SERVER_CONFIG);

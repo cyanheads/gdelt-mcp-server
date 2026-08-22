@@ -315,7 +315,9 @@ describe('gdeltGetCoverageBreakdown', () => {
         breakdownBy: 'country',
         series: ['country0', 'Atlantis'],
       });
-      const err = await gdeltGetCoverageBreakdown.handler(input, ctx).catch((e: unknown) => e);
+      const err = await Promise.resolve(gdeltGetCoverageBreakdown.handler(input, ctx)).catch(
+        (e: unknown) => e,
+      );
       expect(err).toMatchObject({
         data: { reason: 'unknown_series', unknownLabels: ['country0', 'Atlantis'] },
       });

@@ -314,7 +314,9 @@ describe('gdeltGetCoverageTimeline', () => {
         mode: 'volume_with_articles',
         points: ['2024-06-01T00:00:00Z'],
       });
-      const err = await gdeltGetCoverageTimeline.handler(input, ctx).catch((e: unknown) => e);
+      const err = await Promise.resolve(gdeltGetCoverageTimeline.handler(input, ctx)).catch(
+        (e: unknown) => e,
+      );
       expect(err).toMatchObject({
         data: { reason: 'unknown_point', unknownPoints: ['2024-06-01T00:00:00Z'] },
       });

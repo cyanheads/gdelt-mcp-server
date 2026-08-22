@@ -3,7 +3,7 @@
  * @module tests/services/rate-limiter.test
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { GdeltRateLimiter } from '@/services/gdelt/rate-limiter.js';
 
 describe('GdeltRateLimiter', () => {
@@ -85,28 +85,35 @@ describe('GdeltRateLimiter', () => {
 
   it('does not block subsequent callers when a queued entry is aborted', async () => {
     // With a 50 ms delay: first acquire takes 0 ms, second (aborted) is
-    // removed, third should proceed after ~50 ms — not ~100 ms.
+    // removed, and third proceeds after one delay — not two.
     const delayMs = 50;
     const limiter = new GdeltRateLimiter(delayMs);
     const controller = new AbortController();
 
-    const t0 = Date.now();
-    const first = limiter.acquire(); // resolves immediately
-    const second = limiter.acquire(controller.signal); // queued, will be aborted
-    const third = limiter.acquire(); // queued behind second
+    vi.useFakeTimers();
+    try {
+      const first = limiter.acquire(); // resolves immediately
+      const second = limiter.acquire(controller.signal); // queued, will be aborted
+      const third = limiter.acquire(); // queued behind second
 
-    // Let the queue process the first slot, then abort second.
-    await first;
-    controller.abort();
+      // Let the queue process the first slot, then abort second.
+      await first;
+      controller.abort();
+      await expect(second).rejects.toMatchObject({ name: 'AbortError' });
 
-    // second rejects; third should resolve after one delay (~50 ms from first resolve)
-    await expect(second).rejects.toMatchObject({ name: 'AbortError' });
-    await third;
+      let thirdSettled = false;
+      void third.then(() => {
+        thirdSettled = true;
+      });
+      await vi.advanceTimersByTimeAsync(delayMs - 1);
+      expect(thirdSettled).toBe(false);
 
-    // Total elapsed should be ~delayMs, NOT ~2×delayMs
-    const elapsed = Date.now() - t0;
-    expect(elapsed).toBeGreaterThanOrEqual(delayMs - 10);
-    expect(elapsed).toBeLessThan(delayMs * 2 - 10);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(thirdSettled).toBe(true);
+      await expect(third).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('resolves normally when signal is provided but never fired', async () => {
