@@ -48,7 +48,11 @@ describe('gdeltFetch retry boundary', () => {
 
     await expect(callGdeltFetch()).rejects.toMatchObject({
       code: JsonRpcErrorCode.RateLimited,
-      data: { retryable: false },
+      data: {
+        reason: 'gdelt_rate_limited',
+        retryable: false,
+        recovery: { hint: expect.stringMatching(/wait at least 5 seconds/i) },
+      },
     });
     expect(mockedFetch).toHaveBeenCalledTimes(1);
   });
@@ -60,8 +64,12 @@ describe('gdeltFetch retry boundary', () => {
     mockedFetch.mockResolvedValue(htmlResponse);
 
     await expect(callGdeltFetch()).rejects.toMatchObject({
-      code: JsonRpcErrorCode.ServiceUnavailable,
-      data: { retryable: false },
+      code: JsonRpcErrorCode.RateLimited,
+      data: {
+        reason: 'gdelt_rate_limited',
+        retryable: false,
+        recovery: { hint: expect.stringMatching(/wait at least 5 seconds/i) },
+      },
     });
     expect(mockedFetch).toHaveBeenCalledTimes(1);
   });

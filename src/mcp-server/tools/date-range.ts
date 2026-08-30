@@ -6,6 +6,7 @@
  * @module mcp-server/tools/date-range
  */
 
+import { z } from '@cyanheads/mcp-ts-core';
 import { resolveTimespan } from '@/services/gdelt/gdelt-fetch.js';
 
 /**
@@ -15,6 +16,36 @@ import { resolveTimespan } from '@/services/gdelt/gdelt-fetch.js';
  * Schema as `pattern`, letting a caller see the constraint before it calls.
  */
 export const GDELT_DATETIME_PATTERN = /^\d{14}$/;
+
+/** GDELT DOC's documented minimum relative window. */
+const GDELT_DOC_MIN_TIMESPAN_MINUTES = 15;
+
+/** Minutes represented by each reliably parseable GDELT timespan unit. */
+const TIMESPAN_UNIT_MINUTES = {
+  min: 1,
+  h: 60,
+  d: 24 * 60,
+  m: 30 * 24 * 60,
+  y: 365 * 24 * 60,
+} as const;
+
+/**
+ * Relative DOC timespan validator. It rejects only syntax the server can parse reliably;
+ * unknown/upstream-evolved syntax remains available to GDELT and its response classifier.
+ */
+export const gdeltDocTimespanSchema = z.string().refine(
+  (timespan) => {
+    const match = /^(\d+)(min|h|d|m|y)$/i.exec(timespan.trim());
+    if (!match) return true;
+    const amount = Number(match[1]);
+    const unit = timespan
+      .trim()
+      .replace(/^\d+/, '')
+      .toLowerCase() as keyof typeof TIMESPAN_UNIT_MINUTES;
+    return amount * TIMESPAN_UNIT_MINUTES[unit] >= GDELT_DOC_MIN_TIMESPAN_MINUTES;
+  },
+  { message: 'DOC timespan must be at least 15 minutes; use "15min" or a longer window.' },
+);
 
 /** A GDELT query window, both boundaries in the 14-digit YYYYMMDDHHMMSS wire format. */
 export type GdeltWindow = {

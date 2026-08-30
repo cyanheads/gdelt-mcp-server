@@ -58,11 +58,19 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
         'Read the recovery hint for the specific rule GDELT rejected; when no station was selected, list valid IDs with gdelt_list_tv_stations.',
     },
     {
+      reason: 'gdelt_rate_limited',
+      code: JsonRpcErrorCode.RateLimited,
+      when: 'GDELT rejected the request because its one-request-per-five-seconds limit was reached.',
+      retryable: false,
+      recovery:
+        'Wait at least 5 seconds before retrying; GDELT accepts at most one request every 5 seconds.',
+    },
+    {
       reason: 'gdelt_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'GDELT TV API is unreachable or rate-limited.',
+      when: 'GDELT TV API is unreachable or temporarily returned no usable data.',
       retryable: true,
-      recovery: 'Wait at least 5 seconds before retrying — GDELT enforces 1 request per 5 seconds.',
+      recovery: 'Retry after a short delay; GDELT may be temporarily unavailable.',
     },
   ],
 

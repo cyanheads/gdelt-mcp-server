@@ -7,7 +7,7 @@
 
 import type { ErrorContract } from '@cyanheads/mcp-ts-core/errors';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { gdeltGetCoverageBreakdown } from '@/mcp-server/tools/definitions/get-coverage-breakdown.tool.js';
 import { gdeltGetCoverageTimeline } from '@/mcp-server/tools/definitions/get-coverage-timeline.tool.js';
@@ -15,6 +15,7 @@ import { gdeltGetToneDistribution } from '@/mcp-server/tools/definitions/get-ton
 import { gdeltGetTvClips } from '@/mcp-server/tools/definitions/get-tv-clips.tool.js';
 import { gdeltGetTvContext } from '@/mcp-server/tools/definitions/get-tv-context.tool.js';
 import { gdeltGetTvTrending } from '@/mcp-server/tools/definitions/get-tv-trending.tool.js';
+import { gdeltListTvStations } from '@/mcp-server/tools/definitions/list-tv-stations.tool.js';
 import { gdeltSearchArticles } from '@/mcp-server/tools/definitions/search-articles.tool.js';
 import { gdeltSearchTv } from '@/mcp-server/tools/definitions/search-tv.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
@@ -239,6 +240,93 @@ describe('invalid_query propagates from parseGdeltJson to the wire', () => {
       expect(errors.map((e) => e.reason)).toContain('invalid_query');
     });
   }
+});
+
+const RATE_LIMIT_BODY = 'Please limit requests to one every 5 seconds.';
+
+describe('gdelt_rate_limited propagates through production-shaped tool contracts', () => {
+  it('surfaces matching structured and text recovery from a DOC tool', async () => {
+    mockDoc({
+      searchArticles: vi.fn().mockRejectedValue(gdeltRejection(RATE_LIMIT_BODY, 'GDELT DOC')),
+    });
+
+    const result = await runToolContract(gdeltSearchArticles, { query: 'climate' });
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: JsonRpcErrorCode.RateLimited,
+          data: {
+            reason: 'gdelt_rate_limited',
+            retryable: false,
+            recovery: { hint: expect.stringMatching(/wait at least 5 seconds/i) },
+          },
+        },
+      },
+    });
+    expect(result.content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          text: expect.stringMatching(/Recovery:.*wait at least 5 seconds/is),
+        }),
+      ]),
+    );
+  });
+
+  it('surfaces matching structured and text recovery from a TV tool', async () => {
+    mockTv({
+      getTvClips: vi.fn().mockRejectedValue(gdeltRejection(RATE_LIMIT_BODY, 'GDELT TV')),
+    });
+
+    const result = await runToolContract(gdeltGetTvClips, { query: 'climate' });
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: JsonRpcErrorCode.RateLimited,
+          data: {
+            reason: 'gdelt_rate_limited',
+            retryable: false,
+            recovery: { hint: expect.stringMatching(/wait at least 5 seconds/i) },
+          },
+        },
+      },
+    });
+    expect(result.content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          text: expect.stringMatching(/Recovery:.*wait at least 5 seconds/is),
+        }),
+      ]),
+    );
+  });
+
+  it.each([
+    gdeltSearchArticles,
+    gdeltGetCoverageTimeline,
+    gdeltGetToneDistribution,
+    gdeltGetCoverageBreakdown,
+    gdeltSearchTv,
+    gdeltGetTvClips,
+    gdeltGetTvContext,
+    gdeltGetTvTrending,
+    gdeltListTvStations,
+  ])('$name declares separate rate-limited and unavailable contracts', (tool) => {
+    expect(tool.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reason: 'gdelt_rate_limited',
+          code: JsonRpcErrorCode.RateLimited,
+          retryable: false,
+        }),
+        expect.objectContaining({
+          reason: 'gdelt_unavailable',
+          code: JsonRpcErrorCode.ServiceUnavailable,
+          retryable: true,
+        }),
+      ]),
+    );
+  });
 });
 
 describe('empty/sparse payload edge cases', () => {

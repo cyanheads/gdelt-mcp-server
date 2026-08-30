@@ -27,11 +27,19 @@ export const gdeltGetTvTrending = tool('gdelt_get_tv_trending', {
         'The TV archive is frozen at October 2024. For historical TV analysis, use gdelt_search_tv with startDatetime/endDatetime within the 2009–2024 window.',
     },
     {
+      reason: 'gdelt_rate_limited',
+      code: JsonRpcErrorCode.RateLimited,
+      when: 'GDELT rejected the request because its one-request-per-five-seconds limit was reached.',
+      retryable: false,
+      recovery:
+        'Wait at least 5 seconds before retrying; GDELT accepts at most one request every 5 seconds.',
+    },
+    {
       reason: 'gdelt_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'GDELT TV API is unreachable or rate-limited.',
+      when: 'GDELT TV API is unreachable or temporarily returned no usable data.',
       retryable: true,
-      recovery: 'Wait at least 5 seconds before retrying — GDELT enforces 1 request per 5 seconds.',
+      recovery: 'Retry after a short delay; GDELT may be temporarily unavailable.',
     },
   ],
 

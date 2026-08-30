@@ -4,6 +4,7 @@
  * @module tests/services/gdelt-fetch.test
  */
 
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { describe, expect, it } from 'vitest';
 import {
   applyTimeRange,
@@ -153,12 +154,12 @@ describe('parseGdeltJson', () => {
       ).toThrow(/returned HTML/);
     });
 
-    it('marks the HTML rate-limit body non-retryable so withRetry fails fast', () => {
+    it('keeps a generic HTML unavailable body retryable', () => {
       try {
         parseGdeltJson('<!DOCTYPE html><html><body>nope</body></html>', 'GDELT DOC');
         expect.unreachable('parseGdeltJson should have thrown');
       } catch (err) {
-        expect((err as { data?: { retryable?: boolean } }).data?.retryable).toBe(false);
+        expect((err as { data?: { retryable?: boolean } }).data?.retryable).toBeUndefined();
       }
     });
 
@@ -177,19 +178,24 @@ describe('parseGdeltJson', () => {
   /**
    * GDELT sometimes serves a rate-limit notice as an HTTP-200 plain-text sentence. It is
    * transient infrastructure, not caller error, so it must fail fast as a non-retryable
-   * ServiceUnavailable — never be misread as an invalid_query by the positive-ID fallback.
+   * RateLimited — never be misread as an invalid_query by the positive-ID fallback.
    */
   describe('rate-limit notices — transient infra, fail fast', () => {
-    it('routes an HTTP-200 rate-limit body to a non-retryable ServiceUnavailable', () => {
+    it('routes an HTTP-200 rate-limit body to the stable fail-fast contract', () => {
       const body = 'Please limit requests to one every 5 seconds.';
       expect(() => parseGdeltJson(body, 'GDELT DOC')).toThrow(/rate-limited/);
       try {
         parseGdeltJson(body, 'GDELT DOC');
         expect.unreachable('parseGdeltJson should have thrown');
       } catch (err) {
-        const data = (err as { data?: { reason?: string; retryable?: boolean } }).data;
-        expect(data?.retryable).toBe(false);
-        expect(data?.reason).toBeUndefined();
+        expect(err).toMatchObject({
+          code: JsonRpcErrorCode.RateLimited,
+          data: {
+            reason: 'gdelt_rate_limited',
+            retryable: false,
+            recovery: { hint: expect.stringMatching(/wait at least 5 seconds/i) },
+          },
+        });
       }
     });
   });
@@ -239,6 +245,18 @@ describe('parseGdeltJson', () => {
           'To use a dash in a word, place it in quotes like "f-16".',
         apiLabel: 'GDELT DOC',
         hint: /double quotes/i,
+      },
+      {
+        trigger: 'timespan below the DOC minimum',
+        body: 'Timespan is too short.',
+        apiLabel: 'GDELT DOC',
+        hint: /15 minutes|15min/i,
+      },
+      {
+        trigger: 'short, long, or common keyword with a parenthesized token',
+        body: 'One or more of your keywords were too short, too long or too common: (2.0)',
+        apiLabel: 'GDELT DOC',
+        hint: /remove or replace.*keyword/i,
       },
     ] as const;
 

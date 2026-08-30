@@ -254,6 +254,46 @@ const DATE_RANGE_TOOLS: ReadonlyArray<{
 const VALID_START = '20240101000000';
 const VALID_END = '20240131235959';
 
+/** Every DOC tool that exposes the API's relative timespan input. */
+const DOC_TIMESPAN_TOOLS = [
+  { name: 'gdelt_search_articles', tool: gdeltSearchArticles, base: { query: 'test' } },
+  {
+    name: 'gdelt_get_coverage_timeline',
+    tool: gdeltGetCoverageTimeline,
+    base: { query: 'test', mode: 'volume' },
+  },
+  { name: 'gdelt_get_tone_distribution', tool: gdeltGetToneDistribution, base: { query: 'test' } },
+  {
+    name: 'gdelt_get_coverage_breakdown',
+    tool: gdeltGetCoverageBreakdown,
+    base: { query: 'test', breakdownBy: 'country' },
+  },
+] as const;
+
+describe('DOC timespan minimum — enforced at the schema edge', () => {
+  for (const { name, tool, base } of DOC_TIMESPAN_TOOLS) {
+    describe(name, () => {
+      it.each(['1min', '14min', '0h', '0d', '0m', '0y'])(
+        'rejects parseable sub-15-minute timespan %s',
+        (timespan) => {
+          expect(() => tool.input.parse({ ...base, timespan })).toThrow(/15 minutes/i);
+        },
+      );
+
+      it.each(['15min', '16min', '1h', '1d', '1m', '1y'])(
+        'accepts supported timespan %s',
+        (timespan) => {
+          expect(() => tool.input.parse({ ...base, timespan })).not.toThrow();
+        },
+      );
+
+      it('preserves unparsed syntax for the upstream classifier fallback', () => {
+        expect(() => tool.input.parse({ ...base, timespan: '15mins' })).not.toThrow();
+      });
+    });
+  }
+});
+
 describe('date-range format — enforced by the Zod field regex', () => {
   for (const { name, tool, base } of DATE_RANGE_TOOLS) {
     describe(name, () => {

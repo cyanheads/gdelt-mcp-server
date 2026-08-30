@@ -7,7 +7,11 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
-import { GDELT_DATETIME_PATTERN, isUnpairedDateRange } from '../date-range.js';
+import {
+  GDELT_DATETIME_PATTERN,
+  gdeltDocTimespanSchema,
+  isUnpairedDateRange,
+} from '../date-range.js';
 import { inferDateResolution } from '../date-resolution.js';
 
 /**
@@ -67,11 +71,19 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
         'Read the recovery hint for the specific rule GDELT rejected, then fix the query and retry.',
     },
     {
+      reason: 'gdelt_rate_limited',
+      code: JsonRpcErrorCode.RateLimited,
+      when: 'GDELT rejected the request because its one-request-per-five-seconds limit was reached.',
+      retryable: false,
+      recovery:
+        'Wait at least 5 seconds before retrying; GDELT accepts at most one request every 5 seconds.',
+    },
+    {
       reason: 'gdelt_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'GDELT DOC API is unreachable or rate-limited.',
+      when: 'GDELT DOC API is unreachable or temporarily returned no usable data.',
       retryable: true,
-      recovery: 'Wait at least 5 seconds before retrying — GDELT enforces 1 request per 5 seconds.',
+      recovery: 'Retry after a short delay; GDELT may be temporarily unavailable.',
     },
   ],
 
@@ -91,11 +103,10 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
           '"volume_with_articles" returns volume plus top articles per spike (best for signal detection), ' +
           '"tone" returns average sentiment score per timestep.',
       ),
-    timespan: z
-      .string()
+    timespan: gdeltDocTimespanSchema
       .optional()
       .describe(
-        'Time window relative to now, e.g. "24h", "7d", "1m". ' +
+        'Time window relative to now, minimum "15min"; other examples: "24h", "7d", "1m". ' +
           'Ignored when startDatetime/endDatetime are set. Maximum 3 months.',
       ),
     startDatetime: z

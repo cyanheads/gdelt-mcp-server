@@ -9,6 +9,7 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
 import {
   GDELT_DATETIME_PATTERN,
+  gdeltDocTimespanSchema,
   isUnpairedDateRange,
   planWindowContinuation,
   resolveEffectiveWindow,
@@ -56,11 +57,19 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
         'Read the recovery hint for the specific rule GDELT rejected, then fix the query and retry.',
     },
     {
+      reason: 'gdelt_rate_limited',
+      code: JsonRpcErrorCode.RateLimited,
+      when: 'GDELT rejected the request because its one-request-per-five-seconds limit was reached.',
+      retryable: false,
+      recovery:
+        'Wait at least 5 seconds before retrying; GDELT accepts at most one request every 5 seconds.',
+    },
+    {
       reason: 'gdelt_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'GDELT DOC API is unreachable or rate-limited.',
+      when: 'GDELT DOC API is unreachable or temporarily returned no usable data.',
       retryable: true,
-      recovery: 'Wait at least 5 seconds before retrying — GDELT enforces 1 request per 5 seconds.',
+      recovery: 'Retry after a short delay; GDELT may be temporarily unavailable.',
     },
   ],
 
@@ -73,11 +82,10 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
           'sourcecountry:china, sourcelang:spanish, domain:who.int, theme:DISEASE_OUTBREAK, tone<-5, ' +
           'near20:"flu virus", repeat3:"outbreak".',
       ),
-    timespan: z
-      .string()
+    timespan: gdeltDocTimespanSchema
       .optional()
       .describe(
-        'Time window relative to now, e.g. "24h", "7d", "1m". Ignored when startDatetime/endDatetime are set. ' +
+        'Time window relative to now, minimum "15min"; other examples: "24h", "7d", "1m". Ignored when startDatetime/endDatetime are set. ' +
           'Maximum is 3 months (the full DOC API window). Defaults to the full 3-month window.',
       ),
     startDatetime: z

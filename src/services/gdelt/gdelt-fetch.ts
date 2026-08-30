@@ -8,12 +8,25 @@ import type { Context } from '@cyanheads/mcp-ts-core';
 import {
   JsonRpcErrorCode,
   McpError,
+  rateLimited,
   serializationError,
   serviceUnavailable,
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
 import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { getRateLimiter } from './rate-limiter.js';
+
+/** Stable public recovery for every GDELT rate-limit response shape. */
+const GDELT_RATE_LIMIT_RECOVERY = {
+  hint: 'Wait at least 5 seconds before retrying; GDELT accepts at most one request every 5 seconds.',
+} as const;
+
+/** Public data shared by HTTP 429 and HTTP-200 rate-limit responses. */
+const GDELT_RATE_LIMIT_DATA = {
+  reason: 'gdelt_rate_limited',
+  retryable: false,
+  recovery: GDELT_RATE_LIMIT_RECOVERY,
+} as const;
 
 /** Apply timespan or explicit date range to URL params. */
 export function applyTimeRange(
@@ -107,7 +120,7 @@ function failFastOnRateLimit(error: unknown): never {
     throw new McpError(
       error.code,
       error.message,
-      { ...error.data, retryable: false },
+      { ...error.data, ...GDELT_RATE_LIMIT_DATA },
       { cause: error },
     );
   }
@@ -152,6 +165,14 @@ const GDELT_REJECTIONS: ReadonlyArray<{ marker: string; hint: string }> = [
       'more specific keyword, or quote a multi-word phrase such as "bird flu".',
   },
   {
+    marker: 'timespan is too short',
+    hint: 'The requested DOC timespan is too short. Use a window of at least 15 minutes, such as "15min".',
+  },
+  {
+    marker: 'keywords were too short, too long or too common',
+    hint: 'Remove or replace the overly short, overly long, or overly common keyword, then retry the original query structure.',
+  },
+  {
     marker: 'parenthetical clauses had an error',
     hint:
       'A parenthetical clause is malformed. Balance every opening parenthesis with a closing one, ' +
@@ -182,7 +203,7 @@ function matchGdeltRejectionHint(text: string): string | undefined {
 /**
  * Rate-limit notices GDELT occasionally serves as an HTTP-200 plain-text body instead of a
  * 429. These are transient infrastructure signals, not caller error, so they must route to a
- * fail-fast ServiceUnavailable rather than the invalid_query path — and be recognized *before*
+ * fail-fast RateLimited rather than the invalid_query path — and be recognized *before*
  * `looksLikeGdeltRejection`, which would otherwise misread a rate-limit sentence as a bad query.
  */
 const GDELT_RATE_LIMIT_MARKERS: ReadonlyArray<string> = [
@@ -233,11 +254,16 @@ function looksLikeGdeltRejection(text: string): boolean {
  */
 export function parseGdeltJson<T>(text: string, apiLabel: string): T {
   if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
-    // GDELT serves HTML on a 200 when rate-limited; its cooldown outlasts the retry
-    // budget, so fail fast (retryable: false) rather than replay into a closed window.
+    if (matchesRateLimit(text)) {
+      // GDELT serves some rate-limit notices as HTML on a 200. Its cooldown outlasts the
+      // retry budget, so fail fast rather than replay into a closed window.
+      throw rateLimited(
+        `${apiLabel} API returned an HTML rate-limit notice. Retry after 5 seconds.`,
+        GDELT_RATE_LIMIT_DATA,
+      );
+    }
     throw serviceUnavailable(
-      `${apiLabel} API returned HTML — likely rate-limited or unavailable. Retry after 5 seconds.`,
-      { retryable: false },
+      `${apiLabel} API returned HTML instead of data and may be temporarily unavailable.`,
     );
   }
   if (text.trim().length === 0) {
@@ -251,9 +277,10 @@ export function parseGdeltJson<T>(text: string, apiLabel: string): T {
     // A rate-limit notice is transient infra, not caller error — fail fast (no retry) with
     // GDELT's cooldown cue, and keep it out of the invalid_query path below.
     if (matchesRateLimit(text)) {
-      throw serviceUnavailable(`${apiLabel} API rate-limited the request. Retry after 5 seconds.`, {
-        retryable: false,
-      });
+      throw rateLimited(
+        `${apiLabel} API rate-limited the request. Retry after 5 seconds.`,
+        GDELT_RATE_LIMIT_DATA,
+      );
     }
     // Enumerated wording → tailored hint; otherwise a rejection-sentence shape → generic hint.
     const hint =
