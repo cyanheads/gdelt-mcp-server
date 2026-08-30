@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-08-30
+
+Stabilize GDELT rate-limit recovery and enforce the DOC API's 15-minute timespan floor.
+
 ## [0.2.7](changelog/0.2.x/0.2.7.md) — 2026-08-22
 
 Modern MCP protocol support and strict tool-input validation with mcp-ts-core 0.12.3.
