@@ -6,13 +6,13 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { inferDateResolution } from '@/services/gdelt/date-resolution.js';
 import { getGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
 import {
   GDELT_DATETIME_PATTERN,
   gdeltDocTimespanSchema,
   isUnpairedDateRange,
 } from '../date-range.js';
-import { inferDateResolution } from '../date-resolution.js';
 
 /**
  * Article links rendered per timestep in volume_with_articles mode, for timesteps the
@@ -36,7 +36,7 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
     'this is the primary signal-detection mode: a single call reveals both the spike and its cause, ' +
     'avoiding a follow-up gdelt_search_articles call. ' +
     'Use mode "tone" for average sentiment score per timestep (negative = hostile/fearful, positive = celebratory). ' +
-    'Date resolution is automatically chosen based on timespan: hours for short windows, days for longer ones. ' +
+    'Date resolution is inferred from returned intervals: 15 minutes or hours for short windows, days for longer ones. ' +
     'In volume_with_articles mode the text surface shows the first 3 article links per timestep next to that ' +
     "timestep's true article count; name a timestep's date in points to render its full list. " +
     'Note: DOC API covers only the last 3 months.',
@@ -149,8 +149,8 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
 
   output: z.object({
     dateResolution: z
-      .enum(['hour', 'day'])
-      .describe('Temporal resolution of the data points — hour for short windows, day for longer.'),
+      .enum(['15min', 'hour', 'day'])
+      .describe('Temporal resolution of the data points — 15min, hour, or day.'),
     series: z
       .array(
         z

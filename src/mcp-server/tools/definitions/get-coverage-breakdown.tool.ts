@@ -6,13 +6,13 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { inferDateResolution } from '@/services/gdelt/date-resolution.js';
 import { getGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
 import {
   GDELT_DATETIME_PATTERN,
   gdeltDocTimespanSchema,
   isUnpairedDateRange,
 } from '../date-range.js';
-import { inferDateResolution } from '../date-resolution.js';
 
 /** Maximum number of series to include before aggregating the rest into "Other". */
 const MAX_SERIES = 10;
@@ -171,7 +171,9 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
   }),
 
   output: z.object({
-    dateResolution: z.enum(['hour', 'day']).describe('Temporal resolution of data points.'),
+    dateResolution: z
+      .enum(['15min', 'hour', 'day'])
+      .describe('Temporal resolution of data points — 15min, hour, or day.'),
     topSeries: z.array(breakdownSeriesSchema).describe('Top 10 series by total coverage volume.'),
     otherAggregated: z
       .array(

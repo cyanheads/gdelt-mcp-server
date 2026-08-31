@@ -118,10 +118,11 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
           'startDatetime/endDatetime windows instead.',
       ),
     sort: z
-      .enum(['date', 'relevance', 'social'])
+      .enum(['relevance', 'dateDesc', 'dateAsc', 'toneDesc', 'toneAsc', 'hybridRel'])
       .default('relevance')
       .describe(
-        'Sort order: relevance (default), date (newest first), social (most socially shared).',
+        'Sort order: relevance (default), dateDesc/dateAsc, toneDesc/toneAsc, or hybridRel ' +
+          '(GDELT hybrid relevance and recency).',
       ),
   }),
 

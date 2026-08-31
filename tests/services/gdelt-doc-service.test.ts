@@ -79,6 +79,32 @@ describe('GdeltDocService.searchArticles', () => {
     const svc = makeService();
     await expect(svc.searchArticles({ query: 'test' }, ctx)).rejects.toThrow('network error');
   });
+
+  it.each([
+    ['dateDesc', 'DateDesc'],
+    ['dateAsc', 'DateAsc'],
+    ['toneDesc', 'ToneDesc'],
+    ['toneAsc', 'ToneAsc'],
+    ['hybridRel', 'HybridRel'],
+  ] as const)('maps public %s sorting to GDELT %s', async (sort, expected) => {
+    let capturedParams: URLSearchParams | undefined;
+    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockImplementationOnce((_url, params) => {
+      capturedParams = params;
+      return Promise.resolve({ articles: [] });
+    });
+    await makeService().searchArticles({ query: 'test', sort }, createMockContext());
+    expect(capturedParams?.get('sort')).toBe(expected);
+  });
+
+  it('omits SORT for the documented relevance default', async () => {
+    let capturedParams: URLSearchParams | undefined;
+    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockImplementationOnce((_url, params) => {
+      capturedParams = params;
+      return Promise.resolve({ articles: [] });
+    });
+    await makeService().searchArticles({ query: 'test', sort: 'relevance' }, createMockContext());
+    expect(capturedParams?.has('sort')).toBe(false);
+  });
 });
 
 describe('GdeltDocService.getTimeline (standard modes)', () => {
@@ -130,6 +156,34 @@ describe('GdeltDocService.getTimeline (standard modes)', () => {
     const svc = makeService();
     const series = await svc.getTimeline({ query: 'test', mode: 'timelinevol' }, ctx);
     expect(series[0]?.data).toEqual([]);
+  });
+
+  it('serializes TIMELINESMOOTH and normalizes compact dates', async () => {
+    let capturedParams: URLSearchParams | undefined;
+    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockImplementationOnce((_url, params) => {
+      capturedParams = params;
+      return Promise.resolve({
+        timeline: [
+          {
+            series: 'Volume Intensity',
+            data: [
+              { date: '20240101T000000Z', value: 1 },
+              { date: '20240102T000000Z', value: 2 },
+            ],
+          },
+        ],
+      });
+    });
+    const series = await makeService().getTimeline(
+      { query: 'test', mode: 'timelinevol', smoothing: 3 },
+      createMockContext(),
+    );
+    expect(capturedParams?.get('timelinesmooth')).toBe('3');
+    expect(capturedParams?.has('smoothing')).toBe(false);
+    expect(series[0]?.data.map((point) => point.date)).toEqual([
+      '2024-01-01T00:00:00Z',
+      '2024-01-02T00:00:00Z',
+    ]);
   });
 });
 
@@ -229,5 +283,21 @@ describe('GdeltDocService.getBreakdown', () => {
     expect(breakdown).toHaveLength(1);
     expect(breakdown[0]?.label).toBe('English');
     expect(breakdown[0]?.data[0]?.value).toBe(4.2);
+  });
+
+  it('normalizes compact breakdown dates', async () => {
+    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({
+      timeline: [
+        {
+          series: 'English',
+          data: [{ date: '20240101T120000Z', value: 4.2 }],
+        },
+      ],
+    });
+    const breakdown = await makeService().getBreakdown(
+      { query: 'test', mode: 'timelinelang' },
+      createMockContext(),
+    );
+    expect(breakdown[0]?.data[0]?.date).toBe('2024-01-01T12:00:00Z');
   });
 });

@@ -172,6 +172,30 @@ describe('GdeltTvService.getTvClips', () => {
     const clips = await svc.getTvClips({ query: 'test' }, ctx);
     expect(clips).toEqual([]);
   });
+
+  it.each([
+    ['dateDesc', 'DateDesc'],
+    ['dateAsc', 'DateAsc'],
+  ] as const)('maps public %s sorting to GDELT %s', async (sort, expected) => {
+    let capturedParams: URLSearchParams | undefined;
+    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockImplementationOnce((_url, params) => {
+      capturedParams = params;
+      return Promise.resolve({ clips: [] });
+    });
+    await makeService().getTvClips({ query: 'test', sort }, createMockContext());
+    expect(capturedParams?.get('sort')).toBe(expected);
+    expect(capturedParams?.has('sortdir')).toBe(false);
+  });
+
+  it('omits SORT for the documented relevance default', async () => {
+    let capturedParams: URLSearchParams | undefined;
+    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockImplementationOnce((_url, params) => {
+      capturedParams = params;
+      return Promise.resolve({ clips: [] });
+    });
+    await makeService().getTvClips({ query: 'test', sort: 'relevance' }, createMockContext());
+    expect(capturedParams?.has('sort')).toBe(false);
+  });
 });
 
 describe('GdeltTvService.getTvContext', () => {
@@ -307,5 +331,77 @@ describe('GdeltTvService.searchTv', () => {
     const svc = makeService();
     const result = await svc.searchTv({ query: 'test', normalize: false }, ctx);
     expect(result.normalized).toBe(false);
+  });
+
+  it.each([
+    [undefined, 'perc'],
+    [true, 'perc'],
+    [false, 'raw'],
+  ] as const)('requests query coverage with normalize=%s', async (normalize, datanorm) => {
+    let capturedParams: URLSearchParams | undefined;
+    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockImplementationOnce((_url, params) => {
+      capturedParams = params;
+      return Promise.resolve({ timeline: [] });
+    });
+    await makeService().searchTv(
+      { query: 'test', ...(normalize != null ? { normalize } : {}) },
+      createMockContext(),
+    );
+    expect(capturedParams?.get('mode')).toBe('timelinevol');
+    expect(capturedParams?.get('datanorm')).toBe(datanorm);
+  });
+
+  it('serializes documented timeline smoothing and date-resolution parameters', async () => {
+    let capturedParams: URLSearchParams | undefined;
+    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockImplementationOnce((_url, params) => {
+      capturedParams = params;
+      return Promise.resolve({ timeline: [], dateresolution: 'week' });
+    });
+    const result = await makeService().searchTv(
+      { query: 'test', smoothing: 4, dateres: 'week' },
+      createMockContext(),
+    );
+    expect(capturedParams?.get('timelinesmooth')).toBe('4');
+    expect(capturedParams?.has('smoothing')).toBe(false);
+    expect(capturedParams?.get('dateres')).toBe('week');
+    expect(result.dateResolution).toBe('week');
+  });
+
+  it.each(['hour', 'day', 'week', 'month', 'year'] as const)(
+    'preserves recognized upstream %s resolution metadata',
+    async (dateresolution) => {
+      vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({
+        timeline: [],
+        dateresolution,
+      });
+      const result = await makeService().searchTv({ query: 'test' }, createMockContext());
+      expect(result.dateResolution).toBe(dateresolution);
+    },
+  );
+
+  it('normalizes compact dates and infers hourly points across day boundaries', async () => {
+    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({
+      timeline: [
+        {
+          series: 'CNN',
+          data: [
+            { date: '20240101T230000Z', value: 1 },
+            { date: '20240102T000000Z', value: 2 },
+            { date: '20240102T010000Z', value: 3 },
+          ],
+        },
+      ],
+    });
+    const result = await makeService().searchTv({ query: 'test' }, createMockContext());
+    expect(result.dateResolution).toBe('hour');
+    expect(result.series[0]?.data.map((point) => point.date)).toEqual([
+      '2024-01-01T23:00:00Z',
+      '2024-01-02T00:00:00Z',
+      '2024-01-02T01:00:00Z',
+    ]);
+    expect(result.timeRange).toEqual({
+      start: '2024-01-01T23:00:00Z',
+      end: '2024-01-02T01:00:00Z',
+    });
   });
 });

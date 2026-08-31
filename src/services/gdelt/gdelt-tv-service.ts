@@ -8,6 +8,11 @@ import type { Context } from '@cyanheads/mcp-ts-core';
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import type { ServerConfig } from '@/config/server-config.js';
+import {
+  inferDateResolution,
+  normalizeGdeltDate,
+  type TvDateResolution,
+} from './date-resolution.js';
 import { applyTimeRange, gdeltFetch } from './gdelt-fetch.js';
 import type { RawTvClip, RawTvStation, RawTvWord, TvClip, TvStation } from './types.js';
 
@@ -24,6 +29,7 @@ export type TvSearchParams = {
   endDatetime?: string;
   smoothing?: number;
   normalize?: boolean;
+  dateres?: TvDateResolution;
 };
 
 export type TvClipParams = {
@@ -72,13 +78,15 @@ export class GdeltTvService {
     ctx: Context,
   ): Promise<{
     series: TvSearchSeries[];
-    dateResolution: 'hour' | 'day' | 'month';
+    dateResolution: TvDateResolution;
     timeRange: { start: string; end: string };
     normalized: boolean;
   }> {
     const urlParams = this.buildBaseParams(params.query, params.stations);
-    urlParams.set('mode', params.normalize !== false ? 'timelinevolnorm' : 'timelinevol');
-    if (params.smoothing != null) urlParams.set('smoothing', String(params.smoothing));
+    urlParams.set('mode', 'timelinevol');
+    urlParams.set('datanorm', params.normalize !== false ? 'perc' : 'raw');
+    if (params.smoothing != null) urlParams.set('timelinesmooth', String(params.smoothing));
+    if (params.dateres) urlParams.set('dateres', params.dateres);
     applyTimeRange(urlParams, params.timespan, params.startDatetime, params.endDatetime);
 
     const raw = await this.fetch<{
@@ -88,7 +96,7 @@ export class GdeltTvService {
 
     const series: TvSearchSeries[] = (raw.timeline ?? []).map((s) => ({
       station: s.series ?? 'Unknown',
-      data: (s.data ?? []).map((d) => ({ date: d.date, value: d.value })),
+      data: (s.data ?? []).map((d) => ({ date: normalizeGdeltDate(d.date), value: d.value })),
     }));
 
     const allDates = series.flatMap((s) => s.data.map((d) => d.date));
@@ -98,9 +106,12 @@ export class GdeltTvService {
       end: sorted[sorted.length - 1] ?? '',
     };
 
-    const resStr = raw.dateresolution ?? 'day';
-    const dateResolution: 'hour' | 'day' | 'month' =
-      resStr === 'hour' ? 'hour' : resStr === 'month' ? 'month' : 'day';
+    const observedResolution = raw.dateresolution?.toLowerCase();
+    const recognizedResolution = isTvDateResolution(observedResolution)
+      ? observedResolution
+      : undefined;
+    const dateResolution =
+      recognizedResolution ?? params.dateres ?? inferDateResolution(allDates, 'tv');
 
     return { series, dateResolution, timeRange, normalized: params.normalize !== false };
   }
@@ -110,10 +121,9 @@ export class GdeltTvService {
     const urlParams = this.buildBaseParams(params.query, params.stations);
     urlParams.set('mode', 'clipgallery');
     if (params.maxRecords) urlParams.set('maxrecords', String(params.maxRecords));
-    if (params.sort) {
-      const sortMap = { relevance: 'relevance', dateDesc: 'date', dateAsc: 'date' } as const;
+    if (params.sort && params.sort !== 'relevance') {
+      const sortMap = { dateDesc: 'DateDesc', dateAsc: 'DateAsc' } as const;
       urlParams.set('sort', sortMap[params.sort]);
-      if (params.sort === 'dateAsc') urlParams.set('sortdir', 'asc');
     }
     applyTimeRange(urlParams, params.timespan, params.startDatetime, params.endDatetime);
 
@@ -212,6 +222,13 @@ export class GdeltTvService {
   private fetch<T>(params: URLSearchParams, ctx: Context): Promise<T> {
     return gdeltFetch<T>(this.baseUrl, params, ctx, 'GdeltTvService.fetch', 'GDELT TV');
   }
+}
+
+/** True when upstream metadata is one of the documented TV timeline resolutions. */
+function isTvDateResolution(value: string | undefined): value is TvDateResolution {
+  return (
+    value === 'hour' || value === 'day' || value === 'week' || value === 'month' || value === 'year'
+  );
 }
 
 /** Parse GDELT date string (YYYYMMDDHHMMSS or YYYYMMDD) to ms epoch. Returns undefined on failure. */

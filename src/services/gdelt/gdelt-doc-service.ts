@@ -8,6 +8,7 @@ import type { Context } from '@cyanheads/mcp-ts-core';
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import type { ServerConfig } from '@/config/server-config.js';
+import { normalizeGdeltDate } from './date-resolution.js';
 import { applyTimeRange, gdeltFetch } from './gdelt-fetch.js';
 import type { Article, RawArticle, RawTimelineSeries, RawTimelineVolInfoPoint } from './types.js';
 
@@ -22,7 +23,7 @@ export type DocSearchParams = {
   startDatetime?: string;
   endDatetime?: string;
   maxRecords?: number;
-  sort?: 'date' | 'relevance' | 'social';
+  sort?: 'relevance' | 'dateDesc' | 'dateAsc' | 'toneDesc' | 'toneAsc' | 'hybridRel';
 };
 
 export type DocTimelineParams = {
@@ -88,7 +89,16 @@ export class GdeltDocService {
     const urlParams = this.buildBaseParams(params.query);
     urlParams.set('mode', 'artlist');
     if (params.maxRecords) urlParams.set('maxrecords', String(params.maxRecords));
-    if (params.sort) urlParams.set('sort', params.sort);
+    if (params.sort && params.sort !== 'relevance') {
+      const sortMap = {
+        dateDesc: 'DateDesc',
+        dateAsc: 'DateAsc',
+        toneDesc: 'ToneDesc',
+        toneAsc: 'ToneAsc',
+        hybridRel: 'HybridRel',
+      } as const;
+      urlParams.set('sort', sortMap[params.sort]);
+    }
     applyTimeRange(urlParams, params.timespan, params.startDatetime, params.endDatetime);
 
     const raw = await this.fetch<{ articles?: RawArticle[] }>(urlParams, ctx);
@@ -100,7 +110,7 @@ export class GdeltDocService {
   async getTimeline(params: DocTimelineParams, ctx: Context): Promise<TimelineSeries[]> {
     const urlParams = this.buildBaseParams(params.query);
     urlParams.set('mode', params.mode);
-    if (params.smoothing != null) urlParams.set('smoothing', String(params.smoothing));
+    if (params.smoothing != null) urlParams.set('timelinesmooth', String(params.smoothing));
     applyTimeRange(urlParams, params.timespan, params.startDatetime, params.endDatetime);
 
     if (params.mode === 'timelinevolinfo') {
@@ -178,7 +188,7 @@ function normalizeArticle(raw: RawArticle): Article {
 function parseTimeline(raw: { timeline?: RawTimelineSeries[] }): TimelineSeries[] {
   return (raw.timeline ?? []).map((s) => ({
     label: s.series ?? 'Series',
-    data: (s.data ?? []).map((d) => ({ date: d.date, value: d.value })),
+    data: (s.data ?? []).map((d) => ({ date: normalizeGdeltDate(d.date), value: d.value })),
   }));
 }
 
@@ -188,7 +198,7 @@ function parseVolInfoTimeline(raw: {
   return (raw.timeline ?? []).map((s) => ({
     label: s.series ?? 'Volume Intensity',
     data: (s.data ?? []).map((d) => ({
-      date: d.date,
+      date: normalizeGdeltDate(d.date),
       value: d.value,
       ...(d.toparts?.length
         ? {

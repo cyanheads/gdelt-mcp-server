@@ -114,11 +114,11 @@ describe('oversized inputs', () => {
     expect(() => gdeltSearchArticles.input.parse({ query: longQuery })).not.toThrow();
   });
 
-  it('search-tv: array with many stations is accepted by the schema', () => {
+  it('search-tv: array above the station ceiling is rejected by the schema', () => {
     const manyStations = Array.from({ length: 200 }, (_, i) => `STATION${i}`);
-    expect(() =>
-      gdeltSearchTv.input.parse({ query: 'test', stations: manyStations }),
-    ).not.toThrow();
+    expect(() => gdeltSearchTv.input.parse({ query: 'test', stations: manyStations })).toThrow(
+      /10/,
+    );
   });
 
   it('get-tv-clips maxRecords at maximum boundary 3000 is accepted', () => {

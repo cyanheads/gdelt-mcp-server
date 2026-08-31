@@ -10,7 +10,7 @@
 | `gdelt_get_coverage_timeline` | Retrieve a time series showing when coverage of a topic spiked — either as normalized volume (% of all global coverage) or as average tone. Use `mode: volume_with_articles` for the signal-detection workflow: each timestep includes the top articles that drove that spike, so a single call reveals both the spike and its cause. The text surface renders the first 3 links per timestep beside its true count; `points` renders named timesteps in full. Tone timeline shows sentiment shifts over time; combine with `gdelt_get_tone_distribution` for the full tonal picture. | `query`, `mode` (volume \| volume_with_articles \| tone), `timespan`, `startDatetime`, `endDatetime`, `smoothing`, `points` | `readOnlyHint: true`, `openWorldHint: true` |
 | `gdelt_get_tone_distribution` | Get the tonal distribution of articles matching a query as a histogram (bins from ~-30 to +30). Unlike a single average tone score, the histogram reveals whether coverage is uniformly negative, bimodal (some extremely positive, some extremely negative), or clustered near neutral. Each bin includes representative article URLs. Distinct from `gdelt_get_coverage_timeline` (mode: tone) — this is a snapshot distribution across all matching articles, not a time series. | `query`, `timespan`, `startDatetime`, `endDatetime` | `readOnlyHint: true`, `openWorldHint: true` |
 | `gdelt_get_coverage_breakdown` | Break down coverage volume over time by source language or source country, returning a multi-series time series (one series per language or country). Shows which countries or languages drove early vs. late coverage — useful for tracing how a story propagated geographically. Returns the top 10 series by total volume to keep output size manageable; remaining series are aggregated into an "Other" bucket and named in `otherSeriesLabels`, so any of them can be retrieved complete via the `series` input. Values are normalized — the topic's share of media output, not absolute article counts, so small media markets with concentrated coverage rank above large markets with diverse output. | `query`, `breakdownBy` (language \| country), `timespan`, `startDatetime`, `endDatetime`, `series` | `readOnlyHint: true`, `openWorldHint: true` |
-| `gdelt_search_tv` | Search US television news closed captions (2009–Oct 2024, 150+ stations) for spoken mentions of a query. Returns a normalized per-station time series showing relative airtime devoted to the topic. Select at least one station with `stations` (e.g. CNN vs. FOXNEWS) or a `station:` query operator; omitting both is rejected. TV query also supports `market:`, `show:`, and `context:` operators. Note: most station monitoring ended Oct 2024 — use `gdelt_list_tv_stations` to verify active date ranges before querying recent events. | `query`, `stations` (array of station IDs), `timespan`, `startDatetime`, `endDatetime`, `smoothing`, `normalize` | `readOnlyHint: true`, `openWorldHint: true` |
+| `gdelt_search_tv` | Search US television news closed captions (2009–Oct 2024, 150+ stations) for spoken mentions of a query. Returns query-matching per-station coverage as normalized airtime percentages or raw 15-second clip counts. Up to 10 stations may be selected with `stations`, or a `station:` query operator can supply selection. Results are ISO-normalized; page membership uses deterministic date-then-station order, and returned points are grouped by station. `nextOffset` retrieves the next page of up to 500 points. | `query`, `stations`, `timespan`, `startDatetime`, `endDatetime`, `smoothing`, `normalize`, `dateres`, `offset`, `limit` | `readOnlyHint: true`, `openWorldHint: true` |
 | `gdelt_get_tv_clips` | Retrieve the top matching TV news clips (up to 3,000) for a query from the Internet Archive's Television News Archive. Each clip includes show name, station, air timestamp, a 15-second transcript excerpt, and a direct link to view the full one-minute clip. Use after `gdelt_search_tv` to read the actual content driving a coverage spike. 3,000 is a hard ceiling with no cursor past it — at the cap the response returns `continuationWindows` to re-query. | `query`, `stations`, `timespan`, `maxRecords`, `sort` (relevance \| dateDesc \| dateAsc) | `readOnlyHint: true`, `openWorldHint: true` |
 | `gdelt_get_tv_context` | Get the top co-occurring words and phrases from TV news clips matching a query — the vocabulary framing a topic on television. Returns the most frequent non-stopword terms from matching clips, with relative frequency scores. Use to understand narrative framing, identify related concepts, or generate follow-up search terms. | `query`, `stations`, `timespan` | `readOnlyHint: true`, `openWorldHint: true` |
 | `gdelt_get_tv_trending` | Retrieve trending topics, keywords, and phrases currently dominating US television news across national networks. Updated every 15 minutes. No query required — returns the top memes of the present news cycle. Note: coverage data ends Oct 2024; results reflect that archive endpoint, not a live feed. | *(none)* | `readOnlyHint: true`, `openWorldHint: true` |
@@ -108,7 +108,7 @@ Each step is independently testable.
 {
   query: string;
   mode: 'volume' | 'volume_with_articles' | 'tone';
-  dateResolution: 'hour' | 'day';
+  dateResolution: '15min' | 'hour' | 'day';
   series: Array<{
     label: string;  // "Volume Intensity" or "Average Tone"
     data: Array<{
@@ -148,7 +148,7 @@ render in full. An unmatched date throws `unknown_point` listing the available d
 {
   query: string;
   breakdownBy: 'language' | 'country';
-  dateResolution: 'hour' | 'day';
+  dateResolution: '15min' | 'hour' | 'day';
   topSeries: Array<{        // top 10 by total volume
     label: string;          // language name or country name
     data: Array<{ date: string; value: number }>;  // normalized share of media output, not article counts
@@ -171,13 +171,17 @@ label throws `unknown_series` listing the available labels rather than being ski
 ```ts
 {
   query: string;
-  dateResolution: 'hour' | 'day' | 'month';
+  dateResolution: 'hour' | 'day' | 'week' | 'month' | 'year';
   timeRange: { start: string; end: string };
   series: Array<{
     station: string;   // e.g. "CNN"
-    data: Array<{ date: string; value: number }>;  // normalized % or raw count
+    data: Array<{ date: string; value: number }>;  // ISO date; normalized % or raw 15-second clip count
   }>;
   normalized: boolean;
+  totalPoints: number; // complete upstream point count before paging
+  offset: number;
+  limit: number;       // 1–500
+  nextOffset?: number;
 }
 ```
 
@@ -318,6 +322,18 @@ The DOC API's `timelinevolinfo` mode returns top articles per timestep alongside
 The halves **overlap by one second** rather than meeting at a shared midpoint. GDELT documents both boundaries as exclusive — STARTDATETIME considers "only articles published *after* this date/time stamp", ENDDATETIME "only articles published *before*" it, in both the DOC 2.0 and TV 2.0 API docs — so halves that merely touched would silently drop any record timestamped exactly on the seam. The overlap tiles the window exactly under that documented reading, and if the boundaries turn out to behave inclusively instead, it costs at most two seconds of duplicates, which a caller can see and de-duplicate. Gap-free either way; a visible duplicate beats a silent loss.
 
 Windows narrower than four seconds cannot yield two strictly-narrower halves, so the split stops there and the notice states plainly that the remainder is unreachable rather than implying the capped set was complete. A call that pinned no window at all gets guidance to pin one — the server never guesses GDELT's own default window.
+
+### TV timeline responses use bounded point pages
+
+`gdelt_search_tv` selects page membership from the full result in date-then-station order, then returns those points grouped by station. Each response carries at most 500 points from the requested `offset`. The same bounded page is used for `structuredContent` and rendered in full in `content[]`; `nextOffset` retrieves the next non-overlapping page with identical query inputs. A deterministic 10-station × 50-point formatter fixture measures 28,449 bytes of structured JSON and 15,936 bytes of rendered text at the ceiling. Ten station selectors and the 500-point ceiling therefore keep request construction and both MCP surfaces bounded without hiding points on one client surface.
+
+This is server-side pagination over a fresh upstream timeline, not a GDELT cursor. Historical archive queries are the intended workflow; callers paging a mutable window should keep every query input fixed and expect new upstream data to change later pages.
+
+### Timeline dates and request enums mirror GDELT
+
+DOC and TV timeline dates are normalized at the service boundary (`YYYYMMDD` → `YYYY-MM-DD`, `YYYYMMDDTHHMMSSZ` → ISO date-time). Resolution fallback uses the smallest positive interval across all usable points instead of the timestamp's spelling. DOC represents 15-minute, hourly, and daily intervals; TV preserves or infers `hour`, `day`, `week`, `month`, and `year`, and exposes the same values through `dateres`.
+
+Timeline smoothing is sent upstream as `TIMELINESMOOTH`. TV clips use `DateAsc`/`DateDesc`; DOC article search exposes `dateDesc`, `dateAsc`, `toneDesc`, `toneAsc`, and `hybridRel`, while `relevance` omits `SORT` to use GDELT's documented default.
 
 ### Per-point article rendering stays capped by default
 

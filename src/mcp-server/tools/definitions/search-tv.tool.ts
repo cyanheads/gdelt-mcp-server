@@ -10,11 +10,15 @@ import { formatDateShort, resolveTimespan } from '@/services/gdelt/gdelt-fetch.j
 import { getGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
 import { GDELT_DATETIME_PATTERN, isUnpairedDateRange } from '../date-range.js';
 
+/** Evidence-led request/response bounds: ten station selectors and 500 returned points. */
+const MAX_STATIONS = 10;
+const MAX_POINTS_PER_PAGE = 500;
+
 export const gdeltSearchTv = tool('gdelt_search_tv', {
   title: 'Search GDELT TV News',
   description:
     'Search US television news closed captions (2009–October 2024, 150+ stations) for spoken mentions ' +
-    'of a query. Returns a normalized per-station time series showing relative airtime devoted to the topic. ' +
+    'of a query. Returns a bounded, paged per-station time series showing airtime devoted to the topic. ' +
     'Use the stations parameter to select networks (e.g. ["CNN", "FOXNEWS", "MSNBC"]) — the TV API ' +
     'requires at least one station, supplied either there or as a station: selector inside query. ' +
     'TV query also supports in-query operators: station:CNN, network:CBS, market:"National", ' +
@@ -38,6 +42,12 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       when: 'Exactly one of startDatetime / endDatetime was supplied.',
       recovery:
         'Supply both startDatetime and endDatetime to pin an explicit window, or omit both and use timespan instead.',
+    },
+    {
+      reason: 'offset_out_of_range',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'The requested point offset is at or beyond the end of a non-empty timeline.',
+      recovery: 'Retry with an offset between 0 and totalPoints - 1 from the preceding response.',
     },
     {
       reason: 'invalid_query',
@@ -74,9 +84,10 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       ),
     stations: z
       .array(z.string())
+      .max(MAX_STATIONS, `At most ${MAX_STATIONS} stations may be requested.`)
       .optional()
       .describe(
-        'Station IDs to filter to (e.g. ["CNN", "FOXNEWS", "MSNBC"]). ' +
+        `Up to ${MAX_STATIONS} station IDs to filter to (e.g. ["CNN", "FOXNEWS", "MSNBC"]). ` +
           'The GDELT TV API requires at least one station — supply it here, or embed a station: ' +
           'selector directly in query. Omitting both is rejected; it does not fall back to all stations. ' +
           'Use gdelt_list_tv_stations to see valid station IDs.',
@@ -117,20 +128,43 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       .default(true)
       .describe(
         'When true (default), values are normalized as % of total airtime, enabling cross-station comparison. ' +
-          'When false, returns raw coverage volume.',
+          'When false, returns raw matching 15-second clip counts.',
       ),
+    dateres: z
+      .enum(['hour', 'day', 'week', 'month', 'year'])
+      .optional()
+      .describe(
+        'Optional GDELT aggregation resolution. Omit to let GDELT choose from the query window; ' +
+          'the effective recognized or inferred resolution is returned as dateResolution.',
+      ),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .default(0)
+      .describe(
+        'Zero-based point offset into the deterministic date-then-station ordering. Use nextOffset ' +
+          'from the preceding response with the same query inputs to retrieve the next page.',
+      ),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_POINTS_PER_PAGE)
+      .default(MAX_POINTS_PER_PAGE)
+      .describe(`Maximum timeline points returned in this response (1–${MAX_POINTS_PER_PAGE}).`),
   }),
 
   output: z.object({
     dateResolution: z
-      .enum(['hour', 'day', 'month'])
+      .enum(['hour', 'day', 'week', 'month', 'year'])
       .describe('Temporal resolution of data points.'),
     timeRange: z
       .object({
         start: z.string().describe('Earliest date in the returned data.'),
         end: z.string().describe('Latest date in the returned data.'),
       })
-      .describe('Date range spanned by the returned data.'),
+      .describe('Date range spanned by this returned point page.'),
     series: z
       .array(
         z
@@ -141,7 +175,11 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
                 z
                   .object({
                     date: z.string().describe('Timestep in ISO 8601 format.'),
-                    value: z.number().describe('Coverage value (normalized % or raw count).'),
+                    value: z
+                      .number()
+                      .describe(
+                        'Coverage value (normalized % or raw matching 15-second clip count).',
+                      ),
                   })
                   .describe('A single coverage data point.'),
               )
@@ -149,8 +187,19 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
           })
           .describe('Coverage time series for a single station.'),
       )
-      .describe('One coverage series per explicitly selected station.'),
+      .describe('Station series represented in this point page.'),
     normalized: z.boolean().describe('True when values are normalized coverage percentages.'),
+    totalPoints: z
+      .number()
+      .describe('Total points available across all matched station series before pagination.'),
+    offset: z.number().describe('Zero-based offset of this point page.'),
+    limit: z.number().describe('Maximum points requested for this page.'),
+    nextOffset: z
+      .number()
+      .optional()
+      .describe(
+        'Offset for the next page using the same query inputs. Absent when this is the final page.',
+      ),
   }),
 
   // Agent-facing context — query echo, station count, and notice on empty results.
@@ -184,6 +233,7 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
         ...(input.startDatetime && { startDatetime: input.startDatetime }),
         ...(input.endDatetime && { endDatetime: input.endDatetime }),
         ...(input.smoothing != null && { smoothing: input.smoothing }),
+        ...(input.dateres && { dateres: input.dateres }),
         normalize: input.normalize,
       },
       ctx,
@@ -206,15 +256,40 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       });
     }
 
+    const page = paginateTvSeries(result.series, input.offset, input.limit);
+    if (input.offset >= page.totalPoints) {
+      throw ctx.fail('offset_out_of_range', `Offset ${input.offset} is outside this timeline`, {
+        offset: input.offset,
+        totalPoints: page.totalPoints,
+        recovery: {
+          hint: `Retry with offset 0–${page.totalPoints - 1}; this timeline has ${page.totalPoints} points.`,
+        },
+      });
+    }
+
+    const pageDates = page.series.flatMap((series) => series.data.map((point) => point.date));
+    const sortedPageDates = pageDates.slice().sort();
+    const nextOffset =
+      input.offset + pageDates.length < page.totalPoints
+        ? input.offset + pageDates.length
+        : undefined;
+
     ctx.enrich.echo(input.query);
-    ctx.enrich.total(result.series.length);
+    ctx.enrich.total(page.series.length);
 
     ctx.log.info('gdelt_search_tv completed', { seriesCount: result.series.length });
     return {
       dateResolution: result.dateResolution,
-      timeRange: result.timeRange,
-      series: result.series,
+      timeRange: {
+        start: sortedPageDates[0] ?? '',
+        end: sortedPageDates[sortedPageDates.length - 1] ?? '',
+      },
+      series: page.series,
       normalized: result.normalized,
+      totalPoints: page.totalPoints,
+      offset: input.offset,
+      limit: input.limit,
+      ...(nextOffset != null ? { nextOffset } : {}),
     };
   },
 
@@ -223,9 +298,12 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       `## GDELT TV News Coverage`,
       `**Date Resolution:** ${result.dateResolution}`,
       `**Time Range:** ${result.timeRange.start} to ${result.timeRange.end}`,
-      `**Normalized:** ${result.normalized ? 'Yes (% of airtime)' : 'No (raw count)'}`,
+      `**Normalized:** ${result.normalized ? 'Yes (% of airtime)' : 'No (raw matching 15-second clip counts)'}`,
       `**Stations:** ${result.series.length}`,
+      `**Point page:** offset ${result.offset}, limit ${result.limit}`,
+      `**Points ${result.offset + 1}–${result.offset + result.series.reduce((sum, series) => sum + series.data.length, 0)} of ${result.totalPoints}**`,
     ];
+    if (result.nextOffset != null) lines.push(`**Next offset:** ${result.nextOffset}`);
     for (const s of result.series) {
       const peak = s.data.reduce(
         (max, d) => (d.value > max.value ? d : max),
@@ -235,7 +313,49 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       lines.push(`\n### ${s.station}`);
       lines.push(`Points: ${s.data.length} | Total: ${total.toFixed(2)}`);
       if (peak.date) lines.push(`Peak: ${peak.value.toFixed(3)} at ${peak.date}`);
+      for (const point of s.data) lines.push(`- ${point.date}: ${point.value.toFixed(3)}`);
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },
 });
+
+/** Select a stable date-then-station page, then group it in the original series order. */
+function paginateTvSeries(
+  series: Array<{ station: string; data: Array<{ date: string; value: number }> }>,
+  offset: number,
+  limit: number,
+): {
+  series: Array<{ station: string; data: Array<{ date: string; value: number }> }>;
+  totalPoints: number;
+} {
+  const orderedPoints = series
+    .flatMap((stationSeries, seriesIndex) =>
+      stationSeries.data.map((point, pointIndex) => ({
+        seriesIndex,
+        station: stationSeries.station,
+        pointIndex,
+        point,
+      })),
+    )
+    .sort(
+      (a, b) =>
+        a.point.date.localeCompare(b.point.date) ||
+        a.station.localeCompare(b.station) ||
+        a.seriesIndex - b.seriesIndex ||
+        a.pointIndex - b.pointIndex,
+    );
+  const selected = orderedPoints.slice(offset, offset + limit);
+  const bySeries = new Map<
+    number,
+    { station: string; data: Array<{ date: string; value: number }> }
+  >();
+  for (const item of selected) {
+    const pageSeries = bySeries.get(item.seriesIndex) ?? { station: item.station, data: [] };
+    pageSeries.data.push(item.point);
+    bySeries.set(item.seriesIndex, pageSeries);
+  }
+  return {
+    series: [...bySeries.entries()].sort(([a], [b]) => a - b).map(([, pageSeries]) => pageSeries),
+    totalPoints: orderedPoints.length,
+  };
+}

@@ -13,7 +13,7 @@ const VOLUME_SERIES = [
     label: 'Volume Intensity',
     data: [
       { date: '2024-01-01T00:00:00Z', value: 0.5 },
-      { date: '2024-01-02T00:00:00Z', value: 1.2 },
+      { date: '2024-01-01T01:00:00Z', value: 1.2 },
     ],
   },
 ];

@@ -49,10 +49,21 @@ describe('gdeltSearchArticles input validation', () => {
     expect(parsed.sort).toBe('relevance');
   });
 
-  it('accepts all three valid sort values', () => {
-    for (const sort of ['date', 'relevance', 'social'] as const) {
+  it('accepts every documented article sort value', () => {
+    for (const sort of [
+      'relevance',
+      'dateDesc',
+      'dateAsc',
+      'toneDesc',
+      'toneAsc',
+      'hybridRel',
+    ] as const) {
       expect(() => gdeltSearchArticles.input.parse({ query: 'test', sort })).not.toThrow();
     }
+  });
+
+  it.each(['date', 'social'])('rejects removed undocumented sort value %s', (sort) => {
+    expect(() => gdeltSearchArticles.input.parse({ query: 'test', sort })).toThrow();
   });
 });
 
@@ -195,6 +206,35 @@ describe('gdeltSearchTv input validation', () => {
     const parsed = gdeltSearchTv.input.parse({ query: 'vaccine', stations: ['CNN'] });
     expect(parsed.query).toBe('vaccine');
     expect(parsed.stations).toEqual(['CNN']);
+  });
+
+  it('accepts up to 10 stations and rejects 11 without truncation', () => {
+    const ten = Array.from({ length: 10 }, (_, index) => `STATION${index}`);
+    expect(gdeltSearchTv.input.parse({ query: 'test', stations: ten }).stations).toEqual(ten);
+    expect(() =>
+      gdeltSearchTv.input.parse({ query: 'test', stations: [...ten, 'STATION10'] }),
+    ).toThrow(/10/);
+  });
+
+  it('preserves omitted and explicitly empty station selection', () => {
+    expect(gdeltSearchTv.input.parse({ query: 'test station:CNN' }).stations).toBeUndefined();
+    expect(gdeltSearchTv.input.parse({ query: 'test station:CNN', stations: [] }).stations).toEqual(
+      [],
+    );
+  });
+
+  it('accepts every documented TV date resolution and rejects unknown values', () => {
+    for (const dateres of ['hour', 'day', 'week', 'month', 'year'] as const) {
+      expect(() => gdeltSearchTv.input.parse({ query: 'test', dateres })).not.toThrow();
+    }
+    expect(() => gdeltSearchTv.input.parse({ query: 'test', dateres: 'minute' })).toThrow();
+  });
+
+  it('bounds point-page inputs', () => {
+    expect(gdeltSearchTv.input.parse({ query: 'test' })).toMatchObject({ offset: 0, limit: 500 });
+    expect(() => gdeltSearchTv.input.parse({ query: 'test', offset: -1 })).toThrow();
+    expect(() => gdeltSearchTv.input.parse({ query: 'test', limit: 0 })).toThrow();
+    expect(() => gdeltSearchTv.input.parse({ query: 'test', limit: 501 })).toThrow();
   });
 });
 
