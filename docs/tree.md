@@ -1,6 +1,6 @@
 # gdelt-mcp-server - Directory Structure
 
-Generated on: 2026-08-22 14:11:07
+Generated on: 2026-08-31 03:00:36
 
 ```text
 gdelt-mcp-server/
@@ -24,6 +24,8 @@ gdelt-mcp-server/
 ├── changelog/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
+│   ├── 0.3.x/
+│   ├── 0.4.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -149,10 +151,10 @@ gdelt-mcp-server/
 │   │       │   ├── list-tv-stations.tool.ts
 │   │       │   ├── search-articles.tool.ts
 │   │       │   └── search-tv.tool.ts
-│   │       ├── date-range.ts
-│   │       └── date-resolution.ts
+│   │       └── date-range.ts
 │   ├── services/
 │   │   └── gdelt/
+│   │       ├── date-resolution.ts
 │   │       ├── gdelt-doc-service.ts
 │   │       ├── gdelt-fetch.ts
 │   │       ├── gdelt-tv-service.ts

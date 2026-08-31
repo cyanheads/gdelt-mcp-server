@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-08-30 · ⚠️ Breaking
+
+Bound TV timeline pages, normalize timeline dates, and align GDELT query parameters with documented API contracts.
+
 ## [0.3.1](changelog/0.3.x/0.3.1.md) — 2026-08-30
 
 Synchronize the Claude and Codex plugin manifests with the published server version.

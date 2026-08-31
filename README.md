@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.3.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/gdelt-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/gdelt-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/gdelt-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.4.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/gdelt-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/gdelt-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/gdelt-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -50,7 +50,7 @@ Search the last 3 months of global news with GDELT's full query syntax.
 - Keywords, phrases (`"bird flu"`), boolean OR, and exclusion (`-sports`)
 - Filter operators: `sourcecountry:`, `sourcelang:`, `domain:`, `theme:` (GKG taxonomy), `tone<`/`tone>`
 - Proximity and repetition: `near20:"flu virus"`, `repeat3:"outbreak"`
-- Configurable sort (relevance, date) and result count (up to 250)
+- Configurable sort (`relevance`, `dateDesc`, `dateAsc`, `toneDesc`, `toneAsc`, `hybridRel`) and result count (up to 250)
 - Returns URL, title, publication date, domain, language, source country, and social image URL
 - 250 is a hard per-call ceiling, not a page size — GDELT exposes no cursor. Fill it and the response returns `continuationWindows`: the queried window halved, ready to re-query. The halves overlap by a second so nothing falls through the seam; de-duplicate by `url`
 - Query is echoed in response for chaining
@@ -95,8 +95,10 @@ Multi-series time series showing which countries or languages drove coverage.
 
 Search US television news transcripts (2009–Oct 2024) with per-station airtime analysis.
 
-- Structured `stations` parameter (e.g. `["CNN", "FOXNEWS"]`) — the server embeds station filters in the query string
-- Normalize results to relative % or return raw counts
+- Up to 10 structured `stations` (e.g. `["CNN", "FOXNEWS"]`) — or place a `station:` selector directly in the query
+- Normalize query-matching coverage to relative airtime % or return raw matching 15-second clip counts
+- Optional `dateres` aggregation: `hour`, `day`, `week`, `month`, or `year`; returned timestamps are normalized to ISO 8601
+- Responses select at most 500 points per page in deterministic date-then-station order, then group them by station. Use `nextOffset` with the same query inputs to retrieve the next page; `content[]` renders every point in the structured page
 - TV-specific operators: `market:`, `show:`, `context:`
 - Use `gdelt_list_tv_stations` to verify station active date ranges before querying recent events
 
