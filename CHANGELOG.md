@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.1](changelog/0.4.x/0.4.1.md) — 2026-09-02
+
+Framework bump classifies an upstream 5xx as retryable and a mid-call disconnect as a cancellation rather than an internal error; MCP_SESSION_MODE is now stateless everywhere, matching the container.
+
 ## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-08-30 · ⚠️ Breaking
 
 Bound TV timeline pages, normalize timeline dates, and align GDELT query parameters with documented API contracts.
