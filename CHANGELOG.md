@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.2](changelog/0.4.x/0.4.2.md) — 2026-09-19
+
+GDELT requests run through the framework's shared outbound pacer with a cooldown gate and queue-wait rejection, and createApp() declares a stateless session posture in src/. Argument rejections carry a recovery hint, and client-added keys or case-style parameter variants are tolerated instead of rejected.
+
 ## [0.4.1](changelog/0.4.x/0.4.1.md) — 2026-09-02
 
 Framework bump classifies an upstream 5xx as retryable and a mid-call disconnect as a cancellation rather than an internal error; MCP_SESSION_MODE is now stateless everywhere, matching the container.

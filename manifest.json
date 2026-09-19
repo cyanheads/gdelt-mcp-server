@@ -1,9 +1,13 @@
 {
   "manifest_version": "0.3",
   "name": "gdelt-mcp-server",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Search and analyze global news coverage and US TV transcripts via the GDELT Project APIs.",
-  "author": { "name": "cyanheads" },
+  "author": {
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/cyanheads/gdelt-mcp-server"
@@ -19,7 +23,9 @@
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio",
         "MCP_AUTH_MODE": "none",
-        "NODE_ENV": "production"
+        "NODE_ENV": "production",
+        "GDELT_BASE_URL": "${user_config.gdelt_base_url}",
+        "GDELT_REQUEST_DELAY_MS": "${user_config.gdelt_request_delay_ms}"
       }
     }
   },
@@ -28,5 +34,20 @@
   },
   "tools_generated": true,
   "prompts_generated": true,
-  "user_config": {}
+  "user_config": {
+    "gdelt_base_url": {
+      "type": "string",
+      "title": "GDELT Base URL",
+      "description": "Override the base URL for the GDELT DOC and TV APIs.",
+      "required": false,
+      "default": ""
+    },
+    "gdelt_request_delay_ms": {
+      "type": "number",
+      "title": "GDELT Request Delay (ms)",
+      "description": "Minimum milliseconds between GDELT requests, enforcing the 1 req/5s rate limit.",
+      "required": false,
+      "default": 5300
+    }
+  }
 }

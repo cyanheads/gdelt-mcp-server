@@ -6,7 +6,7 @@
     "url": "https://github.com/cyanheads/gdelt-mcp-server",
     "source": "github"
   },
-  "version": "0.4.1",
+  "version": "0.4.2",
   "remotes": [
     {
       "type": "streamable-http",
@@ -19,7 +19,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/gdelt-mcp-server",
       "runtimeHint": "node",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "packageArguments": [
         {
           "type": "positional",
@@ -31,6 +31,20 @@
         }
       ],
       "environmentVariables": [
+        {
+          "name": "GDELT_BASE_URL",
+          "description": "Override the base URL for the GDELT DOC and TV APIs.",
+          "format": "string",
+          "isRequired": false,
+          "default": "https://api.gdeltproject.org/api/v2"
+        },
+        {
+          "name": "GDELT_REQUEST_DELAY_MS",
+          "description": "Minimum milliseconds between GDELT requests, enforcing the 1 req/5s rate limit.",
+          "format": "string",
+          "isRequired": false,
+          "default": "5300"
+        },
         {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
@@ -48,7 +62,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/gdelt-mcp-server",
       "runtimeHint": "node",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "packageArguments": [
         {
           "type": "positional",
@@ -60,6 +74,20 @@
         }
       ],
       "environmentVariables": [
+        {
+          "name": "GDELT_BASE_URL",
+          "description": "Override the base URL for the GDELT DOC and TV APIs.",
+          "format": "string",
+          "isRequired": false,
+          "default": "https://api.gdeltproject.org/api/v2"
+        },
+        {
+          "name": "GDELT_REQUEST_DELAY_MS",
+          "description": "Minimum milliseconds between GDELT requests, enforcing the 1 req/5s rate limit.",
+          "format": "string",
+          "isRequired": false,
+          "default": "5300"
+        },
         {
           "name": "MCP_HTTP_HOST",
           "description": "The hostname for the HTTP server.",
