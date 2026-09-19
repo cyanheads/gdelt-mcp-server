@@ -9,9 +9,9 @@
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { fetchWithTimeout } from '@cyanheads/mcp-ts-core/utils';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltFetch } from '@/services/gdelt/gdelt-fetch.js';
-import { initRateLimiter } from '@/services/gdelt/rate-limiter.js';
+import { disposeGdeltPacer, initGdeltPacer } from '@/services/gdelt/gdelt-pacer.js';
 
 // Keep the real withRetry (the code under test) and stub only the network call.
 vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => {
@@ -36,8 +36,12 @@ function callGdeltFetch() {
 describe('gdeltFetch retry boundary', () => {
   beforeEach(() => {
     mockedFetch.mockReset();
-    // No inter-request spacing in unit tests — the limiter is not what's under test here.
-    initRateLimiter(0);
+    // No inter-request spacing in unit tests — pacing is not what's under test here.
+    initGdeltPacer(0);
+  });
+
+  afterEach(() => {
+    disposeGdeltPacer();
   });
 
   it('fails fast on an HTTP 429 — the underlying fetch runs exactly once, not 4×', async () => {

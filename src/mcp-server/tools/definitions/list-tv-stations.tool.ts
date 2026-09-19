@@ -31,10 +31,11 @@ export const gdeltListTvStations = tool('gdelt_list_tv_stations', {
     {
       reason: 'gdelt_rate_limited',
       code: JsonRpcErrorCode.RateLimited,
-      when: 'GDELT rejected the request because its one-request-per-five-seconds limit was reached.',
+      when: 'GDELT rejected the request for its one-request-per-five-seconds limit, or too many requests were already queued for this one to start in time.',
       retryable: false,
       recovery:
         'Wait at least 5 seconds before retrying; GDELT accepts at most one request every 5 seconds.',
+      thrownBy: 'service',
     },
     {
       reason: 'gdelt_unavailable',
@@ -42,6 +43,7 @@ export const gdeltListTvStations = tool('gdelt_list_tv_stations', {
       when: 'GDELT TV API is unreachable or temporarily returned no usable data.',
       retryable: true,
       recovery: 'Retry after a short delay; GDELT may be temporarily unavailable.',
+      thrownBy: 'service',
     },
   ],
 

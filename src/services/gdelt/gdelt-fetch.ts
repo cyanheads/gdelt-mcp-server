@@ -14,7 +14,7 @@ import {
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
 import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
-import { getRateLimiter } from './rate-limiter.js';
+import { GDELT_MAX_QUEUE_WAIT_MS, getGdeltPacer } from './gdelt-pacer.js';
 
 /** Stable public recovery for every GDELT rate-limit response shape. */
 const GDELT_RATE_LIMIT_RECOVERY = {
@@ -80,7 +80,16 @@ export function formatDateShort(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-/** Fetch a GDELT endpoint with rate-limiting, retries, and JSON parsing. */
+/**
+ * Fetch a GDELT endpoint through the shared pacer, with retries and JSON parsing.
+ *
+ * Retry outside, pacer inside: each attempt re-queues and is re-paced, and the pacer's
+ * cooldown gate is an absolute instant rather than a duration counted from dequeue, so a
+ * backoff and the gate overlap in wall-clock instead of summing. Both GDELT rate-limit
+ * shapes — the HTTP 429 `failFastOnRateLimit` re-throws and the HTTP-200 notice
+ * `parseGdeltJson` classifies — are raised inside the paced task as a `RateLimited`
+ * `McpError`, which is what closes the gate for every other queued caller.
+ */
 export function gdeltFetch<T>(
   baseUrl: string,
   params: URLSearchParams,
@@ -88,20 +97,52 @@ export function gdeltFetch<T>(
   operation: string,
   apiLabel: string,
 ): Promise<T> {
-  const limiter = getRateLimiter();
   return withRetry(
-    async () => {
-      await limiter.acquire(ctx.signal);
-      const url = `${baseUrl}?${params.toString()}`;
-      ctx.log.debug(`${apiLabel} API request`, { url });
-      const response = await fetchWithTimeout(url, 30_000, ctx, {
-        signal: ctx.signal,
-        expectedStatuses: [429],
-      }).catch(failFastOnRateLimit);
-      const text = await response.text();
-      return parseGdeltJson<T>(text, apiLabel);
-    },
+    ({ signal }) =>
+      getGdeltPacer()
+        .run(
+          async (runSignal) => {
+            const url = `${baseUrl}?${params.toString()}`;
+            ctx.log.debug(`${apiLabel} API request`, { url });
+            const response = await fetchWithTimeout(url, 30_000, ctx, {
+              signal: runSignal,
+              expectedStatuses: [429],
+            }).catch(failFastOnRateLimit);
+            const text = await response.text();
+            return parseGdeltJson<T>(text, apiLabel);
+          },
+          { signal, maxWaitMs: GDELT_MAX_QUEUE_WAIT_MS },
+        )
+        .catch(declareShedAsRateLimited),
     { operation, context: ctx, baseDelayMs: 5100, signal: ctx.signal },
+  );
+}
+
+/**
+ * Re-label a pacer shed as the declared `gdelt_rate_limited` contract entry.
+ *
+ * A shed carries `data.reason: 'pacer_shed'`, which no tool declares — an undeclared reason
+ * reaching a caller is a broken contract. The shed's own `retryAfter` (seconds until a slot
+ * opens) becomes the recovery hint's wait, so the caller is told how long the queue is rather
+ * than GDELT's nominal five seconds. `retryable: false` matches the contract entry and keeps
+ * {@link withRetry} from replaying a request the queue has no room for.
+ */
+function declareShedAsRateLimited(error: unknown): never {
+  if (!(error instanceof McpError) || error.data?.reason !== 'pacer_shed') throw error;
+  const retryAfter = typeof error.data.retryAfter === 'number' ? error.data.retryAfter : 5;
+  throw new McpError(
+    error.code,
+    `GDELT request queue is saturated — no slot opens within ${retryAfter}s.`,
+    {
+      ...error.data,
+      ...GDELT_RATE_LIMIT_DATA,
+      recovery: {
+        hint:
+          `Requests are already queued against GDELT's one-request-per-five-seconds limit. ` +
+          `Wait about ${retryAfter} seconds before retrying.`,
+      },
+    },
+    { cause: error },
   );
 }
 

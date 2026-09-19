@@ -329,6 +329,83 @@ describe('gdelt_rate_limited propagates through production-shaped tool contracts
   });
 });
 
+/**
+ * Framework-owned wire shaping a caller sees on every tool. Pinned here because the shapes
+ * are what an agent branches on, and a framework upgrade that moves them should fail loudly
+ * rather than silently change what callers read.
+ */
+describe('framework error envelope as a caller receives it', () => {
+  /** A call the tool's input type forbids — the point of the case is that the wire allows it. */
+  const callWithRawArguments = (args: Record<string, unknown>) =>
+    runToolContract(gdeltSearchArticles, args as Parameters<typeof gdeltSearchArticles.handler>[0]);
+
+  const expectTextContaining = (content: unknown, fragment: string) =>
+    expect(content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ text: expect.stringContaining(fragment) }),
+      ]),
+    );
+
+  it('closes a declared failure’s text with its reason and retryable terms', async () => {
+    mockDoc({
+      searchArticles: vi.fn().mockRejectedValue(gdeltRejection(RATE_LIMIT_BODY, 'GDELT DOC')),
+    });
+
+    const result = await runToolContract(gdeltSearchArticles, { query: 'climate' });
+    expectTextContaining(result.content, '(reason gdelt_rate_limited · not retryable)');
+  });
+
+  it('rejects out-of-schema arguments as InvalidParams with a recovery line', async () => {
+    const result = await callWithRawArguments({ query: 42 });
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: JsonRpcErrorCode.InvalidParams,
+          data: { reason: 'invalid_arguments' },
+        },
+      },
+    });
+    expectTextContaining(result.content, 'query');
+    expectTextContaining(result.content, 'Recovery:');
+  });
+
+  it('drops a client-added root key instead of rejecting the call', async () => {
+    mockDoc({
+      searchArticles: vi.fn().mockResolvedValue({
+        articles: [
+          {
+            url: 'https://example.com/1',
+            title: 'Article',
+            seendate: '20240101T120000Z',
+            domain: 'example.com',
+            language: 'English',
+            sourcecountry: 'United States',
+          },
+        ],
+        totalReturned: 1,
+      }),
+    });
+
+    const result = await callWithRawArguments({
+      query: 'climate',
+      _clientAnnotation: 'ignored',
+    });
+    expect(result.isError).toBeFalsy();
+  });
+
+  it('rewrites a case-style variant of a declared key instead of rejecting it', async () => {
+    const searchArticles = vi.fn().mockResolvedValue({ articles: [], totalReturned: 0 });
+    mockDoc({ searchArticles });
+
+    await callWithRawArguments({ query: 'climate', max_records: 3 });
+    expect(searchArticles).toHaveBeenCalledWith(
+      expect.objectContaining({ maxRecords: 3 }),
+      expect.anything(),
+    );
+  });
+});
+
 describe('empty/sparse payload edge cases', () => {
   it('get-coverage-timeline: single data point series resolves without throwing', async () => {
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
