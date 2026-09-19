@@ -6,8 +6,8 @@
 
 # Required. One-line GitHub Release-style headline. 350 character cap — a
 # ceiling, not a target. Default short and scannable. Don't pad, don't stitch
-# unrelated changes with commas/semicolons into an inventory — pick the
-# headline, like a tag's theme line. Quotes required: unquoted YAML treats
+# unrelated changes with commas/semicolons into an inventory — pick the one
+# headline the release is about. Quotes required: unquoted YAML treats
 # `: ` inside the value as a key separator and fails GitHub's strict parser.
 summary: ""
 
@@ -117,30 +117,13 @@ security: false
   in that unrelated item's metadata.
 
   TAG ANNOTATIONS — the annotated tag body renders as the GitHub Release body
-  via `gh release create --notes-from-tag`. The tag is a derivative of this
-  changelog entry — a condensed, scannable version, not a copy. Format:
-
-    <theme — omit version number, GitHub prepends it>
-                                                          ← blank line
-    <1-2 sentence context: what this release does>
-                                                          ← blank line
-    Dependency bumps:                                     ← section header
-                                                          ← blank line
-    - `@cyanheads/mcp-ts-core` ^0.9.1 → ^0.9.6          ← bullet
-                                                          ← blank line
-    Changed:                                              ← only sections with entries
-                                                          ← blank line
-    - `format()` output includes `query` in text mode
-                                                          ← blank line
-    Added:
-                                                          ← blank line
-    - `manifest.json` scaffolded for MCPB bundle support
-    - Install badges (Claude Desktop, Cursor, VS Code)
-                                                          ← blank line
-    <N> tests pass; `bun run devcheck` clean.             ← footer
-
-  Never a flat comma-separated string. Always structured markdown with
-  sections. The tag must scan well as a rendered GitHub Release page.
+  via `gh release create --notes-from-tag`. It is a condensed digest of this
+  entry, never a copy, and its format is owned by the `release-and-publish`
+  skill (step 4, "Create the annotated tag"): a short subject line without the
+  version, flat headline bullets — no Keep-a-Changelog section headers, no
+  gates line — at most one deps line, issue backlinks, and the changelog link
+  last. In release-PR mode the `git-wrapup` skill authors those bullets as the
+  PR body's `## Changes` and the tag copies them.
 -->
 
 ## Added

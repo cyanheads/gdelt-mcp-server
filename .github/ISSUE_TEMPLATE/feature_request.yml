@@ -1,7 +1,8 @@
 name: Feature Request
-description: Suggest a new feature or improvement for gdelt-mcp-server
+description: Suggest a new feature or improvement for @cyanheads/gdelt-mcp-server
 labels: ["enhancement"]
-# assignees: ["your-github-username"]  # uncomment to auto-assign new issues
+assignees: ["cyanheads"]
+# The secondary labels listed below must exist in the repo — create each once: gh label create <name>
 body:
   - type: markdown
     attributes:
@@ -12,13 +13,11 @@ body:
         - `breaking-change` — will break public API; requires a major bump
         - `surplus-token-idea` — worth exploring when token budget allows
 
-        If a label doesn't exist in this repo yet, create it once: `gh label create <name>`.
-
   - type: textarea
     id: use-case
     attributes:
       label: Use case
-      description: What problem does this solve? Who benefits?
+      description: What problem does this solve? Who benefits? Two or three sentences.
     validations:
       required: true
 
@@ -43,6 +42,6 @@ body:
     id: context
     attributes:
       label: Additional context
-      description: Related issues, prior art, links, or anything else relevant.
+      description: Only what the reader needs to act — related issues, prior art, a link.
     validations:
       required: false

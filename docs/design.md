@@ -59,7 +59,7 @@ No auth required. Rate limit: 1 request per 5 seconds (enforced by the server). 
 | `GdeltDocService` | DOC API (`/api/v2/doc/doc`) | `gdelt_search_articles`, `gdelt_get_coverage_timeline`, `gdelt_get_tone_distribution`, `gdelt_get_coverage_breakdown` |
 | `GdeltTvService` | TV API (`/api/v2/tv/tv`) | `gdelt_search_tv`, `gdelt_get_tv_clips`, `gdelt_get_tv_context`, `gdelt_get_tv_trending`, `gdelt_list_tv_stations` |
 
-Both services share a single rate-limit queue (1 req/5s across all calls) implemented in a `GdeltRateLimiter` singleton.
+Both services queue behind a single outbound pacer (`src/services/gdelt/gdelt-pacer.ts`) — one request in flight, 1 req/5s across all calls, and a shared cooldown gate a GDELT rate-limit response closes for every queued caller.
 
 ## Config
 
@@ -73,7 +73,7 @@ No API key required.
 ## Implementation Order
 
 1. Config and server setup (`server-config.ts`)
-2. Rate limiter utility (`GdeltRateLimiter`)
+2. Outbound pacer (`gdelt-pacer.ts`)
 3. `GdeltDocService` — article search + timeline modes
 4. `GdeltTvService` — TV search + clip + station modes
 5. Read-only tools (all tools in this server are read-only)
