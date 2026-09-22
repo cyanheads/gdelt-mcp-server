@@ -381,13 +381,78 @@ describe('date-range format — enforced by the Zod field regex', () => {
 });
 
 /**
+ * Fourteen digits is a shape, not a date. These are the 14-digit values that are not real UTC
+ * instants — and the two that matter most are the ones `isNaN(new Date(...))` cannot catch:
+ * Feb 29 of a non-leap year and hour 24 both roll forward into a valid instant, which is the
+ * same silent window shift the guard exists to stop.
+ */
+const IMPOSSIBLE_WINDOWS = [
+  ['month 13', '20241301000000', '20241302000000'],
+  ['day 32', '20240132000000', '20240201000000'],
+  ['day 00', '20240100000000', '20240201000000'],
+  ['minute 60', '20240101006000', '20240102000000'],
+  ['second 60', '20240101000060', '20240102000000'],
+  ['Feb 29 of a non-leap year', '20230229000000', '20230301000000'],
+  ['April 31', '20240431000000', '20240501000000'],
+  ['hour 24', '20240101240000', '20240102000000'],
+  ['an impossible endDatetime', '20240101000000', '20240230000000'],
+] as const;
+
+/**
  * The handler guard runs before the service is resolved, so these cases need no service
  * mock: if the guard ever stops firing, the call falls through to an uninitialized-service
  * plain Error carrying no `data.reason`, and the assertions below fail rather than pass.
  */
-describe('date-range pairing — enforced in the handler', () => {
+describe('date-range validity — enforced in the handler', () => {
   for (const { name, tool, base } of DATE_RANGE_TOOLS) {
     describe(name, () => {
+      it.each(IMPOSSIBLE_WINDOWS)(
+        'rejects %s with invalid_date_range',
+        async (_label, startDatetime, endDatetime) => {
+          const ctx = createMockContext({ errors: tool.errors });
+          const input = tool.input.parse({ ...base, startDatetime, endDatetime });
+          await expect(tool.handler(input, ctx)).rejects.toMatchObject({
+            data: { reason: 'invalid_date_range' },
+          });
+        },
+      );
+
+      it.each([
+        ['a reversed window', VALID_END, VALID_START],
+        ['an equal window', VALID_START, VALID_START],
+      ])('rejects %s with invalid_date_range', async (_label, startDatetime, endDatetime) => {
+        const ctx = createMockContext({ errors: tool.errors });
+        const input = tool.input.parse({ ...base, startDatetime, endDatetime });
+        await expect(tool.handler(input, ctx)).rejects.toMatchObject({
+          data: { reason: 'invalid_date_range' },
+        });
+      });
+
+      it('names ordering in the recovery hint', async () => {
+        const ctx = createMockContext({ errors: tool.errors });
+        const input = tool.input.parse({
+          ...base,
+          startDatetime: VALID_END,
+          endDatetime: VALID_START,
+        });
+        await expect(tool.handler(input, ctx)).rejects.toMatchObject({
+          data: { recovery: { hint: expect.stringMatching(/earlier than endDatetime/i) } },
+        });
+      });
+
+      it('accepts a real leap day', async () => {
+        const ctx = createMockContext({ errors: tool.errors });
+        const input = tool.input.parse({
+          ...base,
+          startDatetime: '20240229000000',
+          endDatetime: '20240301000000',
+        });
+        const outcome = await tool.handler(input, ctx).catch((error: unknown) => error);
+        expect((outcome as { data?: { reason?: string } })?.data?.reason).not.toBe(
+          'invalid_date_range',
+        );
+      });
+
       it('rejects a start-only window with invalid_date_range', async () => {
         const ctx = createMockContext({ errors: tool.errors });
         const input = tool.input.parse({ ...base, startDatetime: VALID_START });

@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  describeDateRangeFault,
   isUnpairedDateRange,
   planWindowContinuation,
   resolveEffectiveWindow,
@@ -37,6 +38,72 @@ describe('isUnpairedDateRange', () => {
     expect(isUnpairedDateRange(undefined, '20240101000000')).toBe(true);
     expect(isUnpairedDateRange('20240101000000', '20240102000000')).toBe(false);
     expect(isUnpairedDateRange(undefined, undefined)).toBe(false);
+  });
+});
+
+describe('describeDateRangeFault', () => {
+  it('passes a usable window and a call that pinned no window at all', () => {
+    expect(describeDateRangeFault('20240101000000', '20240131235959')).toBeUndefined();
+    expect(describeDateRangeFault(undefined, undefined)).toBeUndefined();
+  });
+
+  it('names the pairing rule for a lone boundary', () => {
+    expect(describeDateRangeFault('20240101000000', undefined)).toMatch(/supplied together/);
+    expect(describeDateRangeFault(undefined, '20240131235959')).toMatch(/supplied together/);
+  });
+
+  /**
+   * The two rollover cases are the reason this cannot be an Invalid-Date test: both produce a
+   * valid instant one step past what the caller wrote, which is exactly the silent window shift
+   * the check exists to stop. Leap-day handling has to survive alongside them.
+   */
+  it.each([
+    ['month 13', '20241301000000'],
+    ['month 00', '20240001000000'],
+    ['day 32', '20240132000000'],
+    ['day 00', '20240100000000'],
+    ['hour 24', '20240101240000'],
+    ['minute 60', '20240101006000'],
+    ['second 60', '20240101000060'],
+    ['Feb 29 of a non-leap year', '20230229000000'],
+    ['Feb 30 of a leap year', '20240230000000'],
+    ['April 31', '20240431000000'],
+    ['a two-digit year Date.UTC would map into the 1900s', '00240101000000'],
+  ])('rejects a startDatetime of %s', (_label, startDatetime) => {
+    expect(describeDateRangeFault(startDatetime, '20250101000000')).toMatch(
+      /startDatetime .* is not a real UTC calendar timestamp/,
+    );
+  });
+
+  it('checks the end boundary as well as the start', () => {
+    expect(describeDateRangeFault('20240101000000', '20240230000000')).toMatch(
+      /endDatetime .* is not a real UTC calendar timestamp/,
+    );
+  });
+
+  it.each([
+    ['2024-02-29', '20240229000000', '20240301000000'],
+    ['2000-02-29 — a century leap year', '20000229000000', '20000301000000'],
+    ['the last second of a year', '20231231235959', '20240101000000'],
+  ])('accepts %s', (_label, startDatetime, endDatetime) => {
+    expect(describeDateRangeFault(startDatetime, endDatetime)).toBeUndefined();
+  });
+
+  it.each([
+    ['a reversed window', '20240131235959', '20240101000000'],
+    ['an equal window', '20240101000000', '20240101000000'],
+  ])('rejects %s', (_label, startDatetime, endDatetime) => {
+    expect(describeDateRangeFault(startDatetime, endDatetime)).toMatch(
+      /must be earlier than endDatetime/,
+    );
+  });
+
+  it('reports a boundary that is not a real date before comparing the two', () => {
+    // Feb 29 2023 rolls to Mar 1, which would compare as ordered against Mar 1 — the calendar
+    // check has to run first or the rollover is reported as a valid window.
+    expect(describeDateRangeFault('20230229000000', '20230301000000')).toMatch(
+      /not a real UTC calendar timestamp/,
+    );
   });
 });
 

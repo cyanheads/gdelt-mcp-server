@@ -9,9 +9,9 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { inferDateResolution } from '@/services/gdelt/date-resolution.js';
 import { getGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
 import {
+  describeDateRangeFault,
   GDELT_DATETIME_PATTERN,
   gdeltDocTimespanSchema,
-  isUnpairedDateRange,
 } from '../date-range.js';
 
 /**
@@ -59,9 +59,9 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
     {
       reason: 'invalid_date_range',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'Exactly one of startDatetime / endDatetime was supplied.',
+      when: 'Only one of startDatetime / endDatetime was supplied, one of them is not a real UTC calendar timestamp, or startDatetime is not earlier than endDatetime.',
       recovery:
-        'Supply both startDatetime and endDatetime to pin an explicit window, or omit both and use timespan instead.',
+        'Supply both startDatetime and endDatetime as real UTC calendar timestamps, with startDatetime earlier than endDatetime, or omit both and use timespan instead.',
     },
     {
       reason: 'invalid_query',
@@ -228,12 +228,9 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
   },
 
   async handler(input, ctx) {
-    if (isUnpairedDateRange(input.startDatetime, input.endDatetime)) {
-      throw ctx.fail(
-        'invalid_date_range',
-        'startDatetime and endDatetime must be supplied together',
-        ctx.recoveryFor('invalid_date_range'),
-      );
+    const dateRangeFault = describeDateRangeFault(input.startDatetime, input.endDatetime);
+    if (dateRangeFault) {
+      throw ctx.fail('invalid_date_range', dateRangeFault, ctx.recoveryFor('invalid_date_range'));
     }
 
     ctx.log.info('gdelt_get_coverage_timeline', { query: input.query, mode: input.mode });

@@ -195,3 +195,63 @@ export function planWindowContinuation(window: GdeltWindow | undefined): WindowC
 export function isUnpairedDateRange(startDatetime?: string, endDatetime?: string): boolean {
   return Boolean(startDatetime) !== Boolean(endDatetime);
 }
+
+/**
+ * True when a 14-digit GDELT datetime names a real UTC instant.
+ *
+ * Construct via `Date.UTC` and compare every component back, rather than testing for an
+ * Invalid Date: February 29th of a non-leap year, April 31st, and hour 24 all roll forward
+ * into a perfectly valid instant instead of failing, which is the same silent window shift
+ * this check exists to stop. The read-back also rejects a two-digit year, which `Date.UTC`
+ * would otherwise map into the 1900s.
+ */
+function isRealGdeltDatetime(value: string): boolean {
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(4, 6));
+  const day = Number(value.slice(6, 8));
+  const hour = Number(value.slice(8, 10));
+  const minute = Number(value.slice(10, 12));
+  const second = Number(value.slice(12, 14));
+  const parsed = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  return (
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day &&
+    parsed.getUTCHours() === hour &&
+    parsed.getUTCMinutes() === minute &&
+    parsed.getUTCSeconds() === second
+  );
+}
+
+/**
+ * Why an explicit window cannot be used, or `undefined` when it can.
+ *
+ * One reason covers every way a date argument fails, so each handler stays a single guard and
+ * a caller has one `invalid_date_range` branch rather than three. The field regex upstream has
+ * already established 14 digits; what it cannot see is whether those digits name a real
+ * instant, or which boundary comes first — `applyTimeRange` sets both parameters verbatim, so
+ * an impossible or reversed window reaches GDELT, which normalizes it and answers successfully
+ * for dates nobody asked about.
+ *
+ * Both boundaries are fixed-width zero-padded digits by the time ordering is compared, so
+ * lexical order is calendar order.
+ */
+export function describeDateRangeFault(
+  startDatetime?: string,
+  endDatetime?: string,
+): string | undefined {
+  if (isUnpairedDateRange(startDatetime, endDatetime)) {
+    return 'startDatetime and endDatetime must be supplied together';
+  }
+  if (!startDatetime || !endDatetime) return;
+  if (!isRealGdeltDatetime(startDatetime)) {
+    return `startDatetime ${startDatetime} is not a real UTC calendar timestamp`;
+  }
+  if (!isRealGdeltDatetime(endDatetime)) {
+    return `endDatetime ${endDatetime} is not a real UTC calendar timestamp`;
+  }
+  if (startDatetime >= endDatetime) {
+    return `startDatetime ${startDatetime} must be earlier than endDatetime ${endDatetime}`;
+  }
+  return;
+}
