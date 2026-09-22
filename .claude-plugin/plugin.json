@@ -34,6 +34,13 @@
       "description": "Minimum milliseconds between GDELT requests, enforcing the 1 req/5s rate limit.",
       "required": false,
       "default": 5300
+    },
+    "gdelt_request_timeout_ms": {
+      "type": "number",
+      "title": "GDELT Request Timeout (ms)",
+      "description": "Deadline in milliseconds for a single GDELT request; the whole call, retries included, is bounded at twice this value.",
+      "required": false,
+      "default": 60000
     }
   },
   "mcpServers": {
@@ -43,7 +50,8 @@
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio",
         "GDELT_BASE_URL": "${user_config.gdelt_base_url}",
-        "GDELT_REQUEST_DELAY_MS": "${user_config.gdelt_request_delay_ms}"
+        "GDELT_REQUEST_DELAY_MS": "${user_config.gdelt_request_delay_ms}",
+        "GDELT_REQUEST_TIMEOUT_MS": "${user_config.gdelt_request_timeout_ms}"
       }
     }
   }

@@ -14,7 +14,13 @@ import {
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
 import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
-import { GDELT_MAX_QUEUE_WAIT_MS, getGdeltPacer } from './gdelt-pacer.js';
+import { getServerConfig } from '@/config/server-config.js';
+import {
+  GDELT_MAX_QUEUE_WAIT_MS,
+  getGdeltPacer,
+  holdForGdeltRequestGap,
+  recordGdeltRequestSettled,
+} from './gdelt-pacer.js';
 
 /** Stable public recovery for every GDELT rate-limit response shape. */
 const GDELT_RATE_LIMIT_RECOVERY = {
@@ -27,6 +33,25 @@ const GDELT_RATE_LIMIT_DATA = {
   retryable: false,
   recovery: GDELT_RATE_LIMIT_RECOVERY,
 } as const;
+
+/**
+ * The `gdelt_unavailable` contract entry every upstream-backed tool declares, as it reaches
+ * the wire. The hint is the declared `recovery` for that reason; the service layer throws
+ * below `ctx.fail`, so it is carried here rather than resolved from the contract.
+ */
+const GDELT_UNAVAILABLE_DATA = {
+  reason: 'gdelt_unavailable',
+  retryable: true,
+  recovery: { hint: 'Retry after a short delay; GDELT may be temporarily unavailable.' },
+} as const;
+
+/**
+ * The whole call's wall-clock budget, as a multiple of `GDELT_REQUEST_TIMEOUT_MS`. Derived
+ * rather than configured separately, since the two numbers are only meaningful against each
+ * other. At 2× it is the deadline rather than the attempt count that bounds the ladder: two
+ * timeout-length attempts fit, and four fast failures still do.
+ */
+const GDELT_CALL_DEADLINE_MULTIPLIER = 2;
 
 /** Apply timespan or explicit date range to URL params. */
 export function applyTimeRange(
@@ -89,6 +114,11 @@ export function formatDateShort(d: Date): string {
  * shapes — the HTTP 429 `failFastOnRateLimit` re-throws and the HTTP-200 notice
  * `parseGdeltJson` classifies — are raised inside the paced task as a `RateLimited`
  * `McpError`, which is what closes the gate for every other queued caller.
+ *
+ * Two clocks bound the call. `GDELT_REQUEST_TIMEOUT_MS` is one attempt's deadline, clamped to
+ * whatever is left of the total budget so an attempt cannot overshoot it; the budget itself is
+ * `GDELT_CALL_DEADLINE_MULTIPLIER` times that, threaded through `withRetry`'s `deadlineMs` so
+ * the caller gets this server's classified error rather than their own transport timeout.
  */
 export function gdeltFetch<T>(
   baseUrl: string,
@@ -97,24 +127,67 @@ export function gdeltFetch<T>(
   operation: string,
   apiLabel: string,
 ): Promise<T> {
+  const { requestTimeoutMs } = getServerConfig();
   return withRetry(
-    ({ signal }) =>
-      getGdeltPacer()
+    ({ signal, remainingMs }) => {
+      const enqueuedAt = Date.now();
+      return getGdeltPacer()
         .run(
           async (runSignal) => {
+            await holdForGdeltRequestGap(runSignal);
             const url = `${baseUrl}?${params.toString()}`;
             ctx.log.debug(`${apiLabel} API request`, { url });
-            const response = await fetchWithTimeout(url, 30_000, ctx, {
-              signal: runSignal,
-              expectedStatuses: [429],
-            }).catch(failFastOnRateLimit);
-            const text = await response.text();
+            let text: string;
+            try {
+              const response = await fetchWithTimeout(
+                url,
+                Math.min(requestTimeoutMs, remainingMs),
+                ctx,
+                { signal: runSignal, expectedStatuses: [429] },
+              ).catch(failFastOnRateLimit);
+              text = await response.text();
+            } finally {
+              recordGdeltRequestSettled();
+            }
             return parseGdeltJson<T>(text, apiLabel);
           },
           { signal, maxWaitMs: GDELT_MAX_QUEUE_WAIT_MS },
         )
-        .catch(declareShedAsRateLimited),
-    { operation, context: ctx, baseDelayMs: 5100, signal: ctx.signal },
+        .catch((error: unknown) => declareShedAsRateLimited(error, Date.now() - enqueuedAt));
+    },
+    {
+      operation,
+      context: ctx,
+      baseDelayMs: 5100,
+      signal: ctx.signal,
+      deadlineMs: requestTimeoutMs * GDELT_CALL_DEADLINE_MULTIPLIER,
+    },
+  ).catch(declareTimeoutAsUnavailable);
+}
+
+/**
+ * Re-label an exhausted upstream timeout as the declared `gdelt_unavailable` contract entry.
+ *
+ * Two shapes reach here, both as a `Timeout` no tool declares: a `FetchTimeout` enriched by
+ * {@link withRetry} after the last attempt, and the `retry_deadline_exceeded` the total budget
+ * raises. Both mean the same thing to a caller — GDELT did not answer — so both surface the
+ * contract's `ServiceUnavailable` code, its `retryable: true`, and its recovery hint, with
+ * `errorSource` and `retryAttempts` kept in `data` for whoever reads the logs.
+ *
+ * Keyed on the timeout shape, never on "the call failed": a caller abort arrives as a
+ * `RequestCancelled` carrying `errorSource: 'FetchAborted'`, and telling a client to retry a
+ * request nobody is waiting for would be worse than saying nothing.
+ */
+function declareTimeoutAsUnavailable(error: unknown): never {
+  if (!(error instanceof McpError) || error.code !== JsonRpcErrorCode.Timeout) throw error;
+  const isExhaustedAttempt = error.data?.errorSource === 'FetchTimeout';
+  const isDeadlineExpiry = error.data?.reason === 'retry_deadline_exceeded';
+  if (!isExhaustedAttempt && !isDeadlineExpiry) throw error;
+  throw new McpError(
+    JsonRpcErrorCode.ServiceUnavailable,
+    error.message,
+    { ...error.data, ...GDELT_UNAVAILABLE_DATA },
+    { cause: error },
   );
 }
 
@@ -122,24 +195,34 @@ export function gdeltFetch<T>(
  * Re-label a pacer shed as the declared `gdelt_rate_limited` contract entry.
  *
  * A shed carries `data.reason: 'pacer_shed'`, which no tool declares — an undeclared reason
- * reaching a caller is a broken contract. The shed's own `retryAfter` (seconds until a slot
- * opens) becomes the recovery hint's wait, so the caller is told how long the queue is rather
- * than GDELT's nominal five seconds. `retryable: false` matches the contract entry and keeps
- * {@link withRetry} from replaying a request the queue has no room for.
+ * reaching a caller is a broken contract. `retryable: false` matches the contract entry and
+ * keeps {@link withRetry} from replaying a request the queue has no room for.
+ *
+ * The shed's own `retryAfter` is projected against the queue as it stands at the shed instant,
+ * which is empty whenever the single in-flight slot rather than the cooldown gate was the real
+ * constraint — so a caller that waited out its whole budget is handed a 0. `waitedMs` is that
+ * caller's measured wait; when the projection has nothing to say, the message reports what the
+ * request actually endured and the hint falls back to the configured request gap.
  */
-function declareShedAsRateLimited(error: unknown): never {
+function declareShedAsRateLimited(error: unknown, waitedMs: number): never {
   if (!(error instanceof McpError) || error.data?.reason !== 'pacer_shed') throw error;
-  const retryAfter = typeof error.data.retryAfter === 'number' ? error.data.retryAfter : 5;
+  const retryAfter = typeof error.data.retryAfter === 'number' ? error.data.retryAfter : 0;
+  const retrySeconds =
+    retryAfter > 0 ? retryAfter : Math.ceil(getServerConfig().requestDelayMs / 1000);
+  const message =
+    retryAfter > 0
+      ? `GDELT request queue is saturated — no slot opens within ${retryAfter}s.`
+      : `GDELT request queue is saturated — no slot opened in the ${Math.ceil(waitedMs / 1000)}s this request waited.`;
   throw new McpError(
     error.code,
-    `GDELT request queue is saturated — no slot opens within ${retryAfter}s.`,
+    message,
     {
       ...error.data,
       ...GDELT_RATE_LIMIT_DATA,
       recovery: {
         hint:
           `Requests are already queued against GDELT's one-request-per-five-seconds limit. ` +
-          `Wait about ${retryAfter} seconds before retrying.`,
+          `Wait about ${retrySeconds} seconds before retrying.`,
       },
     },
     { cause: error },
@@ -193,6 +276,12 @@ const BODY_EXCERPT_LIMIT = 200;
  * Extend this list when a new wording deserves a more specific hint than the generic fallback.
  */
 const GDELT_REJECTIONS: ReadonlyArray<{ marker: string; hint: string }> = [
+  {
+    marker: 'invalid station',
+    hint:
+      'GDELT does not recognize one of the requested station IDs. Use gdelt_list_tv_stations ' +
+      'to look up valid IDs and their active date ranges, then retry with one of those.',
+  },
   {
     marker: 'must contain at least one station',
     hint:
@@ -272,18 +361,34 @@ const GENERIC_REJECTION_HINT =
   'characters, e.g. "bird flu".';
 
 /**
- * Positive identification of a GDELT query-rejection sentence: a short, non-JSON body that reads
- * like an English sentence (leading capital, terminal punctuation). GDELT emits new rejection
- * wordings faster than the marker list tracks them (#25), so an unenumerated sentence still
- * classifies as invalid_query (caller fault, generic hint) instead of a server-fault
- * SerializationError. A JSON fragment (`{`/`[` prefix, e.g. a truncated payload) or opaque
- * gateway garbage fails this test and stays on the SerializationError path (#18).
+ * Longest body still read as a rejection when it carries no terminal punctuation. Not every
+ * GDELT rejection is a sentence — some are a labelled value (`Invalid Station: telemundo`),
+ * and requiring a closing `.`, `?`, or `!` sent those to the SerializationError path.
+ */
+const UNPUNCTUATED_REJECTION_LIMIT = 120;
+
+/**
+ * Positive identification of a GDELT query rejection: a short, non-JSON body that reads like
+ * something GDELT wrote about the caller's query — a leading capital, then either terminal
+ * punctuation or a single short line. GDELT emits new rejection wordings faster than the marker
+ * list tracks them (#25), so an unenumerated one still classifies as invalid_query (caller
+ * fault, generic hint) instead of a server-fault SerializationError. A JSON fragment (`{`/`[`
+ * prefix, e.g. a truncated payload) or opaque gateway garbage fails this test and stays on the
+ * SerializationError path (#18).
+ *
+ * The unpunctuated branch is deliberately the looser of the two: a capital-initial infrastructure
+ * body served on an HTTP 200 would now be attributed to the caller. That shape is not reachable
+ * from the paths above it — a gateway fault arrives as a non-2xx, which `fetchWithTimeout`
+ * throws before the body is read — and the alternative is a class of genuine caller errors
+ * reported as a server fault with no recovery hint.
  */
 function looksLikeGdeltRejection(text: string): boolean {
   const trimmed = text.trim();
   if (trimmed.length === 0 || trimmed.length > BODY_EXCERPT_LIMIT) return false;
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) return false;
-  return /^[A-Z][\s\S]*[.?!]$/.test(trimmed);
+  if (!/^[A-Z]/.test(trimmed)) return false;
+  if (/[.?!]$/.test(trimmed)) return true;
+  return trimmed.length <= UNPUNCTUATED_REJECTION_LIMIT && !trimmed.includes('\n');
 }
 
 /**

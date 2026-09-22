@@ -59,7 +59,7 @@ No auth required. Rate limit: 1 request per 5 seconds (enforced by the server). 
 | `GdeltDocService` | DOC API (`/api/v2/doc/doc`) | `gdelt_search_articles`, `gdelt_get_coverage_timeline`, `gdelt_get_tone_distribution`, `gdelt_get_coverage_breakdown` |
 | `GdeltTvService` | TV API (`/api/v2/tv/tv`) | `gdelt_search_tv`, `gdelt_get_tv_clips`, `gdelt_get_tv_context`, `gdelt_get_tv_trending`, `gdelt_list_tv_stations` |
 
-Both services queue behind a single outbound pacer (`src/services/gdelt/gdelt-pacer.ts`) — one request in flight, 1 req/5s across all calls, and a shared cooldown gate a GDELT rate-limit response closes for every queued caller.
+Both services queue behind a single outbound pacer (`src/services/gdelt/gdelt-pacer.ts`) — one request in flight, the request gap held from the *previous response's completion* rather than its start, and a shared cooldown gate a GDELT rate-limit response closes for every queued caller. GDELT's limiter counts from completion, and its answers routinely outrun the gap, so start-relative spacing alone leaves no gap at all.
 
 ## Config
 
@@ -67,6 +67,7 @@ Both services queue behind a single outbound pacer (`src/services/gdelt/gdelt-pa
 |:--------|:---------|:------------|
 | `GDELT_BASE_URL` | No | Override base URL for both APIs (default: `https://api.gdeltproject.org/api/v2`) |
 | `GDELT_REQUEST_DELAY_MS` | No | Minimum milliseconds between requests (default: 5300 to satisfy 1 req/5s limit) |
+| `GDELT_REQUEST_TIMEOUT_MS` | No | Deadline for a single request (default: 60000). The whole call, retries included, is bounded at twice this value |
 
 No API key required.
 

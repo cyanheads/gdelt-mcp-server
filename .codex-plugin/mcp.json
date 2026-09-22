@@ -2,7 +2,7 @@
   "gdelt-mcp-server": {
     "command": "npx",
     "args": ["-y", "@cyanheads/gdelt-mcp-server"],
-    "env_vars": ["GDELT_BASE_URL", "GDELT_REQUEST_DELAY_MS"],
+    "env_vars": ["GDELT_BASE_URL", "GDELT_REQUEST_DELAY_MS", "GDELT_REQUEST_TIMEOUT_MS"],
     "env": {
       "MCP_TRANSPORT_TYPE": "stdio"
     }

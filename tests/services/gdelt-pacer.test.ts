@@ -1,9 +1,10 @@
 /**
- * @fileoverview Pacing behavior of `gdeltFetch` at its service seam — the minimum gap between
- * consecutive upstream requests, the shared cooldown an upstream rate limit closes for every
+ * @fileoverview Pacing behavior of `gdeltFetch` at its service seam — the gap held after the
+ * previous response completed, the shared cooldown an upstream rate limit closes for every
  * queued caller, the doubling and reset of that cooldown, caller cancellation while queued,
- * and disposal through the teardown hook. Mocks the framework's `fetchWithTimeout` and keeps
- * the real `withRetry` and pacer, so these assert the sequencing a GDELT caller actually gets.
+ * the queue budget and the wait a shed reports, and disposal through the teardown hook. Mocks
+ * the framework's `fetchWithTimeout` and keeps the real `withRetry` and pacer, so these assert
+ * the sequencing a GDELT caller actually gets.
  * @module tests/services/gdelt-pacer.test
  */
 
@@ -12,7 +13,11 @@ import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { fetchWithTimeout } from '@cyanheads/mcp-ts-core/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltFetch } from '@/services/gdelt/gdelt-fetch.js';
-import { disposeGdeltPacer, initGdeltPacer } from '@/services/gdelt/gdelt-pacer.js';
+import {
+  disposeGdeltPacer,
+  GDELT_MAX_QUEUE_WAIT_MS,
+  initGdeltPacer,
+} from '@/services/gdelt/gdelt-pacer.js';
 
 vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@cyanheads/mcp-ts-core/utils')>();
@@ -202,11 +207,113 @@ describe('gdeltFetch pacing', () => {
     expect(mockedFetch).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * GDELT's limiter counts from the previous response, not the previous request: a request
+   * sent seconds after the last one *completed* is still rejected. The pacer spaces starts, so
+   * with one request in flight any response slower than the gap leaves no gap at all after it
+   * completes — which is the normal case against an API that answers in tens of seconds.
+   */
+  it('holds the next request until the gap has elapsed since the previous one completed', async () => {
+    const SLOW_RESPONSE_MS = GAP_MS * 2;
+    mockedFetch.mockImplementation(
+      () =>
+        new Promise<Response>((resolve) =>
+          setTimeout(() => resolve(jsonBody({ ok: true })), SLOW_RESPONSE_MS),
+        ),
+    );
+
+    const first = callGdeltFetch();
+    const second = callGdeltFetch();
+
+    await vi.advanceTimersByTimeAsync(SLOW_RESPONSE_MS);
+    await expect(first).resolves.toEqual({ ok: true });
+    // The start gap elapsed long ago, so start-relative spacing alone would dispatch now.
+    expect(mockedFetch).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(GAP_MS - 1);
+    expect(mockedFetch).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(mockedFetch).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(SLOW_RESPONSE_MS);
+    await expect(second).resolves.toEqual({ ok: true });
+  });
+
+  it('holds after a failed request too — a rejection still spends the upstream slot', async () => {
+    // A gap wider than the cooldown so the hold, not the reopening gate, is what is measured.
+    const LONG_GAP_MS = COOLDOWN_BASE_MS * 2;
+    disposeGdeltPacer();
+    initGdeltPacer(LONG_GAP_MS);
+    mockedFetch
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((_resolve, reject) =>
+            setTimeout(() => reject(upstream429()), LONG_GAP_MS),
+          ),
+      )
+      .mockResolvedValue(jsonBody({ ok: true }));
+
+    const failing = swallow(callGdeltFetch());
+    const second = callGdeltFetch();
+
+    await vi.advanceTimersByTimeAsync(LONG_GAP_MS);
+    await failing;
+    expect(mockedFetch).toHaveBeenCalledTimes(1);
+
+    // The gate reopened a cooldown after the rejection; the hold runs a full gap past it.
+    await vi.advanceTimersByTimeAsync(LONG_GAP_MS - 1);
+    expect(mockedFetch).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(mockedFetch).toHaveBeenCalledTimes(2);
+    await expect(second).resolves.toEqual({ ok: true });
+  });
+
+  /**
+   * The pacer projects `retryAfter` against the queue as it stands at the shed instant, which
+   * is empty whenever `maxConcurrent` rather than the gate was the real constraint — so a
+   * caller that waited out its entire budget is told to retry in 0s. The measured wait is the
+   * number that caller can act on.
+   */
+  it('reports the wait it actually endured when the pacer projects none', async () => {
+    disposeGdeltPacer();
+    initGdeltPacer(SHORT_GAP_MS);
+    mockedFetch.mockImplementation(
+      () =>
+        new Promise<Response>((resolve) =>
+          setTimeout(() => resolve(jsonBody({ ok: true })), GDELT_MAX_QUEUE_WAIT_MS * 2),
+        ),
+    );
+
+    const inFlight = swallow(callGdeltFetch());
+    const shed = callGdeltFetch().catch((error: unknown) => error);
+
+    await vi.advanceTimersByTimeAsync(GDELT_MAX_QUEUE_WAIT_MS);
+    const error = (await shed) as McpError;
+
+    expect(error.code).toBe(JsonRpcErrorCode.RateLimited);
+    expect(error.message).toMatch(
+      new RegExp(`no slot opened in the ${GDELT_MAX_QUEUE_WAIT_MS / 1000}s this request waited`),
+    );
+    expect(error.data).toMatchObject({
+      reason: 'gdelt_rate_limited',
+      retryable: false,
+      retryAfter: 0,
+      recovery: { hint: expect.stringMatching(/wait about \d+ seconds/i) },
+    });
+
+    await vi.runAllTimersAsync();
+    await inFlight;
+  });
+
   it('sheds a caller whose projected wait exceeds the budget, spending no request', async () => {
     mockedFetch.mockResolvedValue(jsonBody({ ok: true }));
 
-    // GDELT_MAX_QUEUE_WAIT_MS is 60s; at a 5s gap the 13th arrival cannot start in time.
-    const queued = Array.from({ length: 13 }, () => swallow(callGdeltFetch()));
+    // GDELT_MAX_QUEUE_WAIT_MS is 90s; at a 5s gap the 20th arrival cannot start in time.
+    const queued = Array.from({ length: 19 }, () =>
+      callGdeltFetch().catch((error: unknown) => error),
+    );
     const shed = callGdeltFetch();
 
     const expectation = expect(shed).rejects.toMatchObject({
@@ -223,6 +330,8 @@ describe('gdeltFetch pacing', () => {
     expect(mockedFetch).toHaveBeenCalledTimes(1);
 
     await vi.runAllTimersAsync();
-    await Promise.all(queued);
+    // The budget is decoupled from the 60s cooldown ceiling: at that ceiling the 14th arrival,
+    // projecting a 65s wait, was shed on arrival and could never wait a closed gate out.
+    expect((await Promise.all(queued))[13]).toEqual({ ok: true });
   });
 });

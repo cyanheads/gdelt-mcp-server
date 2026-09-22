@@ -258,6 +258,12 @@ describe('parseGdeltJson', () => {
         apiLabel: 'GDELT DOC',
         hint: /remove or replace.*keyword/i,
       },
+      {
+        trigger: 'unknown station ID (TV) — a labelled value with no terminal punctuation',
+        body: 'Invalid Station: telemundo\n',
+        apiLabel: 'GDELT TV',
+        hint: /gdelt_list_tv_stations/,
+      },
     ] as const;
 
     for (const { trigger, body, apiLabel, hint } of CASES) {
@@ -295,6 +301,23 @@ describe('parseGdeltJson', () => {
         }),
       );
       expect(() => parseGdeltJson(body, 'GDELT DOC')).toThrow(/rejected the query/);
+    });
+
+    /**
+     * Some GDELT rejections are a labelled value rather than a sentence — no closing `.`, `?`,
+     * or `!`. A short single-line body still reads as a rejection, so it must not regress to a
+     * server-fault SerializationError just because it lacks punctuation.
+     */
+    it('classifies a short unpunctuated rejection line as invalid_query', () => {
+      const body = 'Invalid Market: nationwide';
+      expect(() => parseGdeltJson(body, 'GDELT TV')).toThrowError(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            reason: 'invalid_query',
+            recovery: expect.objectContaining({ hint: expect.stringMatching(/query syntax/i) }),
+          }),
+        }),
+      );
     });
   });
 

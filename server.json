@@ -46,6 +46,13 @@
           "default": "5300"
         },
         {
+          "name": "GDELT_REQUEST_TIMEOUT_MS",
+          "description": "Deadline in milliseconds for a single GDELT request; the whole call, retries included, is bounded at twice this value.",
+          "format": "string",
+          "isRequired": false,
+          "default": "60000"
+        },
+        {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
           "format": "string",
@@ -87,6 +94,13 @@
           "format": "string",
           "isRequired": false,
           "default": "5300"
+        },
+        {
+          "name": "GDELT_REQUEST_TIMEOUT_MS",
+          "description": "Deadline in milliseconds for a single GDELT request; the whole call, retries included, is bounded at twice this value.",
+          "format": "string",
+          "isRequired": false,
+          "default": "60000"
         },
         {
           "name": "MCP_HTTP_HOST",

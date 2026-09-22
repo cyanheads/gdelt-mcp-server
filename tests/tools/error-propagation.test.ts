@@ -1,14 +1,16 @@
 /**
  * @fileoverview Tests that upstream errors (non-200s, malformed payloads, network failures)
- * are surfaced correctly and not swallowed for all tools, and that the invalid_query reason
- * parseGdeltJson raises reaches the wire unchanged through each tool's handler.
+ * are surfaced correctly and not swallowed for all tools, that the invalid_query reason
+ * parseGdeltJson raises reaches the wire unchanged through each tool's handler, and that an
+ * exhausted upstream timeout reaches the wire as the declared gdelt_unavailable contract.
  * @module tests/tools/error-propagation.test
  */
 
 import type { ErrorContract } from '@cyanheads/mcp-ts-core/errors';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { describe, expect, it, vi } from 'vitest';
+import { fetchWithTimeout } from '@cyanheads/mcp-ts-core/utils';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetCoverageBreakdown } from '@/mcp-server/tools/definitions/get-coverage-breakdown.tool.js';
 import { gdeltGetCoverageTimeline } from '@/mcp-server/tools/definitions/get-coverage-timeline.tool.js';
 import { gdeltGetToneDistribution } from '@/mcp-server/tools/definitions/get-tone-distribution.tool.js';
@@ -19,8 +21,19 @@ import { gdeltListTvStations } from '@/mcp-server/tools/definitions/list-tv-stat
 import { gdeltSearchArticles } from '@/mcp-server/tools/definitions/search-articles.tool.js';
 import { gdeltSearchTv } from '@/mcp-server/tools/definitions/search-tv.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
+import { initGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
 import { parseGdeltJson } from '@/services/gdelt/gdelt-fetch.js';
+import { disposeGdeltPacer, initGdeltPacer } from '@/services/gdelt/gdelt-pacer.js';
 import * as tvServiceModule from '@/services/gdelt/gdelt-tv-service.js';
+import { initGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
+
+/** Keep every seam below the tool handler real; only the network call is stubbed. */
+vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@cyanheads/mcp-ts-core/utils')>();
+  return { ...actual, fetchWithTimeout: vi.fn() };
+});
+
+const mockedFetchWithTimeout = vi.mocked(fetchWithTimeout);
 
 describe('error propagation — doc service tools', () => {
   it('search-articles propagates network timeout from service', async () => {
@@ -498,5 +511,166 @@ describe('empty/sparse payload edge cases', () => {
     const input = gdeltSearchTv.input.parse({ query: 'test' });
     const result = await gdeltSearchTv.handler(input, ctx);
     expect(result.series).toHaveLength(1);
+  });
+});
+
+/**
+ * An exhausted upstream timeout is raised below every handler, in the shared fetch seam, so
+ * the reason a caller branches on has to be attached there. These drive the real services,
+ * pacer, and retry ladder with only the network call stubbed, and read both surfaces a client
+ * forwards. Two shapes reach that seam and must land on the same contract: a `FetchTimeout`
+ * after the last attempt, and the deadline expiry that bounds the whole call.
+ */
+describe('gdelt_unavailable on an exhausted upstream timeout', () => {
+  /** Only `baseUrl` is read here; the request deadline comes from the server config. */
+  const SERVER_CONFIG = { baseUrl: 'https://api.gdeltproject.org/api/v2', requestDelayMs: 0 };
+
+  /** A connection that accepts and never answers — each attempt runs out its own deadline. */
+  function acceptAndNeverAnswer(): void {
+    mockedFetchWithTimeout.mockImplementation(
+      (_url, timeoutMs, _ctx, options) =>
+        new Promise<Response>((_resolve, reject) => {
+          const timer = setTimeout(
+            () =>
+              reject(
+                new McpError(JsonRpcErrorCode.Timeout, 'fetch GET … timed out.', {
+                  errorSource: 'FetchTimeout',
+                }),
+              ),
+            timeoutMs,
+          );
+          options?.signal?.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(timer);
+              reject(
+                new McpError(JsonRpcErrorCode.RequestCancelled, 'fetch GET … was aborted.', {
+                  errorSource: 'FetchAborted',
+                }),
+              );
+            },
+            { once: true },
+          );
+        }),
+    );
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    mockedFetchWithTimeout.mockReset();
+    vi.useFakeTimers();
+    initGdeltPacer(0);
+    initGdeltDocService({} as never, {} as never, SERVER_CONFIG as never);
+    initGdeltTvService({} as never, {} as never, SERVER_CONFIG as never);
+  });
+
+  afterEach(() => {
+    disposeGdeltPacer();
+    vi.useRealTimers();
+  });
+
+  /** Run a tool to completion while the fake clock drives the retry ladder. */
+  async function callThroughTimeouts(
+    run: () => Promise<Awaited<ReturnType<typeof runToolContract>>>,
+  ) {
+    const pending = run();
+    await vi.runAllTimersAsync();
+    return pending;
+  }
+
+  it('carries the contract when the last attempt times out — DOC', async () => {
+    // Three quick transient failures leave the ladder's final attempt to time out.
+    mockedFetchWithTimeout
+      .mockRejectedValueOnce(serviceUnavailable('GDELT DOC API unreachable'))
+      .mockRejectedValueOnce(serviceUnavailable('GDELT DOC API unreachable'))
+      .mockRejectedValueOnce(serviceUnavailable('GDELT DOC API unreachable'));
+    acceptAndNeverAnswer();
+
+    const result = await callThroughTimeouts(() =>
+      runToolContract(gdeltSearchArticles, { query: 'climate' }),
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: JsonRpcErrorCode.ServiceUnavailable,
+          data: {
+            reason: 'gdelt_unavailable',
+            retryable: true,
+            errorSource: 'FetchTimeout',
+            retryAttempts: 4,
+            recovery: { hint: expect.stringMatching(/retry after a short delay/i) },
+          },
+        },
+      },
+    });
+    expect(result.content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          text: expect.stringMatching(/Recovery:.*retry after a short delay/is),
+        }),
+      ]),
+    );
+  });
+
+  it('carries the contract when the whole call runs out its deadline — DOC', async () => {
+    acceptAndNeverAnswer();
+
+    const result = await callThroughTimeouts(() =>
+      runToolContract(gdeltSearchArticles, { query: 'climate' }),
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: JsonRpcErrorCode.ServiceUnavailable,
+          data: {
+            reason: 'gdelt_unavailable',
+            retryable: true,
+            deadlineMs: 120_000,
+            recovery: { hint: expect.stringMatching(/retry after a short delay/i) },
+          },
+        },
+      },
+    });
+    expect(result.content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          text: expect.stringContaining('(reason gdelt_unavailable · retryable)'),
+        }),
+      ]),
+    );
+  });
+
+  it('carries the contract when the whole call runs out its deadline — TV', async () => {
+    acceptAndNeverAnswer();
+
+    const result = await callThroughTimeouts(() =>
+      runToolContract(gdeltGetTvClips, { query: 'climate', stations: ['CNN'] }),
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: JsonRpcErrorCode.ServiceUnavailable,
+          data: {
+            reason: 'gdelt_unavailable',
+            retryable: true,
+            deadlineMs: 120_000,
+            recovery: { hint: expect.stringMatching(/retry after a short delay/i) },
+          },
+        },
+      },
+    });
+    expect(result.content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          text: expect.stringMatching(/Recovery:.*retry after a short delay/is),
+        }),
+      ]),
+    );
   });
 });
