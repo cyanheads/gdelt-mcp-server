@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.3](changelog/0.4.x/0.4.3.md) — 2026-09-22
+
+GDELT requests get a configurable per-request deadline bounding the whole call, the pacer now spaces from the previous response's completion instead of its start, and invalid TV stations and calendar-invalid or reversed date ranges are rejected with a proper contract instead of an opaque error.
+
 ## [0.4.2](changelog/0.4.x/0.4.2.md) — 2026-09-19
 
 GDELT requests run through the framework's shared outbound pacer with a cooldown gate and queue-wait rejection, and createApp() declares a stateless session posture in src/. Argument rejections carry a recovery hint, and client-added keys or case-style parameter variants are tolerated instead of rejected.
