@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "gdelt-mcp-server",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Search and analyze global news coverage and US TV transcripts via the GDELT Project APIs.",
   "author": {
     "name": "cyanheads",

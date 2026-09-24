@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.6.0](changelog/0.6.x/0.6.0.md) — 2026-09-24
+
+New gdelt_search_themes tool finds GKG theme identifiers for the theme: operator the DOC tools accept, searching GDELT's theme lookup by identifier words.
+
 ## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-09-24 · ⚠️ Breaking
 
 gdelt_get_tv_trending is retired and zero-match queries now succeed with a notice instead of a no_* error; upstream text is Markdown-escaped in content[], and article and clip pages fit a 48,000-byte budget with a continuation to the rest.
