@@ -62,7 +62,8 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
     'Fetches up to 250 articles with URL, title, source domain, language, country, publication date, and social image URL, ' +
     'and returns as many as fit a 48,000-byte response — the rest are counted in withheldCount, with a continuation to reach them. ' +
     'Query supports full GDELT syntax: phrases ("bird flu"), boolean OR ((flu OR pandemic)), source country (sourcecountry:china), ' +
-    'source language (sourcelang:spanish), domain (domain:who.int), GKG theme (theme:DISEASE_OUTBREAK), ' +
+    'source language (sourcelang:spanish), domain (domain:who.int), GKG theme (theme:TAX_DISEASE_OUTBREAK — ' +
+    'find identifiers with gdelt_search_themes), ' +
     'tone filter (tone<-5 for negative), proximity (near20:"flu virus"), and repeat (repeat3:"outbreak"). ' +
     '250 is a hard per-call ceiling and GDELT offers no cursor: when a query fills it or a response comes back cut, ' +
     're-query narrower startDatetime/endDatetime windows — the response hands back the exact windows to use. ' +
@@ -110,8 +111,8 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
       .min(1)
       .describe(
         'Search query. Supports GDELT operators: phrases ("bird flu"), boolean OR ((flu OR pandemic)), ' +
-          'sourcecountry:china, sourcelang:spanish, domain:who.int, theme:DISEASE_OUTBREAK, tone<-5, ' +
-          'near20:"flu virus", repeat3:"outbreak".',
+          'sourcecountry:china, sourcelang:spanish, domain:who.int, theme:TAX_DISEASE_OUTBREAK (GKG ' +
+          'theme identifiers come from gdelt_search_themes), tone<-5, near20:"flu virus", repeat3:"outbreak".',
       ),
     timespan: gdeltDocTimespanSchema
       .optional()

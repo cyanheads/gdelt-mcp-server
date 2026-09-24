@@ -1,6 +1,6 @@
 /**
  * @fileoverview Pins the registered tool surface: `src/index.ts` hands `createApp()` exactly
- * the eight live tools, the retired TV trending feature leaves no tool or service path behind,
+ * the nine live tools, the retired TV trending feature leaves no tool or service path behind,
  * and only the byte-budgeted tools advertise withheldCount.
  * @module tests/tools/tool-surface.test
  */
@@ -26,7 +26,7 @@ beforeAll(async () => {
 });
 
 describe('registered tool surface', () => {
-  it('registers exactly the eight live tools', () => {
+  it('registers exactly the nine live tools', () => {
     expect(registered.map((definition) => definition.name).sort()).toEqual([
       'gdelt_get_coverage_breakdown',
       'gdelt_get_coverage_timeline',
@@ -35,6 +35,7 @@ describe('registered tool surface', () => {
       'gdelt_get_tv_context',
       'gdelt_list_tv_stations',
       'gdelt_search_articles',
+      'gdelt_search_themes',
       'gdelt_search_tv',
     ]);
   });

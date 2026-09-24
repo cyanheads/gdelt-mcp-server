@@ -14,10 +14,12 @@ import {
   gdeltGetTvContext,
   gdeltListTvStations,
   gdeltSearchArticles,
+  gdeltSearchThemes,
   gdeltSearchTv,
 } from './mcp-server/tools/definitions/index.js';
 import { initGdeltDocService } from './services/gdelt/gdelt-doc-service.js';
 import { disposeGdeltPacer, initGdeltPacer } from './services/gdelt/gdelt-pacer.js';
+import { initGdeltThemeService } from './services/gdelt/gdelt-theme-service.js';
 import { initGdeltTvService } from './services/gdelt/gdelt-tv-service.js';
 
 await createApp({
@@ -28,6 +30,7 @@ await createApp({
     gdeltGetCoverageTimeline,
     gdeltGetToneDistribution,
     gdeltGetCoverageBreakdown,
+    gdeltSearchThemes,
     gdeltSearchTv,
     gdeltGetTvClips,
     gdeltGetTvContext,
@@ -46,17 +49,20 @@ await createApp({
     '- gdelt_get_coverage_timeline: when did coverage spike? (use mode volume_with_articles for signal detection)\n' +
     '- gdelt_get_tone_distribution: emotional distribution of coverage (histogram)\n' +
     '- gdelt_get_coverage_breakdown: which countries/languages drove coverage?\n' +
+    '- gdelt_search_themes: find GKG theme identifiers for the theme: operator in DOC tool queries\n' +
     '- gdelt_search_tv: US TV transcript search (2009–Oct 2024, 150+ stations)\n' +
     '- gdelt_get_tv_clips: read actual TV transcript excerpts with archive links\n' +
     '- gdelt_get_tv_context: vocabulary framing a topic on television\n' +
     '- gdelt_list_tv_stations: verify station IDs and active date ranges before TV queries (filter by stations, network, or market)\n' +
-    'Rate limit: 1 request per 5 seconds — multi-step workflows take 15+ seconds.',
+    'Rate limit: 1 request per 5 seconds across the DOC and TV tools — multi-step workflows take 15+ seconds. ' +
+    'gdelt_search_themes reads a separate lookup file and does not queue behind that limit.',
 
   setup(core) {
     const serverConfig = getServerConfig();
     initGdeltPacer(serverConfig.requestDelayMs);
     initGdeltDocService(core.config, core.storage, serverConfig);
     initGdeltTvService(core.config, core.storage, serverConfig);
+    initGdeltThemeService(serverConfig.requestTimeoutMs);
   },
 
   // The pacer holds a dispatch timer and a queue of waiters; nothing else in setup() allocates.

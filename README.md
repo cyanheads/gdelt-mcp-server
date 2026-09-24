@@ -1,7 +1,7 @@
 <div align="center">
   <h1>@cyanheads/gdelt-mcp-server</h1>
   <p><b>Search and analyze global news coverage and US television transcripts via the GDELT Project's real-time APIs via MCP. STDIO or Streamable HTTP.</b>
-  <div>8 Tools</div>
+  <div>9 Tools</div>
   </p>
 </div>
 
@@ -39,6 +39,7 @@ News and television coverage analysis from the GDELT Project's DOC and TV APIs �
 | `gdelt_get_coverage_timeline` | Retrieve a time series of coverage volume or average tone for a query. `volume_with_articles` mode includes top articles per spike timestep, with `points` to render a timestep's full article list. |
 | `gdelt_get_tone_distribution` | Get a tone histogram (bins ~−30 to +30) showing whether coverage is uniformly negative, bimodal, or clustered near neutral. |
 | `gdelt_get_coverage_breakdown` | Break down coverage volume by source language or source country — a multi-series time series showing geographic propagation. Values are normalized shares of media output, not article counts. |
+| `gdelt_search_themes` | Find GKG theme identifiers for the `theme:` operator the DOC tools accept — `drought` finds `NATURAL_DISASTER_DROUGHT`, `cyberattack` finds `CYBER_ATTACK` — ranked by the count GDELT's theme lookup lists. |
 | `gdelt_search_tv` | Search US television news closed captions (2009–Oct 2024) and return per-station airtime time series. |
 | `gdelt_get_tv_clips` | Retrieve matching TV clips with transcript excerpts and Internet Archive viewing links — up to 3,000 fetched, as many as fit a 48,000-byte response returned — and the date windows to re-query for the rest. |
 | `gdelt_get_tv_context` | Get the most frequent co-occurring words and phrases from TV clips matching a query. |
@@ -48,7 +49,7 @@ News and television coverage analysis from the GDELT Project's DOC and TV APIs �
 
 ### `gdelt_search_articles` <sub>tool</sub>
 
-- Full GDELT query syntax: phrases, boolean OR, exclusion, filter operators (`sourcecountry:`, `sourcelang:`, `domain:`, `theme:`, `tone<`/`tone>`), proximity (`near20:`) and repetition (`repeat3:`)
+- Full GDELT query syntax: phrases, boolean OR, exclusion, filter operators (`sourcecountry:`, `sourcelang:`, `domain:`, `theme:`, `tone<`/`tone>`), proximity (`near20:`) and repetition (`repeat3:`) — `gdelt_search_themes` finds the identifiers `theme:` takes
 - Configurable sort (`relevance`, `dateDesc`, `dateAsc`, `toneDesc`, `toneAsc`, `hybridRel`) and fetch count, up to 250 per call
 - Returns URL, title, publication date, domain, language, source country, and social image URL
 - Each response carries as many fetched articles as fit a 48,000-byte budget on each surface; the rest are counted in `withheldCount`, and the notice says how to reach them — never by raising `maxRecords`
@@ -83,6 +84,17 @@ News and television coverage analysis from the GDELT Project's DOC and TV APIs �
 - Pass any label to `series: ["<label>"]` to retrieve that series complete under `selectedSeries`, ranked or not
 - Values are normalized shares of media output, not article counts — a high value means the topic dominated that source's coverage, not that it published the most articles
 - A `series` label matching no series is rejected with the available label list, rather than silently skipped
+
+---
+
+### `gdelt_search_themes` <sub>tool</sub>
+
+- Searches the identifiers in GDELT's [GKG theme lookup](https://data.gdeltproject.org/api/v2/guides/LOOKUP-GKGTHEMES.TXT) (59,315 themes); the lookup has no labels or descriptions, so a match is the identifier, its listed count, and a paste-ready `operator` such as `theme:TAX_DISEASE_OUTBREAK`
+- Case-insensitive, leading `theme:` ignored; every query word must begin one of an identifier's `_`/`-`-separated parts or run across consecutive parts (`cyberattack` → `CYBER_ATTACK`), or all the words joined must (`plant disease` → `TAX_PLANTDISEASE`)
+- No stemming or synonyms, with one disclosed fallback: when nothing matches, the search retries once with a trailing `s` dropped from each word of four or more letters (`protests` → `PROTEST`), and the notice says so
+- Ranked with an exact identifier match first, then by listed count, then by identifier. The count is a static prevalence figure from the lookup, not a live article total
+- Pages with `offset` / `limit` (1–100, default 25); `nextOffset` appears only when more matches remain, and an offset past a non-empty result fails `offset_out_of_range`
+- The lookup is downloaded on first use and held for the process; a failed download is not kept, so the next call retries it. It is served from a different host than the DOC and TV APIs and does not queue behind their rate limit
 
 ---
 
@@ -130,8 +142,8 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 
 GDELT-specific:
 
-- Shared outbound pacer across all tools — one request in flight at 1 req/5s, plus a cooldown gate that any GDELT rate-limit response closes for every queued caller (5s, doubling to 60s, reset by the next success)
-- Two service layers (`GdeltDocService`, `GdeltTvService`) mapping clean tool parameters to the DOC and TV API URL conventions
+- Shared outbound pacer across the DOC and TV tools — one request in flight at 1 req/5s, plus a cooldown gate that any GDELT rate-limit response closes for every queued caller (5s, doubling to 60s, reset by the next success)
+- Two service layers (`GdeltDocService`, `GdeltTvService`) mapping clean tool parameters to the DOC and TV API URL conventions, plus `GdeltThemeService`, which holds the GKG theme lookup in memory once downloaded
 - TV station filter operators embedded in query strings internally — callers pass structured `stations` arrays, not raw query syntax
 
 Agent-friendly output:
@@ -316,8 +328,8 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 |:----------|:--------|
 | `src/index.ts` | `createApp()` entry point — registers tools and inits services. |
 | `src/config` | Server-specific environment variable parsing and validation with Zod. |
-| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). Eight tools across DOC and TV APIs. |
-| `src/services/gdelt` | `GdeltDocService` and `GdeltTvService` wrapping the DOC and TV APIs, plus the shared outbound pacer every call queues behind. |
+| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). Nine tools across the DOC and TV APIs and the GKG theme lookup. |
+| `src/services/gdelt` | `GdeltDocService` and `GdeltTvService` wrapping the DOC and TV APIs, the shared outbound pacer every DOC and TV call queues behind, and `GdeltThemeService` for the GKG theme lookup. |
 | `tests/` | Unit and integration tests mirroring `src/`. |
 
 ## Development guide

@@ -91,7 +91,8 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
       .min(1)
       .describe(
         'Search query using GDELT syntax. Same operators as gdelt_search_articles: ' +
-          'phrases, boolean OR, sourcecountry:, sourcelang:, domain:, theme:, tone<.',
+          'phrases, boolean OR, sourcecountry:, sourcelang:, domain:, theme: (GKG theme identifiers ' +
+          'come from gdelt_search_themes), tone<.',
       ),
     mode: z
       .enum(['volume', 'volume_with_articles', 'tone'])

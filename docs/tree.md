@@ -1,6 +1,6 @@
 # gdelt-mcp-server - Directory Structure
 
-Generated on: 2026-09-24 18:37:51
+Generated on: 2026-09-24 19:27:18
 
 ```text
 gdelt-mcp-server/
@@ -155,6 +155,7 @@ gdelt-mcp-server/
 │   │       │   ├── index.ts
 │   │       │   ├── list-tv-stations.tool.ts
 │   │       │   ├── search-articles.tool.ts
+│   │       │   ├── search-themes.tool.ts
 │   │       │   └── search-tv.tool.ts
 │   │       ├── date-range.ts
 │   │       ├── markdown-escape.ts
@@ -165,11 +166,13 @@ gdelt-mcp-server/
 │   │       ├── gdelt-doc-service.ts
 │   │       ├── gdelt-fetch.ts
 │   │       ├── gdelt-pacer.ts
+│   │       ├── gdelt-theme-service.ts
 │   │       ├── gdelt-tv-service.ts
 │   │       └── types.ts
 │   └── index.ts
 ├── tests/
 │   ├── fixtures/
+│   │   ├── gkg-themes-excerpt.txt
 │   │   └── tv-station-catalog.json
 │   ├── prompts/
 │   ├── resources/
@@ -179,6 +182,7 @@ gdelt-mcp-server/
 │   │   ├── gdelt-fetch-retry.test.ts
 │   │   ├── gdelt-fetch.test.ts
 │   │   ├── gdelt-pacer.test.ts
+│   │   ├── gdelt-theme-service.test.ts
 │   │   └── gdelt-tv-service.test.ts
 │   └── tools/
 │       ├── date-range.test.ts
@@ -194,8 +198,10 @@ gdelt-mcp-server/
 │       ├── markdown-render.ts
 │       ├── response-budget.test.ts
 │       ├── search-articles.tool.test.ts
+│       ├── search-themes.tool.test.ts
 │       ├── search-tv.tool.test.ts
 │       ├── security.test.ts
+│       ├── theme-operator-hints.test.ts
 │       └── tool-surface.test.ts
 ├── .dockerignore
 ├── .env.example

@@ -75,7 +75,8 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
       .min(1)
       .describe(
         'Search query using GDELT syntax. Same operators as gdelt_search_articles: ' +
-          'phrases, boolean OR, sourcecountry:, sourcelang:, domain:, theme:.',
+          'phrases, boolean OR, sourcecountry:, sourcelang:, domain:, theme: (GKG theme identifiers ' +
+          'come from gdelt_search_themes).',
       ),
     timespan: gdeltDocTimespanSchema
       .optional()

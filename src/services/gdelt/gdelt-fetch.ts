@@ -39,7 +39,7 @@ const GDELT_RATE_LIMIT_DATA = {
  * the wire. The hint is the declared `recovery` for that reason; the service layer throws
  * below `ctx.fail`, so it is carried here rather than resolved from the contract.
  */
-const GDELT_UNAVAILABLE_DATA = {
+export const GDELT_UNAVAILABLE_DATA = {
   reason: 'gdelt_unavailable',
   retryable: true,
   recovery: { hint: 'Retry after a short delay; GDELT may be temporarily unavailable.' },

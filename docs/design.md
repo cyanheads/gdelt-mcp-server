@@ -10,6 +10,7 @@
 | `gdelt_get_coverage_timeline` | Retrieve a time series showing when coverage of a topic spiked — either as normalized volume (% of all global coverage) or as average tone. Use `mode: volume_with_articles` for the signal-detection workflow: each timestep includes the top articles that drove that spike, so a single call reveals both the spike and its cause. The text surface renders the first 3 links per timestep beside its true count; `points` renders named timesteps in full. Tone timeline shows sentiment shifts over time; combine with `gdelt_get_tone_distribution` for the full tonal picture. | `query`, `mode` (volume \| volume_with_articles \| tone), `timespan`, `startDatetime`, `endDatetime`, `smoothing`, `points` | `readOnlyHint: true`, `openWorldHint: true` |
 | `gdelt_get_tone_distribution` | Get the tonal distribution of articles matching a query as a histogram (bins from ~-30 to +30). Unlike a single average tone score, the histogram reveals whether coverage is uniformly negative, bimodal (some extremely positive, some extremely negative), or clustered near neutral. Each bin includes representative article URLs. Distinct from `gdelt_get_coverage_timeline` (mode: tone) — this is a snapshot distribution across all matching articles, not a time series. | `query`, `timespan`, `startDatetime`, `endDatetime` | `readOnlyHint: true`, `openWorldHint: true` |
 | `gdelt_get_coverage_breakdown` | Break down coverage volume over time by source language or source country, returning a multi-series time series (one series per language or country). Shows which countries or languages drove early vs. late coverage — useful for tracing how a story propagated geographically. Returns the top 10 series by total volume to keep output size manageable; remaining series are aggregated into an "Other" bucket and named in `otherSeriesLabels`, so any of them can be retrieved complete via the `series` input. Values are normalized — the topic's share of media output, not absolute article counts, so small media markets with concentrated coverage rank above large markets with diverse output. | `query`, `breakdownBy` (language \| country), `timespan`, `startDatetime`, `endDatetime`, `series` | `readOnlyHint: true`, `openWorldHint: true` |
+| `gdelt_search_themes` | Find GKG theme identifiers for the `theme:` operator the four DOC tools accept, by matching query words against the identifiers in GDELT's GKG theme lookup (no labels exist). Every word must begin one of an identifier's `_`/`-`-separated parts or run across consecutive parts, or all the words joined must; one disclosed plural fallback on zero matches. Ranked exact identifier first, then by the lookup's listed count, then by identifier; each match carries a paste-ready `operator`. | `query`, `offset`, `limit` | `readOnlyHint: true`, `openWorldHint: true` |
 | `gdelt_search_tv` | Search US television news closed captions (2009–Oct 2024, 150+ stations) for spoken mentions of a query. Returns query-matching per-station coverage as normalized airtime percentages or raw 15-second clip counts. Up to 10 stations may be selected with `stations`, or a `station:` query operator can supply selection. Results are ISO-normalized; page membership uses deterministic date-then-station order, and returned points are grouped by station. `nextOffset` retrieves the next page of up to 500 points. | `query`, `stations`, `timespan`, `startDatetime`, `endDatetime`, `smoothing`, `normalize`, `dateres`, `offset`, `limit` | `readOnlyHint: true`, `openWorldHint: true` |
 | `gdelt_get_tv_clips` | Retrieve the top matching TV news clips for a query from the Internet Archive's Television News Archive — up to 3,000 fetched, clips dated outside an explicit `startDatetime`/`endDatetime` window dropped, and as many as fit a 48,000-byte budget per surface returned; the rest are counted in `withheldCount`. Each clip includes show name, station, air timestamp, a 15-second transcript excerpt, and a direct link to view the full one-minute clip. Use after `gdelt_search_tv` to read the actual content driving a coverage spike. 3,000 is a hard ceiling with no cursor past it — at the cap, or on a page cut to the budget, the response returns `continuationWindows` to re-query. | `query`, `stations`, `timespan`, `startDatetime`, `endDatetime`, `maxRecords`, `sort` (relevance \| dateDesc \| dateAsc) | `readOnlyHint: true`, `openWorldHint: true` |
 | `gdelt_get_tv_context` | Get the top co-occurring words and phrases from TV news clips matching a query — the vocabulary framing a topic on television. Returns the most frequent non-stopword terms from matching clips, with relative frequency scores. Use to understand narrative framing, identify related concepts, or generate follow-up search terms. | `query`, `stations`, `timespan` | `readOnlyHint: true`, `openWorldHint: true` |
@@ -33,6 +34,8 @@ This server targets two primary APIs:
 - **DOC API** — full-text search over the last 3 months of global news with volume, tone, and language breakdowns
 - **TV API** — television news transcript search from 2009 through October 2024 with per-station volume analysis (archive feed stopped updating around Oct 2024)
 
+It also reads GDELT's GKG theme lookup (`https://data.gdeltproject.org/api/v2/guides/LOOKUP-GKGTHEMES.TXT`) so callers can find the identifiers the DOC API's `theme:` operator takes.
+
 No auth required. Rate limit: 1 request per 5 seconds (enforced by the server). Data is free to use and redistribute with attribution to the GDELT Project.
 
 ## Requirements
@@ -45,6 +48,7 @@ No auth required. Rate limit: 1 request per 5 seconds (enforced by the server). 
 - Per-station TV airtime comparison for network-level coverage analysis
 - TV clip retrieval with transcript snippets and Archive.org viewing links
 - TV word cloud / co-occurrence vocabulary for framing analysis
+- GKG theme identifier discovery for the DOC `theme:` operator
 - No authentication required
 - Rate limiting to 1 req/5s (with per-call minimum delay in service layer)
 - DOC query syntax: keywords, phrases, boolean OR, `domain:`, `sourcecountry:`, `sourcelang:`, `theme:`, `tone<`, `near:`, `repeat:`
@@ -56,8 +60,9 @@ No auth required. Rate limit: 1 request per 5 seconds (enforced by the server). 
 |:--------|:------|:--------|
 | `GdeltDocService` | DOC API (`/api/v2/doc/doc`) | `gdelt_search_articles`, `gdelt_get_coverage_timeline`, `gdelt_get_tone_distribution`, `gdelt_get_coverage_breakdown` |
 | `GdeltTvService` | TV API (`/api/v2/tv/tv`) | `gdelt_search_tv`, `gdelt_get_tv_clips`, `gdelt_get_tv_context`, `gdelt_list_tv_stations` |
+| `GdeltThemeService` | GKG theme lookup file on `data.gdeltproject.org` | `gdelt_search_themes` |
 
-Both services queue behind a single outbound pacer (`src/services/gdelt/gdelt-pacer.ts`) — one request in flight, the request gap held from the *previous response's completion* rather than its start, and a shared cooldown gate a GDELT rate-limit response closes for every queued caller. GDELT's limiter counts from completion, and its answers routinely outrun the gap, so start-relative spacing alone leaves no gap at all.
+The DOC and TV services queue behind a single outbound pacer (`src/services/gdelt/gdelt-pacer.ts`) — one request in flight, the request gap held from the *previous response's completion* rather than its start, and a shared cooldown gate a GDELT rate-limit response closes for every queued caller. GDELT's limiter counts from completion, and its answers routinely outrun the gap, so start-relative spacing alone leaves no gap at all. `GdeltThemeService` makes one request per process to a different host and bypasses the pacer (see [The GKG theme lookup is fetched once per process](#the-gkg-theme-lookup-is-fetched-once-per-process)).
 
 ## Config
 
@@ -186,6 +191,35 @@ render in full. An unmatched date throws `unknown_point` listing the available d
 The `series: string[]` input takes labels from `otherSeriesLabels` (or `topSeries[].label`) and
 returns each one complete under `selectedSeries`, alongside the unchanged overview. An unmatched
 label throws `unknown_series` listing the available labels rather than being skipped.
+
+### `gdelt_search_themes`
+```ts
+{
+  matches: Array<{
+    theme: string;        // e.g. "NATURAL_DISASTER_DROUGHT"
+    count: number;        // the count the lookup lists — static, not a live article total
+    operator: string;     // "theme:NATURAL_DISASTER_DROUGHT"
+  }>;                     // exact identifier first, then count descending, then identifier
+  totalMatches: number;   // across all pages
+  offset: number;
+  limit: number;          // 1–100, default 25
+  nextOffset?: number;    // only when more matches remain
+  // enrichment
+  effectiveQuery: string;
+  totalCount: number;     // same figure as totalMatches
+  notice?: string;        // plural-fallback disclosure, or retry guidance on zero matches
+}
+```
+
+| Reason | Code | When | Recovery |
+|:-------|:-----|:-----|:---------|
+| `invalid_query` | `ValidationError` | The query has no letter or digit (blank, whitespace, `___`); thrown before the lookup loads | Retry gdelt_search_themes with at least one word of letters or digits, such as "drought" or "cyber attack". |
+| `offset_out_of_range` | `NotFound` | `offset` ≥ `totalMatches` on a non-empty result | Retry with an offset between 0 and totalMatches - 1 from the preceding response. |
+| `gdelt_unavailable` | `ServiceUnavailable` (retryable) | The lookup could not be downloaded (any HTTP error status, a 404 included; a network error; a timeout) or is not `THEME<TAB>count` lines | Retry after a short delay; GDELT may be temporarily unavailable. |
+
+Zero matches are a success with a notice routing to a retry with fewer words, a singular, or a
+shorter stem (`displac`). `format()` renders a header with the page range and `totalMatches`, then
+one line per match: identifier, count, and the operator in backticks.
 
 ### `gdelt_search_tv`
 ```ts
@@ -397,6 +431,14 @@ Multi-line `format()` output separates a list from the next paragraph with a bla
 
 This is server-side pagination over a fresh upstream timeline, not a GDELT cursor. Historical archive queries are the intended workflow; callers paging a mutable window should keep every query input fixed and expect new upstream data to change later pages.
 
+### The GKG theme lookup is fetched once per process
+
+`gdelt_search_themes` downloads the lookup (59,315 `THEME<TAB>count` lines, 2.0 MB, last modified 2021-11-25) on first use and holds the parsed, ranked index for the life of the process. Bundling a snapshot was rejected on install cost: it grows every npm tarball from 129 KB to 683 KB whether or not the tool is ever called, while a fetch costs 2.0 MB once per process and only when the tool runs; freshness does not separate the two, since the file has not changed since 2021 and a restart re-fetches. No TTL — nothing in the file changes within a process lifetime. A failed load is not cached, so the next call retries it, and concurrent first calls share one in-flight load. The load bypasses the DOC/TV pacer: the file is served from `data.gdeltproject.org`, not the rate-limited API host, and a theme lookup should not queue behind up to 90 s of DOC/TV traffic. It is not tied to the first caller's cancellation signal, because other callers may be waiting on the same load. Every load failure — including a 404, which would otherwise surface as `NotFound` and read as "no such theme" — throws the retryable `gdelt_unavailable`, never an empty result. Parsed and indexed it retains about 13 MB of heap; the load raises process RSS by about 60 MB.
+
+### Theme matching is token-prefix, with one plural fallback
+
+The lookup carries identifiers and counts only, so the identifier text is the whole searchable surface. Matching was measured over the full file against three rules: exact token misses plurals (`refugee` misses `REFUGEES`, the top match), substring drowns short words (`art` 2,013 hits, `ice` 491 through `WB_840_JUSTICE`), and token prefix sits between. Token prefix is the rule, widened so a word may run across consecutive tokens and all the words joined may match (`cyberattack` → `CYBER_ATTACK`, `plant disease` → `TAX_PLANTDISEASE`), which added no noise on the measured sample. There is no stemming or synonym bridging; the one exception is a single retry on zero matches with a trailing `s` dropped from each word of four or more characters, disclosed in the notice, so `protests` reaches `PROTEST`. An exact identifier match ranks first, which keeps `DISPLACED` above the higher-count `CRISISLEX_T09_DISPLACEDRELOCATEDEVACUATED` and makes the tool usable for confirming an identifier a caller already holds; a "whole-token matches first" tier was rejected because it demoted `REFUGEES` below eleven `REFUGEE` whole-token matches. The index is ranked once at load, so a search is a single filter pass, linear in rows × words — under 20 ms per call on the full file.
+
 ### Timeline dates and request enums mirror GDELT
 
 DOC and TV timeline dates are normalized at the service boundary (`YYYYMMDD` → `YYYY-MM-DD`, `YYYYMMDDTHHMMSSZ` → ISO date-time). Resolution fallback uses the smallest positive interval across all usable points instead of the timestamp's spelling. DOC represents 15-minute, hourly, and daily intervals; TV preserves or infers `hour`, `day`, `week`, `month`, and `year`, and exposes the same values through `dateres`.
@@ -416,7 +458,7 @@ Timeline smoothing is sent upstream as `TIMELINESMOOTH`. TV clips use `DateAsc`/
 - **TV API coverage gap post-Oct 2024.** Most TV stations in the station list have end dates of October 2024, suggesting the Internet Archive's Television News Archive feed into GDELT TV stopped being updated around that time. Recent TV queries will return thin or zero results.
 - **Rate limit: 1 req/5s.** Tools that call multiple API modes must serialize calls. Multi-step workflows (e.g. tone + volume + article list) will take 15+ seconds.
 - **DOC API article fields are sparse.** The article list returns URL, title, seendate, socialimage, domain, language, and sourcecountry only — no article text, no author, no full metadata. Full content requires fetching the source URL directly.
-- **Theme taxonomy is opaque.** The `theme:` query operator references an internal GKG taxonomy (e.g. `DISEASE_OUTBREAK`, `TERROR`). The lookup file is available at `http://data.gdeltproject.org/api/v2/guides/LOOKUP-GKGTHEMES.TXT` but is not surfaced as a tool in v1.
+- **Theme identifiers have no labels.** The `theme:` query operator takes GKG taxonomy identifiers (e.g. `TAX_DISEASE_OUTBREAK`, `TERROR`). `gdelt_search_themes` searches them, but GDELT's lookup (`https://data.gdeltproject.org/api/v2/guides/LOOKUP-GKGTHEMES.TXT`) carries only the identifier and a count, so a concept is found only through words in the identifier itself — `displacement` never reaches `DISPLACED` or `REFUGEES`. The count column is undocumented: GDELT describes the list as themes seen in at least 100 articles over two years, yet 33,974 of its rows list a count under 100, so it is reported as the lookup's figure, never as an article count.
 
 ---
 
@@ -432,7 +474,7 @@ Timeline smoothing is sent upstream as `TIMELINESMOOTH`. TV clips use `DateAsc`/
 | Source country | `sourcecountry:china` | Articles from Chinese outlets |
 | Source language | `sourcelang:spanish` | Spanish-language articles |
 | Domain | `domain:who.int` | Articles from a specific domain |
-| Theme | `theme:DISEASE_OUTBREAK` | GKG taxonomy theme |
+| Theme | `theme:TAX_DISEASE_OUTBREAK` | GKG taxonomy theme — find identifiers with `gdelt_search_themes` |
 | Tone filter | `tone<-5` | Articles more negative than -5 |
 | Proximity | `near20:"flu virus"` | Terms within 20 words of each other |
 | Repeat | `repeat3:"outbreak"` | Word appears ≥3 times in article |
