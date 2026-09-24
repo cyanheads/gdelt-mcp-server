@@ -13,6 +13,7 @@ import {
   GDELT_DATETIME_PATTERN,
   gdeltDocTimespanSchema,
 } from '../date-range.js';
+import { escapeMarkdown, markdownLinkDestination } from '../markdown-escape.js';
 
 /**
  * Article links rendered per timestep in volume_with_articles mode, for timesteps the
@@ -44,15 +45,9 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
 
   errors: [
     {
-      reason: 'no_timeline_data',
-      code: JsonRpcErrorCode.NotFound,
-      when: 'No timeline data returned for the query and time range.',
-      recovery: 'Broaden the query, extend the timespan, or verify query operators are correct.',
-    },
-    {
       reason: 'unknown_point',
       code: JsonRpcErrorCode.NotFound,
-      when: 'A date passed in the points input matches no timestep in this timeline.',
+      when: 'A date passed in the points input matches no timestep in a non-empty timeline.',
       recovery:
         'Read the timestep dates listed in the error and retry points with exact matches from that list.',
     },
@@ -153,7 +148,11 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
   output: z.object({
     dateResolution: z
       .enum(['15min', 'hour', 'day'])
-      .describe('Temporal resolution of the data points — 15min, hour, or day.'),
+      .optional()
+      .describe(
+        'Temporal resolution of the data points — 15min, hour, or day — inferred from the spacing ' +
+          'of the returned timesteps. Omitted when fewer than two distinct timesteps came back.',
+      ),
     series: z
       .array(
         z
@@ -223,7 +222,8 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
       .string()
       .optional()
       .describe(
-        'Recovery hint when no timeline data was returned. Absent on successful responses.',
+        'Guidance when the query matched no coverage in the window — how to broaden the query or ' +
+          'extend the window. Absent when timeline data was returned.',
       ),
   },
 
@@ -254,31 +254,27 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
       ctx,
     );
 
-    if (series.length === 0 || series.every((s) => s.data.length === 0)) {
-      throw ctx.fail('no_timeline_data', `No timeline data for "${input.query}"`, {
-        recovery: {
-          hint: `No coverage data found for "${input.query}". Try broadening the query or extending the time window.`,
-        },
-      });
-    }
-
     // Infer date resolution from data point spacing
     const allDates = series.flatMap((s) => s.data.map((d) => d.date));
     const dateResolution = inferDateResolution(allDates);
-    const totalPoints = series.reduce((sum, s) => sum + s.data.length, 0);
+    const totalPoints = allDates.length;
+    const isEmpty = totalPoints === 0;
+    // An empty timeline has no timesteps to name, so there a points selection is moot, not wrong.
+    const expandedPoints = !isEmpty && input.points?.length ? input.points : undefined;
 
     // A points value that matches no timestep would expand nothing and say nothing —
     // the same silent withholding the selector exists to remove. Reject it instead.
-    if (input.points?.length) {
+    if (expandedPoints) {
       const available = new Set(allDates);
-      const unknown = input.points.filter((date) => !available.has(date));
+      const unknown = expandedPoints.filter((date) => !available.has(date));
       if (unknown.length > 0) {
         const named = unknown.map((date) => `"${date}"`).join(', ');
         throw ctx.fail('unknown_point', `No timestep at ${named}`, {
           unknownPoints: unknown,
           recovery: {
             hint:
-              `This timeline has no timestep at ${named}. Dates are exact, at ${dateResolution} resolution. ` +
+              `This timeline has no timestep at ${named}. Dates are exact` +
+              `${dateResolution ? `, at ${dateResolution} resolution` : ''}. ` +
               `Available: ${[...available].join(', ')}.`,
           },
         });
@@ -293,15 +289,29 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
       ...(input.endDatetime && { endDatetime: input.endDatetime }),
     });
 
+    // Every notice segment for this response accumulates here and is flushed once —
+    // ctx.enrich.notice is last-wins, so a second call would silently drop the first.
+    const notices: string[] = [];
+    if (isEmpty) {
+      notices.push(
+        `No coverage data found for "${input.query}". Broaden the query, extend the time window, ` +
+          'or verify the query operators are correct.',
+      );
+      if (input.points?.length) {
+        notices.push('The points input was not applied — this timeline has no timesteps.');
+      }
+    }
+    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
+
     ctx.log.info('gdelt_get_coverage_timeline completed', {
       seriesCount: series.length,
-      pointCount: series[0]?.data.length ?? 0,
+      pointCount: totalPoints,
     });
 
     return {
-      dateResolution,
+      ...(dateResolution && { dateResolution }),
       series,
-      ...(input.points?.length ? { expandedPoints: input.points } : {}),
+      ...(expandedPoints && { expandedPoints }),
     };
   },
 
@@ -312,10 +322,9 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
    */
   format: (result) => {
     const expanded = new Set(result.expandedPoints ?? []);
-    const lines: string[] = [
-      `## GDELT Coverage Timeline`,
-      `**Date Resolution:** ${result.dateResolution}`,
-    ];
+    const lines: string[] = [`## GDELT Coverage Timeline`];
+    if (result.dateResolution) lines.push(`**Date Resolution:** ${result.dateResolution}`);
+    if (result.series.every((s) => s.data.length === 0)) lines.push('No timeline data returned.');
 
     const capped = result.series.some((s) =>
       s.data.some((d) => (d.articles?.length ?? 0) > ARTICLES_PER_POINT && !expanded.has(d.date)),
@@ -327,18 +336,19 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
       );
     }
     if (result.expandedPoints?.length) {
-      lines.push(`**Fully expanded timesteps:** ${result.expandedPoints.join(', ')}`);
+      const dates = result.expandedPoints.map((date) => escapeMarkdown(date)).join(', ');
+      lines.push(`**Fully expanded timesteps:** ${dates}`);
     }
 
     for (const s of result.series) {
-      lines.push(`\n### ${s.label}`);
+      lines.push(`\n### ${escapeMarkdown(s.label, 'heading-end')}`);
       const peakPoint = s.data.reduce(
         (max, d) => (Math.abs(d.value) > Math.abs(max.value) ? d : max),
         s.data[0] ?? { date: '', value: 0, articles: undefined },
       );
       lines.push(`**Data points:** ${s.data.length}`);
       if (peakPoint.date) {
-        lines.push(`**Peak:** ${peakPoint.value.toFixed(3)} at ${peakPoint.date}`);
+        lines.push(`**Peak:** ${peakPoint.value.toFixed(3)} at ${escapeMarkdown(peakPoint.date)}`);
       }
       for (const d of s.data) {
         const shown = expanded.has(d.date) ? d.articles : d.articles?.slice(0, ARTICLES_PER_POINT);
@@ -346,8 +356,12 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
         const articlesNote = d.articles?.length
           ? ` (${d.articles.length} articles${withheld > 0 ? `, ${shown?.length} shown` : ''})`
           : '';
-        lines.push(`- ${d.date}: ${d.value.toFixed(3)}${articlesNote}`);
-        for (const a of shown ?? []) lines.push(`  - [${a.title}](${a.url})`);
+        lines.push(
+          `- ${escapeMarkdown(d.date, 'line-start')}: ${d.value.toFixed(3)}${articlesNote}`,
+        );
+        for (const a of shown ?? []) {
+          lines.push(`  - [${escapeMarkdown(a.title)}](${markdownLinkDestination(a.url)})`);
+        }
       }
     }
     return [{ type: 'text', text: lines.join('\n') }];

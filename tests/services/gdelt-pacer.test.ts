@@ -66,6 +66,8 @@ function swallow(promise: Promise<unknown>): Promise<unknown> {
 describe('gdeltFetch pacing', () => {
   beforeEach(() => {
     mockedFetch.mockReset();
+    // GDELT is rate-limited: a call no case arranged fails loudly instead of passing silently.
+    mockedFetch.mockRejectedValue(new Error('unmocked fetch'));
     vi.useFakeTimers();
     initGdeltPacer(GAP_MS);
   });

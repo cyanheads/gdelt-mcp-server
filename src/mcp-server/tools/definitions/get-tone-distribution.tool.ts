@@ -12,6 +12,15 @@ import {
   GDELT_DATETIME_PATTERN,
   gdeltDocTimespanSchema,
 } from '../date-range.js';
+import { escapeMarkdown, markdownLinkDestination } from '../markdown-escape.js';
+
+/** The bin carrying the most articles, or `undefined` when there is no bin to choose from. */
+function peakBin(bins: Array<{ bin: number; count: number }>): number | undefined {
+  return bins.reduce<{ bin: number; count: number } | undefined>(
+    (max, b) => (max == null || b.count > max.count ? b : max),
+    undefined,
+  )?.bin;
+}
 
 export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
   title: 'Get GDELT Tone Distribution',
@@ -26,12 +35,6 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
   annotations: { readOnlyHint: true, openWorldHint: true },
 
   errors: [
-    {
-      reason: 'no_tone_data',
-      code: JsonRpcErrorCode.NotFound,
-      when: 'No tone histogram data returned for the query.',
-      recovery: 'Broaden the query or extend the timespan to include more matching articles.',
-    },
     {
       reason: 'invalid_date_range',
       code: JsonRpcErrorCode.ValidationError,
@@ -123,15 +126,26 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
       .object({
         peakNegativeBin: z
           .number()
-          .describe('Tone bin with the highest count among negative bins (bin < 0).'),
+          .optional()
+          .describe(
+            'Tone bin with the highest count among negative bins (bin < 0). Omitted when no negative bin was returned.',
+          ),
         peakPositiveBin: z
           .number()
-          .describe('Tone bin with the highest count among positive bins (bin > 0).'),
+          .optional()
+          .describe(
+            'Tone bin with the highest count among positive bins (bin > 0). Omitted when no positive bin was returned.',
+          ),
         neutralPct: z
           .number()
-          .describe('Percentage of articles in the near-neutral range (bins -2 to +2).'),
+          .optional()
+          .describe(
+            'Percentage of articles in the near-neutral range (bins -2 to +2). Omitted when the histogram counts no articles.',
+          ),
       })
-      .describe('Summary statistics derived from the histogram.'),
+      .describe(
+        'Summary statistics derived from the histogram. Each value is omitted when the histogram cannot support it — all of them on an empty result.',
+      ),
   }),
 
   // Agent-facing context — query echo and notice on empty results.
@@ -150,7 +164,10 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
     notice: z
       .string()
       .optional()
-      .describe('Recovery hint when no tone data was returned. Absent on successful responses.'),
+      .describe(
+        'Guidance when no articles matched in the window — how to broaden the query or extend the ' +
+          'window. Absent when tone data was returned.',
+      ),
   },
 
   async handler(input, ctx) {
@@ -172,34 +189,18 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
       ctx,
     );
 
-    if (bins.length === 0) {
-      throw ctx.fail('no_tone_data', `No tone data for "${input.query}"`, {
-        recovery: {
-          hint: `No tone data for "${input.query}". Broaden the query or extend the time range.`,
-        },
-      });
-    }
-
-    // Compute summary
-    const negativeBins = bins.filter((b) => b.bin < 0);
-    const positiveBins = bins.filter((b) => b.bin > 0);
-    const neutralBins = bins.filter((b) => b.bin >= -2 && b.bin <= 2);
+    // Compute summary — each value only from bins that support it, never a stand-in default.
     const totalCount = bins.reduce((sum, b) => sum + b.count, 0);
-    const neutralCount = neutralBins.reduce((sum, b) => sum + b.count, 0);
-
-    const peakNeg = negativeBins.reduce(
-      (max, b) => (b.count > max.count ? b : max),
-      negativeBins[0] ?? { bin: 0, count: 0, articles: [] },
-    );
-    const peakPos = positiveBins.reduce(
-      (max, b) => (b.count > max.count ? b : max),
-      positiveBins[0] ?? { bin: 0, count: 0, articles: [] },
-    );
+    const neutralCount = bins
+      .filter((b) => b.bin >= -2 && b.bin <= 2)
+      .reduce((sum, b) => sum + b.count, 0);
+    const peakNegativeBin = peakBin(bins.filter((b) => b.bin < 0));
+    const peakPositiveBin = peakBin(bins.filter((b) => b.bin > 0));
 
     const summary = {
-      peakNegativeBin: peakNeg.bin,
-      peakPositiveBin: peakPos.bin,
-      neutralPct: totalCount > 0 ? Math.round((neutralCount / totalCount) * 100) : 0,
+      ...(peakNegativeBin != null && { peakNegativeBin }),
+      ...(peakPositiveBin != null && { peakPositiveBin }),
+      ...(totalCount > 0 && { neutralPct: Math.round((neutralCount / totalCount) * 100) }),
     };
 
     ctx.enrich.echo(input.query);
@@ -209,23 +210,32 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
       ...(input.endDatetime && { endDatetime: input.endDatetime }),
     });
 
+    if (bins.length === 0) {
+      ctx.enrich.notice(
+        `No tone data for "${input.query}". Broaden the query or extend the time range to include ` +
+          'more matching articles.',
+      );
+    }
+
     ctx.log.info('gdelt_get_tone_distribution completed', { bins: bins.length, totalCount });
     return { histogram: bins, summary };
   },
 
   format: (result) => {
-    const lines: string[] = [
-      `## GDELT Tone Distribution`,
-      `**Peak negative bin:** ${result.summary.peakNegativeBin}`,
-      `**Peak positive bin:** ${result.summary.peakPositiveBin}`,
-      `**Neutral articles (bins -2 to +2):** ${result.summary.neutralPct}%`,
-    ];
+    const { peakNegativeBin, peakPositiveBin, neutralPct } = result.summary;
+    const lines: string[] = [`## GDELT Tone Distribution`];
+    if (peakNegativeBin != null) lines.push(`**Peak negative bin:** ${peakNegativeBin}`);
+    if (peakPositiveBin != null) lines.push(`**Peak positive bin:** ${peakPositiveBin}`);
+    if (neutralPct != null) lines.push(`**Neutral articles (bins -2 to +2):** ${neutralPct}%`);
     lines.push('\n### Histogram');
+    if (result.histogram.length === 0) lines.push('No tone bins returned.');
     for (const b of result.histogram) {
       const bar = '█'.repeat(Math.min(Math.ceil(b.count / 5), 20));
-      lines.push(`**Bin ${b.bin > 0 ? '+' : ''}${b.bin}:** ${b.count} articles ${bar}`);
+      // The blank line ends the previous bin's article list; without it CommonMark lazy
+      // continuation folds this header into that list's last item.
+      lines.push(`\n**Bin ${b.bin > 0 ? '+' : ''}${b.bin}:** ${b.count} articles ${bar}`);
       for (const a of b.articles) {
-        lines.push(`  - [${a.title}](${a.url})`);
+        lines.push(`  - [${escapeMarkdown(a.title)}](${markdownLinkDestination(a.url)})`);
       }
     }
     return [{ type: 'text', text: lines.join('\n') }];

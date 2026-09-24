@@ -1,6 +1,6 @@
 # gdelt-mcp-server - Directory Structure
 
-Generated on: 2026-09-19 16:03:20
+Generated on: 2026-09-24 17:13:29
 
 ```text
 gdelt-mcp-server/
@@ -151,12 +151,13 @@ gdelt-mcp-server/
 │   │       │   ├── get-tone-distribution.tool.ts
 │   │       │   ├── get-tv-clips.tool.ts
 │   │       │   ├── get-tv-context.tool.ts
-│   │       │   ├── get-tv-trending.tool.ts
 │   │       │   ├── index.ts
 │   │       │   ├── list-tv-stations.tool.ts
 │   │       │   ├── search-articles.tool.ts
 │   │       │   └── search-tv.tool.ts
-│   │       └── date-range.ts
+│   │       ├── date-range.ts
+│   │       ├── markdown-escape.ts
+│   │       └── response-budget.ts
 │   ├── services/
 │   │   └── gdelt/
 │   │       ├── date-resolution.ts
@@ -167,6 +168,8 @@ gdelt-mcp-server/
 │   │       └── types.ts
 │   └── index.ts
 ├── tests/
+│   ├── fixtures/
+│   │   └── tv-station-catalog.json
 │   ├── prompts/
 │   ├── resources/
 │   ├── services/
@@ -184,12 +187,15 @@ gdelt-mcp-server/
 │       ├── get-tone-distribution.tool.test.ts
 │       ├── get-tv-clips.tool.test.ts
 │       ├── get-tv-context.tool.test.ts
-│       ├── get-tv-trending.tool.test.ts
 │       ├── input-validation.test.ts
 │       ├── list-tv-stations.tool.test.ts
+│       ├── markdown-escape.test.ts
+│       ├── markdown-render.ts
+│       ├── response-budget.test.ts
 │       ├── search-articles.tool.test.ts
 │       ├── search-tv.tool.test.ts
-│       └── security.test.ts
+│       ├── security.test.ts
+│       └── tool-surface.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes

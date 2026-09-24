@@ -16,7 +16,6 @@ import { gdeltGetCoverageTimeline } from '@/mcp-server/tools/definitions/get-cov
 import { gdeltGetToneDistribution } from '@/mcp-server/tools/definitions/get-tone-distribution.tool.js';
 import { gdeltGetTvClips } from '@/mcp-server/tools/definitions/get-tv-clips.tool.js';
 import { gdeltGetTvContext } from '@/mcp-server/tools/definitions/get-tv-context.tool.js';
-import { gdeltGetTvTrending } from '@/mcp-server/tools/definitions/get-tv-trending.tool.js';
 import { gdeltListTvStations } from '@/mcp-server/tools/definitions/list-tv-stations.tool.js';
 import { gdeltSearchArticles } from '@/mcp-server/tools/definitions/search-articles.tool.js';
 import { gdeltSearchTv } from '@/mcp-server/tools/definitions/search-tv.tool.js';
@@ -34,6 +33,12 @@ vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => {
 });
 
 const mockedFetchWithTimeout = vi.mocked(fetchWithTimeout);
+
+/** GDELT is rate-limited: a call no case arranged fails loudly instead of reaching the network. */
+beforeEach(() => {
+  mockedFetchWithTimeout.mockReset();
+  mockedFetchWithTimeout.mockRejectedValue(new Error('unmocked fetch'));
+});
 
 describe('error propagation — doc service tools', () => {
   it('search-articles propagates network timeout from service', async () => {
@@ -93,15 +98,6 @@ describe('error propagation — tv service tools', () => {
     const ctx = createMockContext({ errors: gdeltGetTvContext.errors });
     const input = gdeltGetTvContext.input.parse({ query: 'test' });
     await expect(gdeltGetTvContext.handler(input, ctx)).rejects.toThrow();
-  });
-
-  it('get-tv-trending propagates service error', async () => {
-    vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-      getTvTrending: vi.fn().mockRejectedValue(new Error('API unreachable')),
-    } as unknown as tvServiceModule.GdeltTvService);
-    const ctx = createMockContext({ errors: gdeltGetTvTrending.errors });
-    const input = gdeltGetTvTrending.input.parse({});
-    await expect(gdeltGetTvTrending.handler(input, ctx)).rejects.toThrow();
   });
 
   it('search-tv propagates service serialization error', async () => {
@@ -322,7 +318,6 @@ describe('gdelt_rate_limited propagates through production-shaped tool contracts
     gdeltSearchTv,
     gdeltGetTvClips,
     gdeltGetTvContext,
-    gdeltGetTvTrending,
     gdeltListTvStations,
   ])('$name declares separate rate-limited and unavailable contracts', (tool) => {
     expect(tool.errors).toEqual(
@@ -503,7 +498,6 @@ describe('empty/sparse payload edge cases', () => {
       searchTv: vi.fn().mockResolvedValue({
         series: [{ station: 'CNN', data: [{ date: '2024-01-01', value: 1.0 }] }],
         dateResolution: 'day',
-        timeRange: { start: '2024-01-01', end: '2024-01-01' },
         normalized: true,
       }),
     } as unknown as tvServiceModule.GdeltTvService);
@@ -511,6 +505,76 @@ describe('empty/sparse payload edge cases', () => {
     const input = gdeltSearchTv.input.parse({ query: 'test' });
     const result = await gdeltSearchTv.handler(input, ctx);
     expect(result.series).toHaveLength(1);
+  });
+});
+
+/**
+ * GDELT answers a query that matches nothing with HTTP 200 `{}`. These drive that payload through
+ * the real services, pacer, and parser to the wire — only the network call is stubbed — so the
+ * success shape is proven end to end rather than from a stubbed service's empty array.
+ */
+describe('a `{}` zero-match answer reaches the wire as a success', () => {
+  const SERVER_CONFIG = { baseUrl: 'https://api.gdeltproject.org/api/v2', requestDelayMs: 0 };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    initGdeltPacer(0);
+    initGdeltDocService({} as never, {} as never, SERVER_CONFIG as never);
+    initGdeltTvService({} as never, {} as never, SERVER_CONFIG as never);
+    mockedFetchWithTimeout.mockImplementation(() =>
+      Promise.resolve(new Response('{}', { status: 200 })),
+    );
+  });
+
+  afterEach(() => {
+    disposeGdeltPacer();
+  });
+
+  it('DOC — gdelt_search_articles returns an empty list with a notice', async () => {
+    const result = await runToolContract(gdeltSearchArticles, { query: 'zqxwvjkplmq' });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual({
+      articles: [],
+      effectiveQuery: 'zqxwvjkplmq',
+      totalCount: 0,
+      notice: expect.stringContaining('No articles matched "zqxwvjkplmq"'),
+    });
+    expect(mockedFetchWithTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  it('TV — gdelt_get_tv_clips returns an empty list with a notice', async () => {
+    const result = await runToolContract(gdeltGetTvClips, {
+      query: 'zqxwvjkplmq',
+      stations: ['CNN'],
+      startDatetime: '20240901000000',
+      endDatetime: '20241001000000',
+    });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual({
+      clips: [],
+      effectiveQuery: 'zqxwvjkplmq',
+      totalCount: 0,
+      notice: expect.stringContaining('No TV clips matched "zqxwvjkplmq"'),
+    });
+    expect(mockedFetchWithTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  it('TV — gdelt_search_tv derives no resolution or time range from an empty timeline', async () => {
+    const result = await runToolContract(gdeltSearchTv, {
+      query: 'zqxwvjkplmq',
+      stations: ['CNN'],
+    });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual({
+      series: [],
+      normalized: true,
+      totalPoints: 0,
+      offset: 0,
+      limit: 500,
+      effectiveQuery: 'zqxwvjkplmq',
+      totalCount: 0,
+      notice: expect.stringContaining('No TV coverage for "zqxwvjkplmq"'),
+    });
   });
 });
 

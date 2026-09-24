@@ -6,9 +6,13 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { formatDateShort, resolveTimespan } from '@/services/gdelt/gdelt-fetch.js';
 import { getGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
-import { describeDateRangeFault, GDELT_DATETIME_PATTERN } from '../date-range.js';
+import {
+  describeDateRangeFault,
+  describeResolvedTimespan,
+  GDELT_DATETIME_PATTERN,
+} from '../date-range.js';
+import { escapeMarkdown } from '../markdown-escape.js';
 
 /** Evidence-led request/response bounds: ten station selectors and 500 returned points. */
 const MAX_STATIONS = 10;
@@ -28,14 +32,6 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
   annotations: { readOnlyHint: true, openWorldHint: true },
 
   errors: [
-    {
-      reason: 'no_tv_coverage',
-      code: JsonRpcErrorCode.NotFound,
-      when: 'No TV coverage found for the query in the specified time range.',
-      recovery:
-        'Check that the stations were active during the time range using gdelt_list_tv_stations, ' +
-        'broaden the query, or extend the timespan.',
-    },
     {
       reason: 'invalid_date_range',
       code: JsonRpcErrorCode.ValidationError,
@@ -161,13 +157,18 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
   output: z.object({
     dateResolution: z
       .enum(['hour', 'day', 'week', 'month', 'year'])
-      .describe('Temporal resolution of data points.'),
+      .optional()
+      .describe(
+        'Temporal resolution of data points — as GDELT reported it, as requested via dateres, or ' +
+          'inferred from the returned intervals. Omitted when none of those can establish it.',
+      ),
     timeRange: z
       .object({
         start: z.string().describe('Earliest date in the returned data.'),
         end: z.string().describe('Latest date in the returned data.'),
       })
-      .describe('Date range spanned by this returned point page.'),
+      .optional()
+      .describe('Date range spanned by this returned point page. Omitted when the page is empty.'),
     series: z
       .array(
         z
@@ -213,7 +214,10 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
     notice: z
       .string()
       .optional()
-      .describe('Recovery hint when no TV coverage was found. Absent on successful responses.'),
+      .describe(
+        'Guidance when the query matched no TV coverage — the resolved timespan window, the October ' +
+          '2024 archive cutoff, and how to check station coverage. Absent when coverage was returned.',
+      ),
   },
 
   async handler(input, ctx) {
@@ -239,25 +243,10 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       ctx,
     );
 
-    if (result.series.length === 0 || result.series.every((s) => s.data.length === 0)) {
-      let rangeNote = '';
-      if (input.timespan && !input.startDatetime && !input.endDatetime) {
-        const range = resolveTimespan(input.timespan);
-        if (range) {
-          rangeNote = ` Timespan "${input.timespan}" resolved to ${formatDateShort(range.start)} – ${formatDateShort(range.end)}.`;
-        }
-      }
-      throw ctx.fail('no_tv_coverage', `No TV coverage found for "${input.query}"`, {
-        recovery: {
-          hint:
-            `No TV coverage for "${input.query}".${rangeNote} Most TV data ends October 2024 — ` +
-            `use gdelt_list_tv_stations to check station active dates.`,
-        },
-      });
-    }
-
     const page = paginateTvSeries(result.series, input.offset, input.limit);
-    if (input.offset >= page.totalPoints) {
+    const isEmpty = page.totalPoints === 0;
+    // An empty timeline has no offsets at all, so no offset can be out of its range.
+    if (!isEmpty && input.offset >= page.totalPoints) {
       throw ctx.fail('offset_out_of_range', `Offset ${input.offset} is outside this timeline`, {
         offset: input.offset,
         totalPoints: page.totalPoints,
@@ -274,16 +263,24 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
         ? input.offset + pageDates.length
         : undefined;
 
+    const [start] = sortedPageDates;
+    const end = sortedPageDates.at(-1);
+
     ctx.enrich.echo(input.query);
     ctx.enrich.total(page.series.length);
 
+    if (isEmpty) {
+      ctx.enrich.notice(
+        `No TV coverage for "${input.query}".${describeResolvedTimespan(input)} Most TV data ends ` +
+          'October 2024 — check that the stations were active during the window with ' +
+          'gdelt_list_tv_stations, broaden the query, or extend the window.',
+      );
+    }
+
     ctx.log.info('gdelt_search_tv completed', { seriesCount: result.series.length });
     return {
-      dateResolution: result.dateResolution,
-      timeRange: {
-        start: sortedPageDates[0] ?? '',
-        end: sortedPageDates[sortedPageDates.length - 1] ?? '',
-      },
+      ...(result.dateResolution && { dateResolution: result.dateResolution }),
+      ...(start != null && end != null && { timeRange: { start, end } }),
       series: page.series,
       normalized: result.normalized,
       totalPoints: page.totalPoints,
@@ -294,15 +291,22 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
   },
 
   format: (result) => {
-    const lines: string[] = [
-      `## GDELT TV News Coverage`,
-      `**Date Resolution:** ${result.dateResolution}`,
-      `**Time Range:** ${result.timeRange.start} to ${result.timeRange.end}`,
+    const returned = result.series.reduce((sum, series) => sum + series.data.length, 0);
+    const lines: string[] = [`## GDELT TV News Coverage`];
+    if (result.dateResolution) lines.push(`**Date Resolution:** ${result.dateResolution}`);
+    if (result.timeRange) {
+      lines.push(
+        `**Time Range:** ${escapeMarkdown(result.timeRange.start)} to ${escapeMarkdown(result.timeRange.end)}`,
+      );
+    }
+    lines.push(
       `**Normalized:** ${result.normalized ? 'Yes (% of airtime)' : 'No (raw matching 15-second clip counts)'}`,
       `**Stations:** ${result.series.length}`,
       `**Point page:** offset ${result.offset}, limit ${result.limit}`,
-      `**Points ${result.offset + 1}–${result.offset + result.series.reduce((sum, series) => sum + series.data.length, 0)} of ${result.totalPoints}**`,
-    ];
+      returned > 0
+        ? `**Points ${result.offset + 1}–${result.offset + returned} of ${result.totalPoints}**`
+        : `**Points:** 0 of ${result.totalPoints}`,
+    );
     if (result.nextOffset != null) lines.push(`**Next offset:** ${result.nextOffset}`);
     for (const s of result.series) {
       const peak = s.data.reduce(
@@ -310,10 +314,12 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
         s.data[0] ?? { date: '', value: 0 },
       );
       const total = s.data.reduce((sum, d) => sum + d.value, 0);
-      lines.push(`\n### ${s.station}`);
+      lines.push(`\n### ${escapeMarkdown(s.station, 'heading-end')}`);
       lines.push(`Points: ${s.data.length} | Total: ${total.toFixed(2)}`);
-      if (peak.date) lines.push(`Peak: ${peak.value.toFixed(3)} at ${peak.date}`);
-      for (const point of s.data) lines.push(`- ${point.date}: ${point.value.toFixed(3)}`);
+      if (peak.date) lines.push(`Peak: ${peak.value.toFixed(3)} at ${escapeMarkdown(peak.date)}`);
+      for (const point of s.data) {
+        lines.push(`- ${escapeMarkdown(point.date, 'line-start')}: ${point.value.toFixed(3)}`);
+      }
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },

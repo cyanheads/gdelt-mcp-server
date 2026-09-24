@@ -6,9 +6,13 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { formatDateShort, resolveTimespan } from '@/services/gdelt/gdelt-fetch.js';
 import { getGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
-import { describeDateRangeFault, GDELT_DATETIME_PATTERN } from '../date-range.js';
+import {
+  describeDateRangeFault,
+  describeResolvedTimespan,
+  GDELT_DATETIME_PATTERN,
+} from '../date-range.js';
+import { escapeMarkdown } from '../markdown-escape.js';
 
 export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
   title: 'Get GDELT TV Context',
@@ -23,13 +27,6 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
   annotations: { readOnlyHint: true, openWorldHint: true },
 
   errors: [
-    {
-      reason: 'no_context',
-      code: JsonRpcErrorCode.NotFound,
-      when: 'No context words found — no clips matched the query.',
-      recovery:
-        'Broaden the query, extend the timespan, or verify station IDs with gdelt_list_tv_stations.',
-    },
     {
       reason: 'invalid_date_range',
       code: JsonRpcErrorCode.ValidationError,
@@ -139,7 +136,11 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
     notice: z
       .string()
       .optional()
-      .describe('Recovery hint when no context was found. Absent on successful responses.'),
+      .describe(
+        'Guidance when no clips matched, so there is no vocabulary to report — the resolved timespan ' +
+          'window, the October 2024 archive cutoff, and how to broaden the query or check station ' +
+          'coverage. Absent when terms were returned.',
+      ),
   },
 
   async handler(input, ctx) {
@@ -162,25 +163,16 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       ctx,
     );
 
-    if (result.words.length === 0) {
-      let rangeNote = '';
-      if (input.timespan && !input.startDatetime && !input.endDatetime) {
-        const range = resolveTimespan(input.timespan);
-        if (range) {
-          rangeNote = ` Timespan "${input.timespan}" resolved to ${formatDateShort(range.start)} – ${formatDateShort(range.end)}.`;
-        }
-      }
-      throw ctx.fail('no_context', `No context words for "${input.query}"`, {
-        recovery: {
-          hint:
-            `No TV context data for "${input.query}".${rangeNote} TV data ends October 2024 — ` +
-            `broaden the query or use gdelt_list_tv_stations to check coverage.`,
-        },
-      });
-    }
-
     ctx.enrich.echo(input.query);
     if (result.clipsAnalyzed != null) ctx.enrich.total(result.clipsAnalyzed);
+
+    if (result.words.length === 0) {
+      ctx.enrich.notice(
+        `No TV context data for "${input.query}".${describeResolvedTimespan(input)} TV data ends ` +
+          'October 2024 — broaden the query, extend the window, or use gdelt_list_tv_stations to ' +
+          'check coverage.',
+      );
+    }
 
     ctx.log.info('gdelt_get_tv_context completed', { wordCount: result.words.length });
     return {
@@ -194,9 +186,10 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       `**Co-occurring terms:** ${result.words.length}`,
     ];
     lines.push('\n### Terms');
+    if (result.words.length === 0) lines.push('No terms returned.');
     for (const w of result.words) {
       const bar = '█'.repeat(Math.round(w.score / 5));
-      lines.push(`- **${w.label}**: ${w.score.toFixed(1)} ${bar}`);
+      lines.push(`- **${escapeMarkdown(w.label)}**: ${w.score.toFixed(1)} ${bar}`);
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },

@@ -99,6 +99,7 @@
     "@types/node": "^26.6.2",
     "depcheck": "^1.4.7",
     "ignore": "^7.0.9",
+    "markdown-it": "^15.0.2",
     "tsc-alias": "^1.9.5",
     "typescript": "^7.0.2",
     "vitest": "^5.0.1"

@@ -14,7 +14,6 @@ import { gdeltGetCoverageTimeline } from '@/mcp-server/tools/definitions/get-cov
 import { gdeltGetToneDistribution } from '@/mcp-server/tools/definitions/get-tone-distribution.tool.js';
 import { gdeltGetTvClips } from '@/mcp-server/tools/definitions/get-tv-clips.tool.js';
 import { gdeltGetTvContext } from '@/mcp-server/tools/definitions/get-tv-context.tool.js';
-import { gdeltGetTvTrending } from '@/mcp-server/tools/definitions/get-tv-trending.tool.js';
 import { gdeltListTvStations } from '@/mcp-server/tools/definitions/list-tv-stations.tool.js';
 import { gdeltSearchArticles } from '@/mcp-server/tools/definitions/search-articles.tool.js';
 import { gdeltSearchTv } from '@/mcp-server/tools/definitions/search-tv.tool.js';
@@ -171,6 +170,22 @@ describe('gdeltGetTvClips input validation', () => {
   });
 });
 
+/**
+ * The byte budget bounds what a response carries, not what a call may fetch: both record-list
+ * tools keep their full maxRecords range and defaults.
+ */
+describe('maxRecords ranges under the response byte budget', () => {
+  it.each([
+    ['gdelt_search_articles', gdeltSearchArticles, 250, 75],
+    ['gdelt_get_tv_clips', gdeltGetTvClips, 3000, 50],
+  ] as const)('%s accepts 1 through %i and defaults to %i', (_, tool, ceiling, fallback) => {
+    expect(tool.input.parse({ query: 'test', maxRecords: 1 }).maxRecords).toBe(1);
+    expect(tool.input.parse({ query: 'test', maxRecords: ceiling }).maxRecords).toBe(ceiling);
+    expect(() => tool.input.parse({ query: 'test', maxRecords: ceiling + 1 })).toThrow();
+    expect(tool.input.parse({ query: 'test' }).maxRecords).toBe(fallback);
+  });
+});
+
 describe('gdeltGetTvContext input validation', () => {
   it('rejects empty query', () => {
     expect(() => gdeltGetTvContext.input.parse({ query: '' })).toThrow();
@@ -181,15 +196,29 @@ describe('gdeltGetTvContext input validation', () => {
   });
 });
 
-describe('gdeltGetTvTrending input validation', () => {
-  it('accepts an empty input object', () => {
-    expect(() => gdeltGetTvTrending.input.parse({})).not.toThrow();
-  });
-});
-
 describe('gdeltListTvStations input validation', () => {
   it('accepts an empty input object', () => {
     expect(() => gdeltListTvStations.input.parse({})).not.toThrow();
+  });
+
+  it('accepts every optional filter, blanks included', () => {
+    const parsed = gdeltListTvStations.input.parse({
+      stations: ['CNN', ''],
+      network: ' ',
+      market: 'San Francisco',
+    });
+    expect(parsed).toEqual({ stations: ['CNN', ''], network: ' ', market: 'San Francisco' });
+  });
+
+  it.each([{ stations: 'CNN' }, { stations: [42] }, { network: ['ABC'] }, { market: 7 }])(
+    'rejects a wrongly typed filter %o',
+    (input) => {
+      expect(() => gdeltListTvStations.input.parse(input)).toThrow();
+    },
+  );
+
+  it('rejects an unknown key rather than dropping it', () => {
+    expect(() => gdeltListTvStations.input.parse({ station: 'CNN' })).toThrow();
   });
 });
 

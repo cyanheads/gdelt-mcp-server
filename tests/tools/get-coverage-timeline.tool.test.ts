@@ -3,10 +3,11 @@
  * @module tests/tools/get-coverage-timeline.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetCoverageTimeline } from '@/mcp-server/tools/definitions/get-coverage-timeline.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
+import { contentText, hrefFor, literalHtml, renderMarkdown } from './markdown-render.js';
 
 const VOLUME_SERIES = [
   {
@@ -71,28 +72,85 @@ describe('gdeltGetCoverageTimeline', () => {
     expect(result.dateResolution).toBe('day');
   });
 
-  it('throws no_timeline_data when service returns empty series', async () => {
-    vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
-      getTimeline: vi.fn().mockResolvedValue([]),
-    } as unknown as docServiceModule.GdeltDocService);
+  describe('zero-match answer', () => {
+    function mockTimeline(series: unknown) {
+      vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+        getTimeline: vi.fn().mockResolvedValue(series),
+      } as unknown as docServiceModule.GdeltDocService);
+    }
 
-    const ctx = createMockContext({ errors: gdeltGetCoverageTimeline.errors });
-    const input = gdeltGetCoverageTimeline.input.parse({ query: 'noresults', mode: 'volume' });
-    await expect(gdeltGetCoverageTimeline.handler(input, ctx)).rejects.toMatchObject({
-      data: { reason: 'no_timeline_data' },
+    it('returns empty series with echoes and a notice, omitting dateResolution', async () => {
+      mockTimeline([]);
+      const result = await runToolContract(gdeltGetCoverageTimeline, {
+        query: 'noresults',
+        mode: 'volume',
+        startDatetime: '20240101000000',
+        endDatetime: '20240131235959',
+      });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toEqual({
+        series: [],
+        effectiveQuery: 'noresults',
+        totalCount: 0,
+        mode: 'volume',
+        startDatetime: '20240101000000',
+        endDatetime: '20240131235959',
+        notice: expect.stringMatching(/No coverage data found for "noresults".*[Bb]roaden/),
+      });
+      const text = result.content.map((b) => (b as { text?: string }).text ?? '').join('\n');
+      expect(text).not.toContain('Date Resolution');
+      expect(text).not.toContain('Peak');
+      expect(text).toContain('No timeline data returned.');
+    });
+
+    it('treats series that carry no points as empty', async () => {
+      mockTimeline([{ label: 'Average Tone', data: [] }]);
+      const result = await runToolContract(gdeltGetCoverageTimeline, {
+        query: 'noresults',
+        mode: 'tone',
+      });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({ totalCount: 0, notice: expect.any(String) });
+      expect(result.structuredContent).not.toHaveProperty('dateResolution');
+    });
+
+    it('never turns an empty timeline into unknown_point, and omits expandedPoints', async () => {
+      mockTimeline([]);
+      const result = await runToolContract(gdeltGetCoverageTimeline, {
+        query: 'noresults',
+        mode: 'volume_with_articles',
+        points: ['2024-01-01T00:00:00Z'],
+      });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).not.toHaveProperty('expandedPoints');
+      expect((result.structuredContent as { notice?: string }).notice).toContain('points');
+    });
+
+    it('no longer declares a no_timeline_data contract entry', () => {
+      expect(gdeltGetCoverageTimeline.errors?.map((e) => e.reason)).not.toContain(
+        'no_timeline_data',
+      );
+    });
+
+    it('describes the empty case on the notice field', () => {
+      expect(gdeltGetCoverageTimeline.enrichment?.notice?.description).not.toMatch(
+        /Absent on successful responses/,
+      );
     });
   });
 
-  it('throws no_timeline_data when all series have empty data arrays', async () => {
+  it('omits dateResolution when a single point leaves it undeterminable', async () => {
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
-      getTimeline: vi.fn().mockResolvedValue([{ label: 'Volume Intensity', data: [] }]),
+      getTimeline: vi
+        .fn()
+        .mockResolvedValue([
+          { label: 'Volume Intensity', data: [{ date: '2024-01-01T00:00:00Z', value: 0.5 }] },
+        ]),
     } as unknown as docServiceModule.GdeltDocService);
-
-    const ctx = createMockContext({ errors: gdeltGetCoverageTimeline.errors });
-    const input = gdeltGetCoverageTimeline.input.parse({ query: 'noresults', mode: 'tone' });
-    await expect(gdeltGetCoverageTimeline.handler(input, ctx)).rejects.toMatchObject({
-      data: { reason: 'no_timeline_data' },
-    });
+    const result = await runToolContract(gdeltGetCoverageTimeline, { query: 'x', mode: 'volume' });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).not.toHaveProperty('dateResolution');
+    expect(result.structuredContent).toMatchObject({ totalCount: 1 });
   });
 
   it('formats output with resolution, series label, and peak', () => {
@@ -346,5 +404,85 @@ describe('gdeltGetCoverageTimeline', () => {
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('Breaking News');
     expect(text).toContain('https://news.com/a');
+  });
+
+  /**
+   * Upstream text reaches content[] as literal text: series labels and article link labels go
+   * through the shared escaper, link destinations stay unescaped URLs that still parse as one
+   * destination, and structuredContent keeps every raw value.
+   */
+  describe('Markdown escaping at the content[] boundary', () => {
+    const HOSTILE_SERIES = [
+      {
+        label: 'Volume *Intensity* #',
+        data: [
+          {
+            date: '2024-01-15T12:00:00Z',
+            value: 1.5,
+            articles: [
+              { url: 'https://example.com/a_(b)_c?x=1', title: '<b>A &amp; B</b> [x](y)' },
+              { url: 'https://example.com/a b', title: 'Plain title' },
+            ],
+          },
+          { date: '2024-01-15T13:00:00Z', value: 0.5 },
+        ],
+      },
+    ];
+
+    it('renders plain upstream values byte-identically to the pre-escaping format()', () => {
+      const blocks = gdeltGetCoverageTimeline.format!({
+        dateResolution: 'hour',
+        series: [
+          {
+            label: 'Volume Intensity',
+            data: [
+              {
+                date: '2024-01-15T12:00:00Z',
+                value: 1.5,
+                articles: [{ url: 'https://example.com/a', title: 'Alpha story' }],
+              },
+              { date: '2024-01-15T13:00:00Z', value: 0.5 },
+            ],
+          },
+        ],
+      });
+      expect((blocks[0] as { text: string }).text).toBe(
+        '## GDELT Coverage Timeline\n**Date Resolution:** hour\n\n### Volume Intensity\n' +
+          '**Data points:** 2\n**Peak:** 1.500 at 2024-01-15T12:00:00Z\n' +
+          '- 2024-01-15T12:00:00Z: 1.500 (1 articles)\n  - [Alpha story](https://example.com/a)\n' +
+          '- 2024-01-15T13:00:00Z: 0.500',
+      );
+    });
+
+    it('escapes labels, keeps destinations whole, and leaves structuredContent raw', async () => {
+      vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+        getTimeline: vi.fn().mockResolvedValue(HOSTILE_SERIES),
+      } as unknown as docServiceModule.GdeltDocService);
+      const result = await runToolContract(gdeltGetCoverageTimeline, {
+        query: 'x',
+        mode: 'volume_with_articles',
+      });
+      expect((result.structuredContent as { series: unknown }).series).toEqual(HOSTILE_SERIES);
+      expect((result.content[0] as { text: string }).text).toBe(
+        [
+          '## GDELT Coverage Timeline',
+          '**Date Resolution:** hour',
+          '',
+          String.raw`### Volume \*Intensity\* \#`,
+          '**Data points:** 2',
+          '**Peak:** 1.500 at 2024-01-15T12:00:00Z',
+          '- 2024-01-15T12:00:00Z: 1.500 (2 articles)',
+          String.raw`  - [\<b>A \&amp; B\</b> \[x\](y)](<https://example.com/a_(b)_c?x=1>)`,
+          '  - [Plain title](<https://example.com/a b>)',
+          '- 2024-01-15T13:00:00Z: 0.500',
+        ].join('\n'),
+      );
+
+      const html = renderMarkdown(contentText(result));
+      expect(html).toContain(`<h3>${literalHtml('Volume *Intensity* #')}</h3>`);
+      for (const a of HOSTILE_SERIES[0]!.data[0]!.articles!) {
+        expect(html).toContain(`<a href="${hrefFor(a.url)}">${literalHtml(a.title)}</a>`);
+      }
+    });
   });
 });

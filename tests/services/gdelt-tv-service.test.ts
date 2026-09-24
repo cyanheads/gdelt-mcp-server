@@ -1,7 +1,7 @@
 /**
  * @fileoverview Tests for GdeltTvService normalizers and helpers: parseGdeltDate,
  * formatGdeltDate (via listStations), buildBaseParams (station filter embedding),
- * and clip/context/trending parsing.
+ * and clip/context/timeline parsing.
  * @module tests/services/gdelt-tv-service.test
  */
 
@@ -233,42 +233,6 @@ describe('GdeltTvService.getTvContext', () => {
   });
 });
 
-describe('GdeltTvService.getTvTrending', () => {
-  it('maps OverallTrendingTopics to TvTrendingTopic shape', async () => {
-    const raw = {
-      OverallTrendingTopics: [
-        { label: 'Ukraine', score: 8.5 },
-        { label: 'inflation', score: 4.2 },
-      ],
-    };
-    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce(raw);
-    const ctx = createMockContext();
-    const svc = makeService();
-    const topics = await svc.getTvTrending(ctx);
-    expect(topics[0]?.label).toBe('Ukraine');
-    expect(topics[0]?.score).toBe(8.5);
-  });
-
-  it('falls back to OverallTrendingPhrases when topics are absent', async () => {
-    const raw = {
-      OverallTrendingPhrases: [{ label: 'climate change', score: 3.0 }],
-    };
-    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce(raw);
-    const ctx = createMockContext();
-    const svc = makeService();
-    const topics = await svc.getTvTrending(ctx);
-    expect(topics[0]?.label).toBe('climate change');
-  });
-
-  it('returns empty array when both topic keys are absent', async () => {
-    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({});
-    const ctx = createMockContext();
-    const svc = makeService();
-    const topics = await svc.getTvTrending(ctx);
-    expect(topics).toEqual([]);
-  });
-});
-
 describe('GdeltTvService.searchTv', () => {
   it('maps timeline series to TvSearchSeries shape', async () => {
     const raw = {
@@ -292,7 +256,8 @@ describe('GdeltTvService.searchTv', () => {
     expect(result.normalized).toBe(true);
   });
 
-  it('computes correct timeRange from all data point dates', async () => {
+  /** gdelt_search_tv derives its time range from the returned page, so the service carries none. */
+  it('returns only series, resolution, and normalization — no time range', async () => {
     const raw = {
       timeline: [
         {
@@ -300,20 +265,16 @@ describe('GdeltTvService.searchTv', () => {
           data: [
             { date: '2024-01-03', value: 1.0 },
             { date: '2024-01-01', value: 0.5 },
-            { date: '2024-01-02', value: 0.8 },
           ],
         },
       ],
     };
     vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce(raw);
-    const ctx = createMockContext();
-    const svc = makeService();
-    const result = await svc.searchTv({ query: 'test' }, ctx);
-    expect(result.timeRange.start).toBe('2024-01-01');
-    expect(result.timeRange.end).toBe('2024-01-03');
+    const result = await makeService().searchTv({ query: 'test' }, createMockContext());
+    expect(Object.keys(result).sort()).toEqual(['dateResolution', 'normalized', 'series']);
   });
 
-  it('uses dateResolution "day" when dateresolution key is absent', async () => {
+  it('omits dateResolution when metadata is absent and one point gives no interval', async () => {
     const raw = {
       timeline: [{ series: 'CNN', data: [{ date: '2024-01-01', value: 1.0 }] }],
     };
@@ -321,7 +282,22 @@ describe('GdeltTvService.searchTv', () => {
     const ctx = createMockContext();
     const svc = makeService();
     const result = await svc.searchTv({ query: 'test' }, ctx);
-    expect(result.dateResolution).toBe('day');
+    expect(result).not.toHaveProperty('dateResolution');
+  });
+
+  it('derives nothing from a `{}` zero-match answer', async () => {
+    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({});
+    const result = await makeService().searchTv({ query: 'test' }, createMockContext());
+    expect(result).toEqual({ series: [], normalized: true });
+  });
+
+  it('keeps a caller-pinned dateres on a `{}` zero-match answer', async () => {
+    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({});
+    const result = await makeService().searchTv(
+      { query: 'test', dateres: 'month' },
+      createMockContext(),
+    );
+    expect(result).toEqual({ series: [], normalized: true, dateResolution: 'month' });
   });
 
   it('sets normalized to false when normalize:false is passed', async () => {
@@ -399,9 +375,5 @@ describe('GdeltTvService.searchTv', () => {
       '2024-01-02T00:00:00Z',
       '2024-01-02T01:00:00Z',
     ]);
-    expect(result.timeRange).toEqual({
-      start: '2024-01-01T23:00:00Z',
-      end: '2024-01-02T01:00:00Z',
-    });
   });
 });

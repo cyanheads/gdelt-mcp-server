@@ -1,6 +1,6 @@
 /**
  * @fileoverview Service wrapping the GDELT TV API v2. Handles TV news transcript search,
- * clip retrieval, context/word cloud, trending topics, and station metadata.
+ * clip retrieval, context/word cloud, and station metadata.
  * @module services/gdelt/gdelt-tv-service
  */
 
@@ -60,11 +60,6 @@ export type TvContextWord = {
   score: number;
 };
 
-export type TvTrendingTopic = {
-  label: string;
-  score: number;
-};
-
 export class GdeltTvService {
   private readonly baseUrl: string;
 
@@ -72,14 +67,17 @@ export class GdeltTvService {
     this.baseUrl = serverConfig.baseUrl + TV_ENDPOINT;
   }
 
-  /** Search TV coverage — returns per-station normalized time series. */
+  /**
+   * Search TV coverage — returns per-station normalized time series. `dateResolution` is
+   * omitted when nothing supports it: no upstream metadata, no `dateres`, and fewer than two
+   * distinct timestamps (a `{}` zero-match answer has none at all).
+   */
   async searchTv(
     params: TvSearchParams,
     ctx: Context,
   ): Promise<{
     series: TvSearchSeries[];
-    dateResolution: TvDateResolution;
-    timeRange: { start: string; end: string };
+    dateResolution?: TvDateResolution;
     normalized: boolean;
   }> {
     const urlParams = this.buildBaseParams(params.query, params.stations);
@@ -100,11 +98,6 @@ export class GdeltTvService {
     }));
 
     const allDates = series.flatMap((s) => s.data.map((d) => d.date));
-    const sorted = allDates.slice().sort();
-    const timeRange = {
-      start: sorted[0] ?? '',
-      end: sorted[sorted.length - 1] ?? '',
-    };
 
     const observedResolution = raw.dateresolution?.toLowerCase();
     const recognizedResolution = isTvDateResolution(observedResolution)
@@ -113,7 +106,11 @@ export class GdeltTvService {
     const dateResolution =
       recognizedResolution ?? params.dateres ?? inferDateResolution(allDates, 'tv');
 
-    return { series, dateResolution, timeRange, normalized: params.normalize !== false };
+    return {
+      series,
+      ...(dateResolution && { dateResolution }),
+      normalized: params.normalize !== false,
+    };
   }
 
   /** Retrieve TV clips (clip gallery). */
@@ -159,22 +156,6 @@ export class GdeltTvService {
     // Only include clipsAnalyzed when the upstream API provides a value — defaulting
     // to 0 falsely signals "zero clips analyzed" when the field is simply absent.
     return { words, ...(raw.numclips != null ? { clipsAnalyzed: raw.numclips } : {}) };
-  }
-
-  /** Fetch currently trending topics on TV news. */
-  async getTvTrending(ctx: Context): Promise<TvTrendingTopic[]> {
-    const urlParams = new URLSearchParams();
-    urlParams.set('mode', 'trendingtopics');
-    urlParams.set('format', 'json');
-
-    const raw = await this.fetch<{
-      OverallTrendingTopics?: Array<{ label: string; score: number }>;
-      OverallTrendingPhrases?: Array<{ label: string; score: number }>;
-    }>(urlParams, ctx);
-    return (raw.OverallTrendingTopics ?? raw.OverallTrendingPhrases ?? []).map((t) => ({
-      label: t.label,
-      score: t.score,
-    }));
   }
 
   /** List all TV stations with metadata. */

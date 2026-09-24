@@ -275,7 +275,7 @@ const BODY_EXCERPT_LIMIT = 200;
  * fails that positive-ID test and stays on the SerializationError path (settled in #18).
  * Extend this list when a new wording deserves a more specific hint than the generic fallback.
  */
-const GDELT_REJECTIONS: ReadonlyArray<{ marker: string; hint: string }> = [
+const GDELT_REJECTIONS: ReadonlyArray<{ marker: string; hint: string; api?: string }> = [
   {
     marker: 'invalid station',
     hint:
@@ -296,7 +296,16 @@ const GDELT_REJECTIONS: ReadonlyArray<{ marker: string; hint: string }> = [
   },
   {
     marker: 'timespan is too short',
-    hint: 'The requested DOC timespan is too short. Use a window of at least 15 minutes, such as "15min".',
+    api: 'GDELT DOC',
+    hint: 'The GDELT DOC API rejects a timespan under 15 minutes. Use a window of at least 15 minutes, such as "15min".',
+  },
+  {
+    // Measured live: a 20-minute explicit window is rejected, a 30-minute one accepted.
+    marker: 'timespan is too short',
+    api: 'GDELT TV',
+    hint:
+      'The GDELT TV API rejects a window shorter than 30 minutes (it answers in whole clock hours). Widen ' +
+      'startDatetime/endDatetime, or the timespan, to at least 30 minutes.',
   },
   {
     marker: 'keywords were too short, too long or too common',
@@ -324,10 +333,18 @@ const GDELT_REJECTIONS: ReadonlyArray<{ marker: string; hint: string }> = [
   },
 ];
 
-/** Recovery hint for the GDELT rejection matching a non-JSON response body, if any. */
-function matchGdeltRejectionHint(text: string): string | undefined {
+/**
+ * Recovery hint for the GDELT rejection matching a non-JSON response body, if any. An entry
+ * scoped to one API (`api`) matches only that API's responses — the same wording can carry a
+ * different rule on each.
+ */
+function matchGdeltRejectionHint(text: string, apiLabel: string): string | undefined {
   const head = text.slice(0, BODY_EXCERPT_LIMIT).toLowerCase();
-  return GDELT_REJECTIONS.find((rejection) => head.includes(rejection.marker))?.hint;
+  return GDELT_REJECTIONS.find(
+    (rejection) =>
+      head.includes(rejection.marker) &&
+      (rejection.api === undefined || rejection.api === apiLabel),
+  )?.hint;
 }
 
 /**
@@ -430,7 +447,7 @@ export function parseGdeltJson<T>(text: string, apiLabel: string): T {
     }
     // Enumerated wording → tailored hint; otherwise a rejection-sentence shape → generic hint.
     const hint =
-      matchGdeltRejectionHint(text) ??
+      matchGdeltRejectionHint(text, apiLabel) ??
       (looksLikeGdeltRejection(text) ? GENERIC_REJECTION_HINT : undefined);
     if (hint) {
       // ValidationError is outside withRetry's transient set, so this fails fast

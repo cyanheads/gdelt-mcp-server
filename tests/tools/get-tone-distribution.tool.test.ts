@@ -3,10 +3,11 @@
  * @module tests/tools/get-tone-distribution.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetToneDistribution } from '@/mcp-server/tools/definitions/get-tone-distribution.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
+import { contentText, hrefFor, literalHtml, renderMarkdown } from './markdown-render.js';
 
 const BINS = [
   { bin: -5, count: 20, articles: [{ url: 'https://a.com/1', title: 'Negative Article' }] },
@@ -68,19 +69,47 @@ describe('gdeltGetToneDistribution', () => {
     expect(result.summary.neutralPct).toBe(50);
   });
 
-  it('throws no_tone_data when service returns empty array', async () => {
-    vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
-      getToneDistribution: vi.fn().mockResolvedValue([]),
-    } as unknown as docServiceModule.GdeltDocService);
+  describe('zero-match answer', () => {
+    beforeEach(() => {
+      vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+        getToneDistribution: vi.fn().mockResolvedValue([]),
+      } as unknown as docServiceModule.GdeltDocService);
+    });
 
-    const ctx = createMockContext({ errors: gdeltGetToneDistribution.errors });
-    const input = gdeltGetToneDistribution.input.parse({ query: 'noresults' });
-    await expect(gdeltGetToneDistribution.handler(input, ctx)).rejects.toMatchObject({
-      data: { reason: 'no_tone_data' },
+    it('returns an empty histogram with no derived summary values', async () => {
+      const result = await runToolContract(gdeltGetToneDistribution, {
+        query: 'noresults',
+        startDatetime: '20240101000000',
+        endDatetime: '20240131235959',
+      });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toEqual({
+        histogram: [],
+        summary: {},
+        effectiveQuery: 'noresults',
+        totalCount: 0,
+        startDatetime: '20240101000000',
+        endDatetime: '20240131235959',
+        notice: expect.stringMatching(/No tone data for "noresults".*[Bb]roaden/),
+      });
+      const text = result.content.map((b) => (b as { text?: string }).text ?? '').join('\n');
+      expect(text).not.toMatch(/Peak/);
+      expect(text).not.toMatch(/Neutral articles/);
+      expect(text).toContain('No tone bins returned.');
+    });
+
+    it('no longer declares a no_tone_data contract entry', () => {
+      expect(gdeltGetToneDistribution.errors?.map((e) => e.reason)).not.toContain('no_tone_data');
+    });
+
+    it('describes the empty case on the notice field', () => {
+      expect(gdeltGetToneDistribution.enrichment?.notice?.description).not.toMatch(
+        /Absent on successful responses/,
+      );
     });
   });
 
-  it('handles bins with no negative values gracefully', async () => {
+  it('omits the peak for a side with no bins rather than reporting bin 0', async () => {
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
       getToneDistribution: vi.fn().mockResolvedValue([
         { bin: 2, count: 10, articles: [] },
@@ -88,12 +117,24 @@ describe('gdeltGetToneDistribution', () => {
       ]),
     } as unknown as docServiceModule.GdeltDocService);
 
-    const ctx = createMockContext({ errors: gdeltGetToneDistribution.errors });
-    const input = gdeltGetToneDistribution.input.parse({ query: 'positive topic' });
-    const result = await gdeltGetToneDistribution.handler(input, ctx);
-    // No negative bins — peakNegativeBin falls back to 0
-    expect(result.summary.peakNegativeBin).toBe(0);
-    expect(result.summary.peakPositiveBin).toBe(5);
+    const result = await runToolContract(gdeltGetToneDistribution, { query: 'positive topic' });
+    const summary = (result.structuredContent as { summary: Record<string, number> }).summary;
+    expect(summary).not.toHaveProperty('peakNegativeBin');
+    expect(summary.peakPositiveBin).toBe(5);
+    expect(summary.neutralPct).toBe(40);
+    const text = result.content.map((b) => (b as { text?: string }).text ?? '').join('\n');
+    expect(text).not.toContain('Peak negative bin');
+    expect(text).toContain('**Peak positive bin:** 5');
+  });
+
+  it('omits neutralPct when the bins carry no articles to take a share of', async () => {
+    vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+      getToneDistribution: vi.fn().mockResolvedValue([{ bin: -3, count: 0, articles: [] }]),
+    } as unknown as docServiceModule.GdeltDocService);
+
+    const result = await runToolContract(gdeltGetToneDistribution, { query: 'x' });
+    const summary = (result.structuredContent as { summary: Record<string, number> }).summary;
+    expect(summary).not.toHaveProperty('neutralPct');
   });
 
   it('formats output with histogram bins and summary', () => {
@@ -153,4 +194,85 @@ describe('gdeltGetToneDistribution', () => {
     expect(text).toContain('**Bin 0:** 22 articles');
     expect(text).toContain('**Bin +9:** 33 articles');
   });
+
+  /**
+   * Article titles reach content[] as literal link labels; link destinations stay unescaped
+   * URLs that still parse as one destination; structuredContent keeps every raw value.
+   */
+  describe('Markdown escaping at the content[] boundary', () => {
+    const HOSTILE_BINS = [
+      {
+        bin: -3,
+        count: 12,
+        articles: [
+          { url: 'https://example.com/a_(b)_c?x=1', title: '*Grim* `news` <i>today</i>' },
+          { url: 'https://example.com/a b', title: 'Plain title' },
+        ],
+      },
+    ];
+
+    /**
+     * Plain values render unescaped. Each bin header opens with a blank line — the one layout
+     * change from the pre-escaping format() (#49) — so it never folds into the previous bin's
+     * article list.
+     */
+    it('renders plain upstream values exactly, each bin header opening its own block', () => {
+      const blocks = gdeltGetToneDistribution.format!({
+        histogram: [
+          { bin: -3, count: 12, articles: [{ url: 'https://example.com/n', title: 'Grim news' }] },
+          { bin: 2, count: 4, articles: [] },
+        ],
+        summary: { peakNegativeBin: -3, peakPositiveBin: 2, neutralPct: 25 },
+      });
+      expect((blocks[0] as { text: string }).text).toBe(
+        '## GDELT Tone Distribution\n**Peak negative bin:** -3\n**Peak positive bin:** 2\n' +
+          '**Neutral articles (bins -2 to +2):** 25%\n\n### Histogram\n\n' +
+          '**Bin -3:** 12 articles ███\n  - [Grim news](https://example.com/n)\n\n' +
+          '**Bin +2:** 4 articles █',
+      );
+    });
+
+    it('escapes link labels, keeps destinations whole, and leaves structuredContent raw', async () => {
+      vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+        getToneDistribution: vi.fn().mockResolvedValue(HOSTILE_BINS),
+      } as unknown as docServiceModule.GdeltDocService);
+      const result = await runToolContract(gdeltGetToneDistribution, { query: 'x' });
+      expect((result.structuredContent as { histogram: unknown }).histogram).toEqual(HOSTILE_BINS);
+      const text = (result.content[0] as { text: string }).text;
+      expect(text).toContain(
+        String.raw`  - [\*Grim\* \`news\` \<i>today\</i>](<https://example.com/a_(b)_c?x=1>)`,
+      );
+      expect(text).toContain('  - [Plain title](<https://example.com/a b>)');
+
+      const html = renderMarkdown(contentText(result));
+      for (const a of HOSTILE_BINS[0]!.articles) {
+        expect(html).toContain(`<a href="${hrefFor(a.url)}">${literalHtml(a.title)}</a>`);
+      }
+    });
+  });
+
+  /**
+   * #49: a bin header directly under the previous bin's article list was folded into that
+   * list's last item by CommonMark lazy continuation, and its own articles joined that list.
+   */
+  it.each([true, false])(
+    'renders two populated bins as separate blocks, each over its own articles (GFM autolinks: %s)',
+    (gfmAutolinks) => {
+      const blocks = gdeltGetToneDistribution.format!({
+        histogram: [
+          { bin: -3, count: 12, articles: [{ url: 'https://example.com/n', title: 'Grim news' }] },
+          { bin: 2, count: 4, articles: [{ url: 'https://example.com/g', title: 'Good news' }] },
+        ],
+        summary: { peakNegativeBin: -3, peakPositiveBin: 2 },
+      });
+      const html = renderMarkdown((blocks[0] as { text: string }).text, { gfmAutolinks });
+      expect(html).toContain(
+        '<h3>Histogram</h3>\n' +
+          '<p><strong>Bin -3:</strong> 12 articles ███</p>\n' +
+          '<ul>\n<li><a href="https://example.com/n">Grim news</a></li>\n</ul>\n' +
+          '<p><strong>Bin +2:</strong> 4 articles █</p>\n' +
+          '<ul>\n<li><a href="https://example.com/g">Good news</a></li>\n</ul>\n',
+      );
+    },
+  );
 });

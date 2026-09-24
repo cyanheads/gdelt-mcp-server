@@ -27,12 +27,18 @@ describe('inferDateResolution', () => {
     expect(inferDateResolution(['2024-01-01', '2024-01-02'])).toBe('day');
   });
 
-  it('returns "day" for a single-element array (insufficient to determine hourly)', () => {
-    expect(inferDateResolution(['2024-01-01T00:00:00Z'])).toBe('day');
-  });
-
-  it('returns "day" for an empty array', () => {
-    expect(inferDateResolution([])).toBe('day');
+  /**
+   * Resolution is an interval, and fewer than two distinct usable timestamps have none — so
+   * the answer is "undeterminable", never a guessed `'day'` that reads as a measured fact.
+   */
+  it.each([
+    ['an empty array', []],
+    ['a single timestamp', ['2024-01-01T00:00:00Z']],
+    ['one timestamp repeated', ['2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z']],
+    ['one usable timestamp beside malformed ones', ['2024-01-01', 'not-a-date']],
+  ])('returns undefined for %s, for both APIs', (_label, dates) => {
+    expect(inferDateResolution(dates)).toBeUndefined();
+    expect(inferDateResolution(dates, 'tv')).toBeUndefined();
   });
 
   it('recognizes compact daily timestamps containing T', () => {

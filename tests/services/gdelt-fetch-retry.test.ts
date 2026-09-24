@@ -50,6 +50,8 @@ function callGdeltFetch() {
 describe('gdeltFetch retry boundary', () => {
   beforeEach(() => {
     mockedFetch.mockReset();
+    // GDELT is rate-limited: a call no case arranged fails loudly instead of passing silently.
+    mockedFetch.mockRejectedValue(new Error('unmocked fetch'));
     // No inter-request spacing in unit tests — pacing is not what's under test here.
     initGdeltPacer(0);
   });

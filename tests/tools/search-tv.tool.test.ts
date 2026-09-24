@@ -3,10 +3,11 @@
  * @module tests/tools/search-tv.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltSearchTv } from '@/mcp-server/tools/definitions/search-tv.tool.js';
 import * as tvServiceModule from '@/services/gdelt/gdelt-tv-service.js';
+import { contentText, literalHtml, renderMarkdown } from './markdown-render.js';
 
 const TV_RESULT = {
   series: [
@@ -19,7 +20,6 @@ const TV_RESULT = {
     },
   ],
   dateResolution: 'day' as const,
-  timeRange: { start: '2024-01-01', end: '2024-01-02' },
   normalized: true,
 };
 
@@ -91,30 +91,94 @@ describe('gdeltSearchTv', () => {
     expect(result.dateResolution).toBe('week');
   });
 
-  it('throws no_tv_coverage when series is empty', async () => {
-    vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-      searchTv: vi.fn().mockResolvedValue({ ...TV_RESULT, series: [] }),
-    } as unknown as tvServiceModule.GdeltTvService);
+  /**
+   * The service hands back what a `{}` answer normalizes to — no series, nothing to derive a
+   * resolution or time range from — unless the caller pinned `dateres`.
+   */
+  describe('zero-match answer', () => {
+    const EMPTY_RESULT = { series: [], normalized: true };
 
-    const ctx = createMockContext({ errors: gdeltSearchTv.errors });
-    const input = gdeltSearchTv.input.parse({ query: 'noresults' });
-    await expect(gdeltSearchTv.handler(input, ctx)).rejects.toMatchObject({
-      data: { reason: 'no_tv_coverage' },
+    function mockSearch(result: unknown) {
+      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+        searchTv: vi.fn().mockResolvedValue(result),
+      } as unknown as tvServiceModule.GdeltTvService);
+    }
+
+    it('returns an empty page with echoes and a notice, omitting derived values', async () => {
+      mockSearch(EMPTY_RESULT);
+      const result = await runToolContract(gdeltSearchTv, {
+        query: 'zqxwvjkplmq',
+        stations: ['CNN'],
+        timespan: '1y',
+      });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toEqual({
+        series: [],
+        normalized: true,
+        totalPoints: 0,
+        offset: 0,
+        limit: 500,
+        effectiveQuery: 'zqxwvjkplmq',
+        totalCount: 0,
+        notice: expect.stringMatching(
+          /No TV coverage for "zqxwvjkplmq"\. Timespan "1y" resolved to \d{4}-\d{2}-\d{2} – \d{4}-\d{2}-\d{2}\..*gdelt_list_tv_stations/,
+        ),
+      });
     });
-  });
 
-  it('throws no_tv_coverage when all series have empty data', async () => {
-    vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-      searchTv: vi.fn().mockResolvedValue({
-        ...TV_RESULT,
-        series: [{ station: 'CNN', data: [] }],
-      }),
-    } as unknown as tvServiceModule.GdeltTvService);
+    it('treats station series that carry no points as empty', async () => {
+      mockSearch({ series: [{ station: 'CNN', data: [] }], normalized: true });
+      const result = await runToolContract(gdeltSearchTv, { query: 'x', stations: ['CNN'] });
+      expect(result.structuredContent).toMatchObject({
+        series: [],
+        totalPoints: 0,
+        totalCount: 0,
+        notice: expect.any(String),
+      });
+    });
 
-    const ctx = createMockContext({ errors: gdeltSearchTv.errors });
-    const input = gdeltSearchTv.input.parse({ query: 'test' });
-    await expect(gdeltSearchTv.handler(input, ctx)).rejects.toMatchObject({
-      data: { reason: 'no_tv_coverage' },
+    it('keeps a caller-pinned dateres as dateResolution', async () => {
+      mockSearch({ ...EMPTY_RESULT, dateResolution: 'week' });
+      const result = await runToolContract(gdeltSearchTv, {
+        query: 'x',
+        stations: ['CNN'],
+        dateres: 'week',
+      });
+      expect(result.structuredContent).toMatchObject({ dateResolution: 'week' });
+      expect(result.structuredContent).not.toHaveProperty('timeRange');
+    });
+
+    it('never turns an empty timeline into offset_out_of_range, and omits nextOffset', async () => {
+      mockSearch(EMPTY_RESULT);
+      const result = await runToolContract(gdeltSearchTv, {
+        query: 'x',
+        stations: ['CNN'],
+        offset: 40,
+      });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({ offset: 40, totalPoints: 0 });
+      expect(result.structuredContent).not.toHaveProperty('nextOffset');
+    });
+
+    it('renders a coherent empty body — no blank range, no 1–0 page, no peak', async () => {
+      mockSearch(EMPTY_RESULT);
+      const result = await runToolContract(gdeltSearchTv, { query: 'x', stations: ['CNN'] });
+      const text = result.content.map((b) => (b as { text?: string }).text ?? '').join('\n');
+      expect(text).not.toContain('Time Range');
+      expect(text).not.toContain('Date Resolution');
+      expect(text).not.toMatch(/Points 1–0/);
+      expect(text).not.toContain('Peak');
+      expect(text).toContain('**Points:** 0 of 0');
+    });
+
+    it('no longer declares a no_tv_coverage contract entry', () => {
+      expect(gdeltSearchTv.errors?.map((e) => e.reason)).not.toContain('no_tv_coverage');
+    });
+
+    it('describes the empty case on the notice field', () => {
+      expect(gdeltSearchTv.enrichment?.notice?.description).not.toMatch(
+        /Absent on successful responses/,
+      );
     });
   });
 
@@ -163,7 +227,6 @@ describe('gdeltSearchTv', () => {
           ],
         },
       ],
-      timeRange: { start: '2024-01-01', end: '2024-01-03' },
     };
 
     beforeEach(() => {
@@ -216,6 +279,54 @@ describe('gdeltSearchTv', () => {
           recovery: { hint: expect.stringMatching(/offset 0.*5/s) },
         },
       });
+    });
+  });
+
+  /** Station names reach the content[] headings as literal text; structuredContent stays raw. */
+  describe('Markdown escaping at the content[] boundary', () => {
+    it('renders plain upstream values byte-identically to the pre-escaping format()', () => {
+      const blocks = gdeltSearchTv.format!({
+        dateResolution: 'day',
+        timeRange: { start: '2024-01-15', end: '2024-01-16' },
+        series: [
+          {
+            station: 'CNN',
+            data: [
+              { date: '2024-01-15', value: 0.5 },
+              { date: '2024-01-16', value: 0.25 },
+            ],
+          },
+        ],
+        normalized: true,
+        totalPoints: 2,
+        offset: 0,
+        limit: 500,
+      });
+      expect((blocks[0] as { text: string }).text).toBe(
+        '## GDELT TV News Coverage\n**Date Resolution:** day\n**Time Range:** 2024-01-15 to 2024-01-16\n' +
+          '**Normalized:** Yes (% of airtime)\n**Stations:** 1\n**Point page:** offset 0, limit 500\n' +
+          '**Points 1–2 of 2**\n\n### CNN\nPoints: 2 | Total: 0.75\nPeak: 0.500 at 2024-01-15\n' +
+          '- 2024-01-15: 0.500\n- 2024-01-16: 0.250',
+      );
+    });
+
+    it('escapes station headings and leaves structuredContent raw', async () => {
+      const series = [
+        { station: 'KGO <b>', data: [{ date: '2024-01-15', value: 0.5 }] },
+        { station: 'WABC #', data: [{ date: '2024-01-16', value: 0.25 }] },
+      ];
+      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+        searchTv: vi.fn().mockResolvedValue({ series, dateResolution: 'day', normalized: true }),
+      } as unknown as tvServiceModule.GdeltTvService);
+      const result = await runToolContract(gdeltSearchTv, { query: 'x', stations: ['KGO'] });
+      expect((result.structuredContent as { series: unknown }).series).toEqual(series);
+      const text = (result.content[0] as { text: string }).text;
+      expect(text).toContain(String.raw`### KGO \<b>`);
+      expect(text).toContain(String.raw`### WABC \#`);
+
+      const html = renderMarkdown(contentText(result));
+      expect(html).toContain(`<h3>${literalHtml('KGO <b>')}</h3>`);
+      expect(html).toContain(`<h3>${literalHtml('WABC #')}</h3>`);
     });
   });
 });

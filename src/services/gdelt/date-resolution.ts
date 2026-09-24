@@ -31,17 +31,21 @@ function parseTimelineDate(value: string): number | undefined {
 export type DocDateResolution = '15min' | 'hour' | 'day';
 export type TvDateResolution = 'hour' | 'day' | 'week' | 'month' | 'year';
 
-export function inferDateResolution(dates: string[], api: 'tv'): TvDateResolution;
-export function inferDateResolution(dates: string[], api?: 'doc'): DocDateResolution;
-/** Infer the API's supported resolution from the smallest positive interval in the full series. */
+export function inferDateResolution(dates: string[], api: 'tv'): TvDateResolution | undefined;
+export function inferDateResolution(dates: string[], api?: 'doc'): DocDateResolution | undefined;
+/**
+ * Infer the API's supported resolution from the smallest positive interval in the full series.
+ * Resolution is an interval, so fewer than two distinct usable timestamps leave it
+ * undeterminable — `undefined`, never a guessed default reported as fact.
+ */
 export function inferDateResolution(
   dates: string[],
   api: 'doc' | 'tv' = 'doc',
-): DocDateResolution | TvDateResolution {
+): DocDateResolution | TvDateResolution | undefined {
   const timestamps = [
     ...new Set(dates.map(parseTimelineDate).filter((value): value is number => value != null)),
   ].sort((a, b) => a - b);
-  if (timestamps.length < 2) return 'day';
+  if (timestamps.length < 2) return;
 
   let smallestInterval = Number.POSITIVE_INFINITY;
   for (let index = 1; index < timestamps.length; index += 1) {

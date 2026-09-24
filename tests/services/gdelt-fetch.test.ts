@@ -250,7 +250,13 @@ describe('parseGdeltJson', () => {
         trigger: 'timespan below the DOC minimum',
         body: 'Timespan is too short.',
         apiLabel: 'GDELT DOC',
-        hint: /15 minutes|15min/i,
+        hint: /^The GDELT DOC API.*at least 15 minutes/,
+      },
+      {
+        trigger: 'window below the TV minimum (a 20-minute explicit window, measured live)',
+        body: 'Timespan is too short.',
+        apiLabel: 'GDELT TV',
+        hint: /^The GDELT TV API.*at least 30 minutes/,
       },
       {
         trigger: 'short, long, or common keyword with a parenthesized token',

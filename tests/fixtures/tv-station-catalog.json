@@ -1,0 +1,1439 @@
+{
+  "capturedFrom": "gdelt_list_tv_stations {} against the live GDELT TV API (2026-09-24): the 159-station catalog as structuredContent, and its content[] text grouped by market — the byte-identity fixture for station rendering, whose values carry no Markdown-significant characters",
+  "stations": [
+    {
+      "stationId": "ALJAZ",
+      "description": "Al Jazeera",
+      "market": "International",
+      "network": "ALJAZ",
+      "startDate": "2017-09-11",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "ALJAZAM",
+      "description": "Al Jazeera America",
+      "market": "NationalDiscontinued",
+      "network": "ALJAZAM",
+      "startDate": "2013-08-20",
+      "endDate": "2016-04-12",
+      "isActive": false
+    },
+    {
+      "stationId": "BBCNEWS",
+      "description": "BBC News",
+      "market": "International",
+      "network": "BBCNEWS",
+      "startDate": "2017-01-01",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "BETW",
+      "description": "BET - San Francisco (BETW)",
+      "market": "San Francisco",
+      "network": "BET",
+      "startDate": "2016-12-13",
+      "endDate": "2017-04-07",
+      "isActive": false
+    },
+    {
+      "stationId": "BLOOMBERG",
+      "description": "Bloomberg",
+      "market": "National",
+      "network": "BLOOMBERG",
+      "startDate": "2013-12-05",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "CNBC",
+      "description": "CNBC",
+      "market": "National",
+      "network": "CNBC",
+      "startDate": "2009-07-02",
+      "endDate": "2024-10-09",
+      "isActive": false
+    },
+    {
+      "stationId": "CNN",
+      "description": "CNN",
+      "market": "National",
+      "network": "CNN",
+      "startDate": "2009-07-02",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "COM",
+      "description": "Comedy Central",
+      "market": "NationalSpecialty",
+      "network": "COM",
+      "startDate": "2011-05-10",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "CSPAN",
+      "description": "CSPAN",
+      "market": "National",
+      "network": "CSPAN",
+      "startDate": "2009-06-04",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "CSPAN2",
+      "description": "CSPAN2",
+      "market": "National",
+      "network": "CSPAN",
+      "startDate": "2009-06-04",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "CSPAN3",
+      "description": "CSPAN3",
+      "market": "National",
+      "network": "CSPAN",
+      "startDate": "2012-01-26",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "CURRENT",
+      "description": "CurrentTV - San Francisco (CURRENT)",
+      "market": "San Francisco",
+      "network": "CurrentTV",
+      "startDate": "2012-01-13",
+      "endDate": "2013-08-16",
+      "isActive": false
+    },
+    {
+      "stationId": "DW",
+      "description": "DeutscheWelle",
+      "market": "International",
+      "network": "DW",
+      "startDate": "2017-09-19",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "FBC",
+      "description": "FOX Business",
+      "market": "National",
+      "network": "FBC",
+      "startDate": "2012-08-20",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "FOXNEWS",
+      "description": "FOX News",
+      "market": "National",
+      "network": "FOXNEWS",
+      "startDate": "2009-07-02",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "HLN",
+      "description": "HLN - Maryland (HLN)",
+      "market": "Maryland",
+      "network": "HLN",
+      "startDate": "2009-07-02",
+      "endDate": "2010-05-17",
+      "isActive": false
+    },
+    {
+      "stationId": "KBCW",
+      "description": "CW - San Francisco (KBCW)",
+      "market": "San Francisco",
+      "network": "CW",
+      "startDate": "2010-07-16",
+      "endDate": "2014-02-20",
+      "isActive": false
+    },
+    {
+      "stationId": "KCAU",
+      "description": "ABC - Sioux City (KCAU)",
+      "market": "Sioux City",
+      "network": "ABC",
+      "startDate": "2015-10-13",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KCCI",
+      "description": "CBS - Des Moines (KCCI)",
+      "market": "Des Moines",
+      "network": "CBS",
+      "startDate": "2015-10-14",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KCNC",
+      "description": "CBS - Denver (KCNC)",
+      "market": "Denver",
+      "network": "CBS",
+      "startDate": "2016-01-01",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KCNS",
+      "description": "SonLife - San Francisco (KCNS)",
+      "market": "San Francisco",
+      "network": "SonLife",
+      "startDate": "2011-12-25",
+      "endDate": "2015-08-29",
+      "isActive": false
+    },
+    {
+      "stationId": "KCRG",
+      "description": "ABC - Cedar Rapids (KCRG)",
+      "market": "Cedar Rapids",
+      "network": "ABC",
+      "startDate": "2015-10-19",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KCSM",
+      "description": "PBS - San Mateo California (KCSM)",
+      "market": "San Mateo California",
+      "network": "PBS",
+      "startDate": "2010-07-16",
+      "endDate": "2018-05-24",
+      "isActive": false
+    },
+    {
+      "stationId": "KCSMMHZ",
+      "description": "KCSMMHZ - San Mateo California (KCSMMHZ)",
+      "market": "San Mateo California",
+      "network": "KCSMMHZ",
+      "startDate": "2011-08-05",
+      "endDate": "2013-07-22",
+      "isActive": false
+    },
+    {
+      "stationId": "KDSM",
+      "description": "FOX - Des Moines (KDSM)",
+      "market": "Des Moines",
+      "network": "FOX",
+      "startDate": "2015-11-02",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KDTV",
+      "description": "Univision - San Francisco (KDTV)",
+      "market": "San Francisco",
+      "network": "Univision",
+      "startDate": "2010-07-15",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "KDVR",
+      "description": "FOX - Denver (KDVR)",
+      "market": "Denver",
+      "network": "FOX",
+      "startDate": "2016-01-02",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KFSF",
+      "description": "UniMas - San Francisco (KFSF)",
+      "market": "San Francisco",
+      "network": "UniMas",
+      "startDate": "2010-07-16",
+      "endDate": "2012-01-24",
+      "isActive": false
+    },
+    {
+      "stationId": "KFXA",
+      "description": "FOX - Cedar Rapids (KFXA)",
+      "market": "Cedar Rapids",
+      "network": "FOX",
+      "startDate": "2015-10-20",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KGAN",
+      "description": "CBS - Cedar Rapids (KGAN)",
+      "market": "Cedar Rapids",
+      "network": "CBS",
+      "startDate": "2015-10-19",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KGO",
+      "description": "ABC - San Francisco (KGO)",
+      "market": "San Francisco",
+      "network": "ABC",
+      "startDate": "2010-07-15",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "KICU",
+      "description": "KICU - San Francisco (KICU)",
+      "market": "San Francisco",
+      "network": "KICU",
+      "startDate": "2010-07-16",
+      "endDate": "2014-06-03",
+      "isActive": false
+    },
+    {
+      "stationId": "KKPX",
+      "description": "IonTV - San Francisco (KKPX)",
+      "market": "San Francisco",
+      "network": "IonTV",
+      "startDate": "2010-09-10",
+      "endDate": "2013-08-21",
+      "isActive": false
+    },
+    {
+      "stationId": "KKTV",
+      "description": "CBS - Colorado Springs (KKTV)",
+      "market": "Colorado Springs",
+      "network": "CBS",
+      "startDate": "2016-01-19",
+      "endDate": "2016-03-09",
+      "isActive": false
+    },
+    {
+      "stationId": "KLAS",
+      "description": "CBS - Las Vegas (KLAS)",
+      "market": "Las Vegas",
+      "network": "CBS",
+      "startDate": "2015-12-10",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KMEG",
+      "description": "CBS - Dakota Dunes SD (KMEG)",
+      "market": "Dakota Dunes SD",
+      "network": "CBS",
+      "startDate": "2015-10-13",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KMGH",
+      "description": "ABC - Denver (KMGH)",
+      "market": "Denver",
+      "network": "ABC",
+      "startDate": "2016-01-01",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KMTP",
+      "description": "KMTP - San Francisco (KMTP)",
+      "market": "San Francisco",
+      "network": "KMTP",
+      "startDate": "2013-07-10",
+      "endDate": "2016-08-30",
+      "isActive": false
+    },
+    {
+      "stationId": "KNTV",
+      "description": "NBC - San Francisco (KNTV)",
+      "market": "San Francisco",
+      "network": "NBC",
+      "startDate": "2010-07-16",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "KNXV",
+      "description": "ABC - Phoenix (KNXV)",
+      "market": "Phoenix",
+      "network": "ABC",
+      "startDate": "2016-08-07",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KOAA",
+      "description": "NBC - Pueblo (KOAA)",
+      "market": "Pueblo",
+      "network": "NBC",
+      "startDate": "2016-01-19",
+      "endDate": "2016-03-09",
+      "isActive": false
+    },
+    {
+      "stationId": "KOFY",
+      "description": "KOFY - San Francisco (KOFY)",
+      "market": "San Francisco",
+      "network": "KOFY",
+      "startDate": "2010-07-15",
+      "endDate": "2018-05-24",
+      "isActive": false
+    },
+    {
+      "stationId": "KOLO",
+      "description": "ABC - Reno (KOLO)",
+      "market": "Reno",
+      "network": "ABC",
+      "startDate": "2016-01-02",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KPHO",
+      "description": "CBS - Phoenix (KPHO)",
+      "market": "Phoenix",
+      "network": "CBS",
+      "startDate": "2016-08-08",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KPIX",
+      "description": "CBS - San Francisco (KPIX)",
+      "market": "San Francisco",
+      "network": "CBS",
+      "startDate": "2010-07-15",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "KPNX",
+      "description": "NBC - Phoenix (KPNX)",
+      "market": "Phoenix",
+      "network": "NBC",
+      "startDate": "2016-08-08",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KPTH",
+      "description": "FOX - Dakota Dunes SD (KPTH)",
+      "market": "Dakota Dunes SD",
+      "network": "FOX",
+      "startDate": "2015-10-14",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KQED",
+      "description": "PBS - San Francisco (KQED)",
+      "market": "San Francisco",
+      "network": "PBS",
+      "startDate": "2010-07-14",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "KQEH",
+      "description": "PBS - San Francisco (KQEH)",
+      "market": "San Francisco",
+      "network": "PBS",
+      "startDate": "2010-07-16",
+      "endDate": "2018-05-19",
+      "isActive": false
+    },
+    {
+      "stationId": "KRCB",
+      "description": "PBS - Sonoma California (KRCB)",
+      "market": "Sonoma California",
+      "network": "PBS",
+      "startDate": "2010-07-16",
+      "endDate": "2013-10-03",
+      "isActive": false
+    },
+    {
+      "stationId": "KRDO",
+      "description": "ABC - Colorado Springs (KRDO)",
+      "market": "Colorado Springs",
+      "network": "ABC",
+      "startDate": "2016-01-19",
+      "endDate": "2016-03-09",
+      "isActive": false
+    },
+    {
+      "stationId": "KRNV",
+      "description": "NBC - Reno (KRNV)",
+      "market": "Reno",
+      "network": "NBC",
+      "startDate": "2016-01-02",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KRON",
+      "description": "MyNetworkTV - San Francisco (KRON)",
+      "market": "San Francisco",
+      "network": "MyNetworkTV",
+      "startDate": "2010-07-14",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "KRXI",
+      "description": "FOX - Reno (KRXI)",
+      "market": "Reno",
+      "network": "FOX",
+      "startDate": "2016-01-01",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KSAZ",
+      "description": "FOX - Phoenix (KSAZ)",
+      "market": "Phoenix",
+      "network": "FOX",
+      "startDate": "2016-08-08",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KSNV",
+      "description": "MYTV - Las Vegas (KSNV)",
+      "market": "Las Vegas",
+      "network": "MYTV",
+      "startDate": "2015-12-11",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KSTS",
+      "description": "Telemundo - San Francisco (KSTS)",
+      "market": "San Francisco",
+      "network": "Telemundo",
+      "startDate": "2010-07-16",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "KTIV",
+      "description": "NBC - Sioux City (KTIV)",
+      "market": "Sioux City",
+      "network": "NBC",
+      "startDate": "2015-10-13",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KTLN",
+      "description": "KTLN - San Francisco (KTLN)",
+      "market": "San Francisco",
+      "network": "KTLN",
+      "startDate": "2011-09-21",
+      "endDate": "2013-10-01",
+      "isActive": false
+    },
+    {
+      "stationId": "KTNC",
+      "description": "EstrellaTV - San Francisco (KTNC)",
+      "market": "San Francisco",
+      "network": "EstrellaTV",
+      "startDate": "2012-07-11",
+      "endDate": "2014-02-01",
+      "isActive": false
+    },
+    {
+      "stationId": "KTNV",
+      "description": "ABC - Las Vegas (KTNV)",
+      "market": "Las Vegas",
+      "network": "ABC",
+      "startDate": "2015-12-11",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KTSF",
+      "description": "KTSF - San Francisco (KTSF)",
+      "market": "San Francisco",
+      "network": "KTSF",
+      "startDate": "2010-07-16",
+      "endDate": "2017-10-30",
+      "isActive": false
+    },
+    {
+      "stationId": "KTVN",
+      "description": "CBS - Reno (KTVN)",
+      "market": "Reno",
+      "network": "CBS",
+      "startDate": "2016-01-02",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KTVU",
+      "description": "FOX - San Francisco (KTVU)",
+      "market": "San Francisco",
+      "network": "FOX",
+      "startDate": "2010-07-15",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "KUSA",
+      "description": "NBC - Denver (KUSA)",
+      "market": "Denver",
+      "network": "NBC",
+      "startDate": "2016-01-01",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KVVU",
+      "description": "FOX - Las Vegas (KVVU)",
+      "market": "Las Vegas",
+      "network": "FOX",
+      "startDate": "2015-12-12",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KWWL",
+      "description": "NBC - Waterloo (KWWL)",
+      "market": "Waterloo",
+      "network": "NBC",
+      "startDate": "2015-10-19",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "KXRM",
+      "description": "FOX - Colorado Springs (KXRM)",
+      "market": "Colorado Springs",
+      "network": "FOX",
+      "startDate": "2016-01-19",
+      "endDate": "2016-03-09",
+      "isActive": false
+    },
+    {
+      "stationId": "KYW",
+      "description": "CBS - Philadelphia (KYW)",
+      "market": "Philadelphia",
+      "network": "CBS",
+      "startDate": "2014-06-06",
+      "endDate": "2018-03-08",
+      "isActive": false
+    },
+    {
+      "stationId": "LINKTV",
+      "description": "LinkTV",
+      "market": "NationalSpecialty",
+      "network": "LINKTV",
+      "startDate": "2012-02-20",
+      "endDate": "2024-07-29",
+      "isActive": false
+    },
+    {
+      "stationId": "MSNBC",
+      "description": "MSNBC",
+      "market": "National",
+      "network": "MSNBC",
+      "startDate": "2009-07-02",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "NHK",
+      "description": "NHK - Japan (NHK)",
+      "market": "Japan",
+      "network": "NHK",
+      "startDate": "2014-06-06",
+      "endDate": "2017-11-09",
+      "isActive": false
+    },
+    {
+      "stationId": "RT",
+      "description": "Russia Today",
+      "market": "International",
+      "network": "RT",
+      "startDate": "2010-07-15",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "SFGTV",
+      "description": "SFGOVTV - San Francisco (SFGTV)",
+      "market": "San Francisco",
+      "network": "SFGOVTV",
+      "startDate": "2010-07-15",
+      "endDate": "2024-10-10",
+      "isActive": false
+    },
+    {
+      "stationId": "SFGTV2",
+      "description": "SFGOVTV - San Francisco (SFGTV2)",
+      "market": "San Francisco",
+      "network": "SFGOVTV",
+      "startDate": "2010-07-16",
+      "endDate": "2013-12-04",
+      "isActive": false
+    },
+    {
+      "stationId": "TBN",
+      "description": "Trinity - Costa Mesa California (TBN)",
+      "market": "Costa Mesa California",
+      "network": "Trinity",
+      "startDate": "2012-10-19",
+      "endDate": "2012-10-26",
+      "isActive": false
+    },
+    {
+      "stationId": "WABC",
+      "description": "ABC - New York City (WABC)",
+      "market": "New York City",
+      "network": "ABC",
+      "startDate": "2015-07-31",
+      "endDate": "2016-08-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WACH",
+      "description": "FOX - Columbia (WACH)",
+      "market": "Columbia",
+      "network": "FOX",
+      "startDate": "2015-12-29",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WAVY",
+      "description": "NBC - Portsmouth (WAVY)",
+      "market": "Portsmouth",
+      "network": "NBC",
+      "startDate": "2016-01-06",
+      "endDate": "2016-03-09",
+      "isActive": false
+    },
+    {
+      "stationId": "WBAL",
+      "description": "NBC - Baltimore (WBAL)",
+      "market": "Baltimore",
+      "network": "NBC",
+      "startDate": "2009-07-02",
+      "endDate": "2013-11-15",
+      "isActive": false
+    },
+    {
+      "stationId": "WBFF",
+      "description": "FOX - Baltimore (WBFF)",
+      "market": "Baltimore",
+      "network": "FOX",
+      "startDate": "2009-07-03",
+      "endDate": "2013-11-15",
+      "isActive": false
+    },
+    {
+      "stationId": "WBTV",
+      "description": "CBS - Charlotte (WBTV)",
+      "market": "Charlotte",
+      "network": "CBS",
+      "startDate": "2016-02-09",
+      "endDate": "2016-03-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WBZ",
+      "description": "CBS - Boston (WBZ)",
+      "market": "Boston",
+      "network": "CBS",
+      "startDate": "2015-10-02",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WCAU",
+      "description": "NBC - Philadelphia (WCAU)",
+      "market": "Philadelphia",
+      "network": "NBC",
+      "startDate": "2014-06-06",
+      "endDate": "2018-03-08",
+      "isActive": false
+    },
+    {
+      "stationId": "WCBS",
+      "description": "CBS - New York City (WCBS)",
+      "market": "New York City",
+      "network": "CBS",
+      "startDate": "2015-07-31",
+      "endDate": "2016-08-24",
+      "isActive": false
+    },
+    {
+      "stationId": "WCNC",
+      "description": "NBC - Charlotte (WCNC)",
+      "market": "Charlotte",
+      "network": "NBC",
+      "startDate": "2016-02-09",
+      "endDate": "2016-03-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WCPO",
+      "description": "ABC - Cincinnati (WCPO)",
+      "market": "Cincinnati",
+      "network": "ABC",
+      "startDate": "2016-01-06",
+      "endDate": "2016-03-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WCVB",
+      "description": "ABC - Boston (WCVB)",
+      "market": "Boston",
+      "network": "ABC",
+      "startDate": "2015-10-02",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WDBJ",
+      "description": "CBS - Roanoke (WDBJ)",
+      "market": "Roanoke",
+      "network": "CBS",
+      "startDate": "2016-01-26",
+      "endDate": "2016-03-01",
+      "isActive": false
+    },
+    {
+      "stationId": "WDJT",
+      "description": "Daystar - Toledo (WDJT)",
+      "market": "Toledo",
+      "network": "Daystar",
+      "startDate": "2016-08-07",
+      "endDate": "2016-12-15",
+      "isActive": false
+    },
+    {
+      "stationId": "WESH",
+      "description": "NBC - Daytona Beach (WESH)",
+      "market": "Daytona Beach",
+      "network": "NBC",
+      "startDate": "2016-01-06",
+      "endDate": "2016-03-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WETA",
+      "description": "PBS - Washington DC (WETA)",
+      "market": "Washington DC",
+      "network": "PBS",
+      "startDate": "2009-07-02",
+      "endDate": "2013-11-15",
+      "isActive": false
+    },
+    {
+      "stationId": "WEWS",
+      "description": "ABC - Cleveland (WEWS)",
+      "market": "Cleveland",
+      "network": "ABC",
+      "startDate": "2016-01-06",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WFDC",
+      "description": "Univision - Arlington Virginia (WFDC)",
+      "market": "Arlington Virginia",
+      "network": "Univision",
+      "startDate": "2009-07-02",
+      "endDate": "2013-11-15",
+      "isActive": false
+    },
+    {
+      "stationId": "WFLA",
+      "description": "NBC - Tampa (WFLA)",
+      "market": "Tampa",
+      "network": "NBC",
+      "startDate": "2016-01-06",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WFOR",
+      "description": "CBS - Miami (WFOR)",
+      "market": "Miami",
+      "network": "CBS",
+      "startDate": "2016-01-06",
+      "endDate": "2016-03-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WFTS",
+      "description": "ABC - Tampa (WFTS)",
+      "market": "Tampa",
+      "network": "ABC",
+      "startDate": "2016-01-06",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WFTV",
+      "description": "ABC - Orlando (WFTV)",
+      "market": "Orlando",
+      "network": "ABC",
+      "startDate": "2016-01-06",
+      "endDate": "2016-03-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WFXR",
+      "description": "FOX - Roanoke (WFXR)",
+      "market": "Roanoke",
+      "network": "FOX",
+      "startDate": "2016-01-27",
+      "endDate": "2016-03-01",
+      "isActive": false
+    },
+    {
+      "stationId": "WFXT",
+      "description": "FOX - Boston (WFXT)",
+      "market": "Boston",
+      "network": "FOX",
+      "startDate": "2015-10-02",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WGN",
+      "description": "CW - Chicago (WGN)",
+      "market": "Chicago",
+      "network": "CW",
+      "startDate": "2010-06-13",
+      "endDate": "2015-05-06",
+      "isActive": false
+    },
+    {
+      "stationId": "WHDH",
+      "description": "NBC - Boston (WHDH)",
+      "market": "Boston",
+      "network": "NBC",
+      "startDate": "2015-10-02",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WHNS",
+      "description": "FOX - Greenville (WHNS)",
+      "market": "Greenville",
+      "network": "FOX",
+      "startDate": "2015-12-28",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WHO",
+      "description": "NBC - Des Moines (WHO)",
+      "market": "Des Moines",
+      "network": "NBC",
+      "startDate": "2015-10-14",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WHUT",
+      "description": "PBS - Washington DC (WHUT)",
+      "market": "Washington DC",
+      "network": "PBS",
+      "startDate": "2009-07-02",
+      "endDate": "2013-11-15",
+      "isActive": false
+    },
+    {
+      "stationId": "WHYY",
+      "description": "PBS - Philadelphia (WHYY)",
+      "market": "Philadelphia",
+      "network": "PBS",
+      "startDate": "2014-06-06",
+      "endDate": "2015-01-25",
+      "isActive": false
+    },
+    {
+      "stationId": "WIS",
+      "description": "NBC - Columbia (WIS)",
+      "market": "Columbia",
+      "network": "NBC",
+      "startDate": "2015-12-28",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WISN",
+      "description": "ABC - Milwaukee (WISN)",
+      "market": "Milwaukee",
+      "network": "ABC",
+      "startDate": "2016-08-07",
+      "endDate": "2016-12-15",
+      "isActive": false
+    },
+    {
+      "stationId": "WITI",
+      "description": "FOX - Milwaukee (WITI)",
+      "market": "Milwaukee",
+      "network": "FOX",
+      "startDate": "2016-08-08",
+      "endDate": "2016-12-15",
+      "isActive": false
+    },
+    {
+      "stationId": "WJLA",
+      "description": "ABC - Washington DC (WJLA)",
+      "market": "Washington DC",
+      "network": "ABC",
+      "startDate": "2009-07-02",
+      "endDate": "2019-09-20",
+      "isActive": false
+    },
+    {
+      "stationId": "WJW",
+      "description": "FOX - Cleveland (WJW)",
+      "market": "Cleveland",
+      "network": "FOX",
+      "startDate": "2016-01-06",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WJZ",
+      "description": "CBS - Baltimore (WJZ)",
+      "market": "Baltimore",
+      "network": "CBS",
+      "startDate": "2009-07-02",
+      "endDate": "2013-11-15",
+      "isActive": false
+    },
+    {
+      "stationId": "WJZY",
+      "description": "FOX - Belmont (WJZY)",
+      "market": "Belmont",
+      "network": "FOX",
+      "startDate": "2016-02-09",
+      "endDate": "2016-03-22",
+      "isActive": false
+    },
+    {
+      "stationId": "WKMG",
+      "description": "CBS - Orlando (WKMG)",
+      "market": "Orlando",
+      "network": "CBS",
+      "startDate": "2016-01-06",
+      "endDate": "2016-03-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WKRC",
+      "description": "CBS - Cincinnati (WKRC)",
+      "market": "Cincinnati",
+      "network": "CBS",
+      "startDate": "2016-01-06",
+      "endDate": "2016-03-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WKYC",
+      "description": "NBC - Cleveland (WKYC)",
+      "market": "Cleveland",
+      "network": "NBC",
+      "startDate": "2016-01-06",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WLFL",
+      "description": "CW - Raleigh (WLFL)",
+      "market": "Raleigh",
+      "network": "CW",
+      "startDate": "2016-08-06",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WLOS",
+      "description": "ABC - Asheville (WLOS)",
+      "market": "Asheville",
+      "network": "ABC",
+      "startDate": "2015-12-28",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WLTX",
+      "description": "CBS - Columbia (WLTX)",
+      "market": "Columbia",
+      "network": "CBS",
+      "startDate": "2015-12-28",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WLWT",
+      "description": "NBC - Cincinnati (WLWT)",
+      "market": "Cincinnati",
+      "network": "NBC",
+      "startDate": "2016-01-06",
+      "endDate": "2016-03-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WMAR",
+      "description": "ABC - Baltimore (WMAR)",
+      "market": "Baltimore",
+      "network": "ABC",
+      "startDate": "2009-07-02",
+      "endDate": "2013-11-15",
+      "isActive": false
+    },
+    {
+      "stationId": "WMPT",
+      "description": "PBS - Maryland (WMPT)",
+      "market": "Maryland",
+      "network": "PBS",
+      "startDate": "2009-07-02",
+      "endDate": "2013-11-15",
+      "isActive": false
+    },
+    {
+      "stationId": "WMUR",
+      "description": "ABC - Boston (WMUR)",
+      "market": "Boston",
+      "network": "ABC",
+      "startDate": "2015-09-30",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WNBC",
+      "description": "NBC - New York City (WNBC)",
+      "market": "New York City",
+      "network": "NBC",
+      "startDate": "2015-07-31",
+      "endDate": "2016-08-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WNCN",
+      "description": "NBC - Goldsboro (WNCN)",
+      "market": "Goldsboro",
+      "network": "NBC",
+      "startDate": "2016-01-13",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WNUV",
+      "description": "CW - Baltimore (WNUV)",
+      "market": "Baltimore",
+      "network": "CW",
+      "startDate": "2009-07-12",
+      "endDate": "2013-11-10",
+      "isActive": false
+    },
+    {
+      "stationId": "WNYW",
+      "description": "FOX - New York City (WNYW)",
+      "market": "New York City",
+      "network": "FOX",
+      "startDate": "2015-07-31",
+      "endDate": "2016-08-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WOFL",
+      "description": "FOX - Orlando (WOFL)",
+      "market": "Orlando",
+      "network": "FOX",
+      "startDate": "2016-01-06",
+      "endDate": "2016-03-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WOI",
+      "description": "ABC - Ames (WOI)",
+      "market": "Ames",
+      "network": "ABC",
+      "startDate": "2015-10-14",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WOIO",
+      "description": "CBS - Shaker Heights (WOIO)",
+      "market": "Shaker Heights",
+      "network": "CBS",
+      "startDate": "2016-01-06",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WOLO",
+      "description": "ABC - Columbia (WOLO)",
+      "market": "Columbia",
+      "network": "ABC",
+      "startDate": "2015-12-28",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WPHL",
+      "description": "MyNetworkTV - Philadelphia (WPHL)",
+      "market": "Philadelphia",
+      "network": "MyNetworkTV",
+      "startDate": "2014-09-04",
+      "endDate": "2015-01-26",
+      "isActive": false
+    },
+    {
+      "stationId": "WPLG",
+      "description": "ABC - Miami (WPLG)",
+      "market": "Miami",
+      "network": "ABC",
+      "startDate": "2016-01-06",
+      "endDate": "2016-03-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WPSG",
+      "description": "CW - Philadelphia (WPSG)",
+      "market": "Philadelphia",
+      "network": "CW",
+      "startDate": "2014-09-04",
+      "endDate": "2015-01-26",
+      "isActive": false
+    },
+    {
+      "stationId": "WPVI",
+      "description": "ABC - Philadelphia (WPVI)",
+      "market": "Philadelphia",
+      "network": "ABC",
+      "startDate": "2014-06-06",
+      "endDate": "2018-03-08",
+      "isActive": false
+    },
+    {
+      "stationId": "WQAW",
+      "description": "Azteca - Lake Shore Maryland (WQAW)",
+      "market": "Lake Shore Maryland",
+      "network": "Azteca",
+      "startDate": "2013-02-07",
+      "endDate": "2013-11-15",
+      "isActive": false
+    },
+    {
+      "stationId": "WRAL",
+      "description": "CBS - Raleigh (WRAL)",
+      "market": "Raleigh",
+      "network": "CBS",
+      "startDate": "2016-01-13",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WRAZ",
+      "description": "FOX - Raleigh (WRAZ)",
+      "market": "Raleigh",
+      "network": "FOX",
+      "startDate": "2016-01-13",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WRC",
+      "description": "NBC - Washington DC (WRC)",
+      "market": "Washington DC",
+      "network": "NBC",
+      "startDate": "2009-07-02",
+      "endDate": "2019-07-31",
+      "isActive": false
+    },
+    {
+      "stationId": "WSET",
+      "description": "ABC - Lynchburg (WSET)",
+      "market": "Lynchburg",
+      "network": "ABC",
+      "startDate": "2016-01-26",
+      "endDate": "2016-03-01",
+      "isActive": false
+    },
+    {
+      "stationId": "WSLS",
+      "description": "NBC - Roanoke (WSLS)",
+      "market": "Roanoke",
+      "network": "NBC",
+      "startDate": "2016-01-26",
+      "endDate": "2016-03-01",
+      "isActive": false
+    },
+    {
+      "stationId": "WSOC",
+      "description": "ABC - Charlotte (WSOC)",
+      "market": "Charlotte",
+      "network": "ABC",
+      "startDate": "2016-02-09",
+      "endDate": "2016-03-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WSPA",
+      "description": "CBS - Spartanburg (WSPA)",
+      "market": "Spartanburg",
+      "network": "CBS",
+      "startDate": "2015-12-28",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WSVN",
+      "description": "FOX - Miami (WSVN)",
+      "market": "Miami",
+      "network": "FOX",
+      "startDate": "2016-01-07",
+      "endDate": "2016-03-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WTKR",
+      "description": "CBS - Norfolk (WTKR)",
+      "market": "Norfolk",
+      "network": "CBS",
+      "startDate": "2016-01-06",
+      "endDate": "2016-03-09",
+      "isActive": false
+    },
+    {
+      "stationId": "WTMJ",
+      "description": "NBC - Milwaukee (WTMJ)",
+      "market": "Milwaukee",
+      "network": "NBC",
+      "startDate": "2016-08-07",
+      "endDate": "2016-12-15",
+      "isActive": false
+    },
+    {
+      "stationId": "WTSP",
+      "description": "CBS - St. Petersburg (WTSP)",
+      "market": "St. Petersburg",
+      "network": "CBS",
+      "startDate": "2016-01-06",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WTTG",
+      "description": "FOX - Washington DC (WTTG)",
+      "market": "Washington DC",
+      "network": "FOX",
+      "startDate": "2009-07-03",
+      "endDate": "2019-09-25",
+      "isActive": false
+    },
+    {
+      "stationId": "WTVD",
+      "description": "ABC - Durham (WTVD)",
+      "market": "Durham",
+      "network": "ABC",
+      "startDate": "2016-01-13",
+      "endDate": "2016-03-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WTVJ",
+      "description": "NBC - Miami (WTVJ)",
+      "market": "Miami",
+      "network": "NBC",
+      "startDate": "2016-01-06",
+      "endDate": "2016-03-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WTVT",
+      "description": "FOX - Tampa (WTVT)",
+      "market": "Tampa",
+      "network": "FOX",
+      "startDate": "2016-01-06",
+      "endDate": "2016-12-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WTXF",
+      "description": "FOX - Philadelphia (WTXF)",
+      "market": "Philadelphia",
+      "network": "FOX",
+      "startDate": "2014-06-06",
+      "endDate": "2018-03-08",
+      "isActive": false
+    },
+    {
+      "stationId": "WUSA",
+      "description": "CBS - Washington DC (WUSA)",
+      "market": "Washington DC",
+      "network": "CBS",
+      "startDate": "2009-07-02",
+      "endDate": "2019-09-18",
+      "isActive": false
+    },
+    {
+      "stationId": "WUVP",
+      "description": "Univision - Philadelphia (WUVP)",
+      "market": "Philadelphia",
+      "network": "Univision",
+      "startDate": "2014-06-08",
+      "endDate": "2018-03-08",
+      "isActive": false
+    },
+    {
+      "stationId": "WVBT",
+      "description": "FOX - Virginia Beach (WVBT)",
+      "market": "Virginia Beach",
+      "network": "FOX",
+      "startDate": "2016-01-07",
+      "endDate": "2016-03-08",
+      "isActive": false
+    },
+    {
+      "stationId": "WVEC",
+      "description": "ABC - Hampton (WVEC)",
+      "market": "Hampton",
+      "network": "ABC",
+      "startDate": "2016-01-06",
+      "endDate": "2016-03-09",
+      "isActive": false
+    },
+    {
+      "stationId": "WXIX",
+      "description": "FOX - Newport KY (WXIX)",
+      "market": "Newport KY",
+      "network": "FOX",
+      "startDate": "2016-01-06",
+      "endDate": "2016-03-23",
+      "isActive": false
+    },
+    {
+      "stationId": "WYFF",
+      "description": "NBC - Greenville (WYFF)",
+      "market": "Greenville",
+      "network": "NBC",
+      "startDate": "2015-12-28",
+      "endDate": "2016-03-02",
+      "isActive": false
+    },
+    {
+      "stationId": "WZDC",
+      "description": "Telemundo - Washington DC (WZDC)",
+      "market": "Washington DC",
+      "network": "Telemundo",
+      "startDate": "2011-04-04",
+      "endDate": "2013-11-14",
+      "isActive": false
+    }
+  ],
+  "activeCount": 0,
+  "totalCount": 159,
+  "content": "## GDELT TV Stations\n**Total:** 159 | **Active:** 0\n\n### National Networks\n- **ALJAZAM** — Al Jazeera America | Market: NationalDiscontinued | ALJAZAM | 2013-08-20–2016-04-12 | Ended 2016-04-12\n- **BLOOMBERG** — Bloomberg | Market: National | BLOOMBERG | 2013-12-05–2024-10-10 | Ended 2024-10-10\n- **CNBC** — CNBC | Market: National | CNBC | 2009-07-02–2024-10-09 | Ended 2024-10-09\n- **CNN** — CNN | Market: National | CNN | 2009-07-02–2024-10-10 | Ended 2024-10-10\n- **COM** — Comedy Central | Market: NationalSpecialty | COM | 2011-05-10–2024-10-10 | Ended 2024-10-10\n- **CSPAN** — CSPAN | Market: National | CSPAN | 2009-06-04–2024-10-10 | Ended 2024-10-10\n- **CSPAN2** — CSPAN2 | Market: National | CSPAN | 2009-06-04–2024-10-10 | Ended 2024-10-10\n- **CSPAN3** — CSPAN3 | Market: National | CSPAN | 2012-01-26–2024-10-10 | Ended 2024-10-10\n- **FBC** — FOX Business | Market: National | FBC | 2012-08-20–2024-10-10 | Ended 2024-10-10\n- **FOXNEWS** — FOX News | Market: National | FOXNEWS | 2009-07-02–2024-10-10 | Ended 2024-10-10\n- **LINKTV** — LinkTV | Market: NationalSpecialty | LINKTV | 2012-02-20–2024-07-29 | Ended 2024-07-29\n- **MSNBC** — MSNBC | Market: National | MSNBC | 2009-07-02–2024-10-10 | Ended 2024-10-10\n\n### International Stations\n- **ALJAZ** — Al Jazeera | Market: International | ALJAZ | 2017-09-11–2024-10-10 | Ended 2024-10-10\n- **BBCNEWS** — BBC News | Market: International | BBCNEWS | 2017-01-01–2024-10-10 | Ended 2024-10-10\n- **DW** — DeutscheWelle | Market: International | DW | 2017-09-19–2024-10-10 | Ended 2024-10-10\n- **NHK** — NHK - Japan (NHK) | Market: Japan | NHK | 2014-06-06–2017-11-09 | Ended 2017-11-09\n- **RT** — Russia Today | Market: International | RT | 2010-07-15–2024-10-10 | Ended 2024-10-10\n\n### Local/Regional Stations\n- **BETW** — BET - San Francisco (BETW) | Market: San Francisco | BET | 2016-12-13–2017-04-07 | Ended 2017-04-07\n- **CURRENT** — CurrentTV - San Francisco (CURRENT) | Market: San Francisco | CurrentTV | 2012-01-13–2013-08-16 | Ended 2013-08-16\n- **HLN** — HLN - Maryland (HLN) | Market: Maryland | HLN | 2009-07-02–2010-05-17 | Ended 2010-05-17\n- **KBCW** — CW - San Francisco (KBCW) | Market: San Francisco | CW | 2010-07-16–2014-02-20 | Ended 2014-02-20\n- **KCAU** — ABC - Sioux City (KCAU) | Market: Sioux City | ABC | 2015-10-13–2016-03-02 | Ended 2016-03-02\n- **KCCI** — CBS - Des Moines (KCCI) | Market: Des Moines | CBS | 2015-10-14–2016-03-02 | Ended 2016-03-02\n- **KCNC** — CBS - Denver (KCNC) | Market: Denver | CBS | 2016-01-01–2016-12-02 | Ended 2016-12-02\n- **KCNS** — SonLife - San Francisco (KCNS) | Market: San Francisco | SonLife | 2011-12-25–2015-08-29 | Ended 2015-08-29\n- **KCRG** — ABC - Cedar Rapids (KCRG) | Market: Cedar Rapids | ABC | 2015-10-19–2016-12-02 | Ended 2016-12-02\n- **KCSM** — PBS - San Mateo California (KCSM) | Market: San Mateo California | PBS | 2010-07-16–2018-05-24 | Ended 2018-05-24\n- **KCSMMHZ** — KCSMMHZ - San Mateo California (KCSMMHZ) | Market: San Mateo California | KCSMMHZ | 2011-08-05–2013-07-22 | Ended 2013-07-22\n- **KDSM** — FOX - Des Moines (KDSM) | Market: Des Moines | FOX | 2015-11-02–2016-03-02 | Ended 2016-03-02\n- **KDTV** — Univision - San Francisco (KDTV) | Market: San Francisco | Univision | 2010-07-15–2024-10-10 | Ended 2024-10-10\n- **KDVR** — FOX - Denver (KDVR) | Market: Denver | FOX | 2016-01-02–2016-12-02 | Ended 2016-12-02\n- **KFSF** — UniMas - San Francisco (KFSF) | Market: San Francisco | UniMas | 2010-07-16–2012-01-24 | Ended 2012-01-24\n- **KFXA** — FOX - Cedar Rapids (KFXA) | Market: Cedar Rapids | FOX | 2015-10-20–2016-12-02 | Ended 2016-12-02\n- **KGAN** — CBS - Cedar Rapids (KGAN) | Market: Cedar Rapids | CBS | 2015-10-19–2016-12-02 | Ended 2016-12-02\n- **KGO** — ABC - San Francisco (KGO) | Market: San Francisco | ABC | 2010-07-15–2024-10-10 | Ended 2024-10-10\n- **KICU** — KICU - San Francisco (KICU) | Market: San Francisco | KICU | 2010-07-16–2014-06-03 | Ended 2014-06-03\n- **KKPX** — IonTV - San Francisco (KKPX) | Market: San Francisco | IonTV | 2010-09-10–2013-08-21 | Ended 2013-08-21\n- **KKTV** — CBS - Colorado Springs (KKTV) | Market: Colorado Springs | CBS | 2016-01-19–2016-03-09 | Ended 2016-03-09\n- **KLAS** — CBS - Las Vegas (KLAS) | Market: Las Vegas | CBS | 2015-12-10–2016-12-02 | Ended 2016-12-02\n- **KMEG** — CBS - Dakota Dunes SD (KMEG) | Market: Dakota Dunes SD | CBS | 2015-10-13–2016-03-02 | Ended 2016-03-02\n- **KMGH** — ABC - Denver (KMGH) | Market: Denver | ABC | 2016-01-01–2016-12-02 | Ended 2016-12-02\n- **KMTP** — KMTP - San Francisco (KMTP) | Market: San Francisco | KMTP | 2013-07-10–2016-08-30 | Ended 2016-08-30\n- **KNTV** — NBC - San Francisco (KNTV) | Market: San Francisco | NBC | 2010-07-16–2024-10-10 | Ended 2024-10-10\n- **KNXV** — ABC - Phoenix (KNXV) | Market: Phoenix | ABC | 2016-08-07–2016-12-02 | Ended 2016-12-02\n- **KOAA** — NBC - Pueblo (KOAA) | Market: Pueblo | NBC | 2016-01-19–2016-03-09 | Ended 2016-03-09\n- **KOFY** — KOFY - San Francisco (KOFY) | Market: San Francisco | KOFY | 2010-07-15–2018-05-24 | Ended 2018-05-24\n- **KOLO** — ABC - Reno (KOLO) | Market: Reno | ABC | 2016-01-02–2016-03-02 | Ended 2016-03-02\n- **KPHO** — CBS - Phoenix (KPHO) | Market: Phoenix | CBS | 2016-08-08–2016-12-02 | Ended 2016-12-02\n- **KPIX** — CBS - San Francisco (KPIX) | Market: San Francisco | CBS | 2010-07-15–2024-10-10 | Ended 2024-10-10\n- **KPNX** — NBC - Phoenix (KPNX) | Market: Phoenix | NBC | 2016-08-08–2016-12-02 | Ended 2016-12-02\n- **KPTH** — FOX - Dakota Dunes SD (KPTH) | Market: Dakota Dunes SD | FOX | 2015-10-14–2016-03-02 | Ended 2016-03-02\n- **KQED** — PBS - San Francisco (KQED) | Market: San Francisco | PBS | 2010-07-14–2024-10-10 | Ended 2024-10-10\n- **KQEH** — PBS - San Francisco (KQEH) | Market: San Francisco | PBS | 2010-07-16–2018-05-19 | Ended 2018-05-19\n- **KRCB** — PBS - Sonoma California (KRCB) | Market: Sonoma California | PBS | 2010-07-16–2013-10-03 | Ended 2013-10-03\n- **KRDO** — ABC - Colorado Springs (KRDO) | Market: Colorado Springs | ABC | 2016-01-19–2016-03-09 | Ended 2016-03-09\n- **KRNV** — NBC - Reno (KRNV) | Market: Reno | NBC | 2016-01-02–2016-03-02 | Ended 2016-03-02\n- **KRON** — MyNetworkTV - San Francisco (KRON) | Market: San Francisco | MyNetworkTV | 2010-07-14–2024-10-10 | Ended 2024-10-10\n- **KRXI** — FOX - Reno (KRXI) | Market: Reno | FOX | 2016-01-01–2016-03-02 | Ended 2016-03-02\n- **KSAZ** — FOX - Phoenix (KSAZ) | Market: Phoenix | FOX | 2016-08-08–2016-12-02 | Ended 2016-12-02\n- **KSNV** — MYTV - Las Vegas (KSNV) | Market: Las Vegas | MYTV | 2015-12-11–2016-12-02 | Ended 2016-12-02\n- **KSTS** — Telemundo - San Francisco (KSTS) | Market: San Francisco | Telemundo | 2010-07-16–2024-10-10 | Ended 2024-10-10\n- **KTIV** — NBC - Sioux City (KTIV) | Market: Sioux City | NBC | 2015-10-13–2016-03-02 | Ended 2016-03-02\n- **KTLN** — KTLN - San Francisco (KTLN) | Market: San Francisco | KTLN | 2011-09-21–2013-10-01 | Ended 2013-10-01\n- **KTNC** — EstrellaTV - San Francisco (KTNC) | Market: San Francisco | EstrellaTV | 2012-07-11–2014-02-01 | Ended 2014-02-01\n- **KTNV** — ABC - Las Vegas (KTNV) | Market: Las Vegas | ABC | 2015-12-11–2016-12-02 | Ended 2016-12-02\n- **KTSF** — KTSF - San Francisco (KTSF) | Market: San Francisco | KTSF | 2010-07-16–2017-10-30 | Ended 2017-10-30\n- **KTVN** — CBS - Reno (KTVN) | Market: Reno | CBS | 2016-01-02–2016-03-02 | Ended 2016-03-02\n- **KTVU** — FOX - San Francisco (KTVU) | Market: San Francisco | FOX | 2010-07-15–2024-10-10 | Ended 2024-10-10\n- **KUSA** — NBC - Denver (KUSA) | Market: Denver | NBC | 2016-01-01–2016-12-02 | Ended 2016-12-02\n- **KVVU** — FOX - Las Vegas (KVVU) | Market: Las Vegas | FOX | 2015-12-12–2016-12-02 | Ended 2016-12-02\n- **KWWL** — NBC - Waterloo (KWWL) | Market: Waterloo | NBC | 2015-10-19–2016-12-02 | Ended 2016-12-02\n- **KXRM** — FOX - Colorado Springs (KXRM) | Market: Colorado Springs | FOX | 2016-01-19–2016-03-09 | Ended 2016-03-09\n- **KYW** — CBS - Philadelphia (KYW) | Market: Philadelphia | CBS | 2014-06-06–2018-03-08 | Ended 2018-03-08\n- **SFGTV** — SFGOVTV - San Francisco (SFGTV) | Market: San Francisco | SFGOVTV | 2010-07-15–2024-10-10 | Ended 2024-10-10\n- **SFGTV2** — SFGOVTV - San Francisco (SFGTV2) | Market: San Francisco | SFGOVTV | 2010-07-16–2013-12-04 | Ended 2013-12-04\n- **TBN** — Trinity - Costa Mesa California (TBN) | Market: Costa Mesa California | Trinity | 2012-10-19–2012-10-26 | Ended 2012-10-26\n- **WABC** — ABC - New York City (WABC) | Market: New York City | ABC | 2015-07-31–2016-08-23 | Ended 2016-08-23\n- **WACH** — FOX - Columbia (WACH) | Market: Columbia | FOX | 2015-12-29–2016-03-02 | Ended 2016-03-02\n- **WAVY** — NBC - Portsmouth (WAVY) | Market: Portsmouth | NBC | 2016-01-06–2016-03-09 | Ended 2016-03-09\n- **WBAL** — NBC - Baltimore (WBAL) | Market: Baltimore | NBC | 2009-07-02–2013-11-15 | Ended 2013-11-15\n- **WBFF** — FOX - Baltimore (WBFF) | Market: Baltimore | FOX | 2009-07-03–2013-11-15 | Ended 2013-11-15\n- **WBTV** — CBS - Charlotte (WBTV) | Market: Charlotte | CBS | 2016-02-09–2016-03-23 | Ended 2016-03-23\n- **WBZ** — CBS - Boston (WBZ) | Market: Boston | CBS | 2015-10-02–2016-12-02 | Ended 2016-12-02\n- **WCAU** — NBC - Philadelphia (WCAU) | Market: Philadelphia | NBC | 2014-06-06–2018-03-08 | Ended 2018-03-08\n- **WCBS** — CBS - New York City (WCBS) | Market: New York City | CBS | 2015-07-31–2016-08-24 | Ended 2016-08-24\n- **WCNC** — NBC - Charlotte (WCNC) | Market: Charlotte | NBC | 2016-02-09–2016-03-23 | Ended 2016-03-23\n- **WCPO** — ABC - Cincinnati (WCPO) | Market: Cincinnati | ABC | 2016-01-06–2016-03-23 | Ended 2016-03-23\n- **WCVB** — ABC - Boston (WCVB) | Market: Boston | ABC | 2015-10-02–2016-12-02 | Ended 2016-12-02\n- **WDBJ** — CBS - Roanoke (WDBJ) | Market: Roanoke | CBS | 2016-01-26–2016-03-01 | Ended 2016-03-01\n- **WDJT** — Daystar - Toledo (WDJT) | Market: Toledo | Daystar | 2016-08-07–2016-12-15 | Ended 2016-12-15\n- **WESH** — NBC - Daytona Beach (WESH) | Market: Daytona Beach | NBC | 2016-01-06–2016-03-23 | Ended 2016-03-23\n- **WETA** — PBS - Washington DC (WETA) | Market: Washington DC | PBS | 2009-07-02–2013-11-15 | Ended 2013-11-15\n- **WEWS** — ABC - Cleveland (WEWS) | Market: Cleveland | ABC | 2016-01-06–2016-12-02 | Ended 2016-12-02\n- **WFDC** — Univision - Arlington Virginia (WFDC) | Market: Arlington Virginia | Univision | 2009-07-02–2013-11-15 | Ended 2013-11-15\n- **WFLA** — NBC - Tampa (WFLA) | Market: Tampa | NBC | 2016-01-06–2016-12-02 | Ended 2016-12-02\n- **WFOR** — CBS - Miami (WFOR) | Market: Miami | CBS | 2016-01-06–2016-03-23 | Ended 2016-03-23\n- **WFTS** — ABC - Tampa (WFTS) | Market: Tampa | ABC | 2016-01-06–2016-12-02 | Ended 2016-12-02\n- **WFTV** — ABC - Orlando (WFTV) | Market: Orlando | ABC | 2016-01-06–2016-03-23 | Ended 2016-03-23\n- **WFXR** — FOX - Roanoke (WFXR) | Market: Roanoke | FOX | 2016-01-27–2016-03-01 | Ended 2016-03-01\n- **WFXT** — FOX - Boston (WFXT) | Market: Boston | FOX | 2015-10-02–2016-12-02 | Ended 2016-12-02\n- **WGN** — CW - Chicago (WGN) | Market: Chicago | CW | 2010-06-13–2015-05-06 | Ended 2015-05-06\n- **WHDH** — NBC - Boston (WHDH) | Market: Boston | NBC | 2015-10-02–2016-12-02 | Ended 2016-12-02\n- **WHNS** — FOX - Greenville (WHNS) | Market: Greenville | FOX | 2015-12-28–2016-03-02 | Ended 2016-03-02\n- **WHO** — NBC - Des Moines (WHO) | Market: Des Moines | NBC | 2015-10-14–2016-03-02 | Ended 2016-03-02\n- **WHUT** — PBS - Washington DC (WHUT) | Market: Washington DC | PBS | 2009-07-02–2013-11-15 | Ended 2013-11-15\n- **WHYY** — PBS - Philadelphia (WHYY) | Market: Philadelphia | PBS | 2014-06-06–2015-01-25 | Ended 2015-01-25\n- **WIS** — NBC - Columbia (WIS) | Market: Columbia | NBC | 2015-12-28–2016-03-02 | Ended 2016-03-02\n- **WISN** — ABC - Milwaukee (WISN) | Market: Milwaukee | ABC | 2016-08-07–2016-12-15 | Ended 2016-12-15\n- **WITI** — FOX - Milwaukee (WITI) | Market: Milwaukee | FOX | 2016-08-08–2016-12-15 | Ended 2016-12-15\n- **WJLA** — ABC - Washington DC (WJLA) | Market: Washington DC | ABC | 2009-07-02–2019-09-20 | Ended 2019-09-20\n- **WJW** — FOX - Cleveland (WJW) | Market: Cleveland | FOX | 2016-01-06–2016-12-02 | Ended 2016-12-02\n- **WJZ** — CBS - Baltimore (WJZ) | Market: Baltimore | CBS | 2009-07-02–2013-11-15 | Ended 2013-11-15\n- **WJZY** — FOX - Belmont (WJZY) | Market: Belmont | FOX | 2016-02-09–2016-03-22 | Ended 2016-03-22\n- **WKMG** — CBS - Orlando (WKMG) | Market: Orlando | CBS | 2016-01-06–2016-03-23 | Ended 2016-03-23\n- **WKRC** — CBS - Cincinnati (WKRC) | Market: Cincinnati | CBS | 2016-01-06–2016-03-23 | Ended 2016-03-23\n- **WKYC** — NBC - Cleveland (WKYC) | Market: Cleveland | NBC | 2016-01-06–2016-12-02 | Ended 2016-12-02\n- **WLFL** — CW - Raleigh (WLFL) | Market: Raleigh | CW | 2016-08-06–2016-12-02 | Ended 2016-12-02\n- **WLOS** — ABC - Asheville (WLOS) | Market: Asheville | ABC | 2015-12-28–2016-03-02 | Ended 2016-03-02\n- **WLTX** — CBS - Columbia (WLTX) | Market: Columbia | CBS | 2015-12-28–2016-03-02 | Ended 2016-03-02\n- **WLWT** — NBC - Cincinnati (WLWT) | Market: Cincinnati | NBC | 2016-01-06–2016-03-23 | Ended 2016-03-23\n- **WMAR** — ABC - Baltimore (WMAR) | Market: Baltimore | ABC | 2009-07-02–2013-11-15 | Ended 2013-11-15\n- **WMPT** — PBS - Maryland (WMPT) | Market: Maryland | PBS | 2009-07-02–2013-11-15 | Ended 2013-11-15\n- **WMUR** — ABC - Boston (WMUR) | Market: Boston | ABC | 2015-09-30–2016-12-02 | Ended 2016-12-02\n- **WNBC** — NBC - New York City (WNBC) | Market: New York City | NBC | 2015-07-31–2016-08-23 | Ended 2016-08-23\n- **WNCN** — NBC - Goldsboro (WNCN) | Market: Goldsboro | NBC | 2016-01-13–2016-12-02 | Ended 2016-12-02\n- **WNUV** — CW - Baltimore (WNUV) | Market: Baltimore | CW | 2009-07-12–2013-11-10 | Ended 2013-11-10\n- **WNYW** — FOX - New York City (WNYW) | Market: New York City | FOX | 2015-07-31–2016-08-23 | Ended 2016-08-23\n- **WOFL** — FOX - Orlando (WOFL) | Market: Orlando | FOX | 2016-01-06–2016-03-23 | Ended 2016-03-23\n- **WOI** — ABC - Ames (WOI) | Market: Ames | ABC | 2015-10-14–2016-03-02 | Ended 2016-03-02\n- **WOIO** — CBS - Shaker Heights (WOIO) | Market: Shaker Heights | CBS | 2016-01-06–2016-12-02 | Ended 2016-12-02\n- **WOLO** — ABC - Columbia (WOLO) | Market: Columbia | ABC | 2015-12-28–2016-03-02 | Ended 2016-03-02\n- **WPHL** — MyNetworkTV - Philadelphia (WPHL) | Market: Philadelphia | MyNetworkTV | 2014-09-04–2015-01-26 | Ended 2015-01-26\n- **WPLG** — ABC - Miami (WPLG) | Market: Miami | ABC | 2016-01-06–2016-03-23 | Ended 2016-03-23\n- **WPSG** — CW - Philadelphia (WPSG) | Market: Philadelphia | CW | 2014-09-04–2015-01-26 | Ended 2015-01-26\n- **WPVI** — ABC - Philadelphia (WPVI) | Market: Philadelphia | ABC | 2014-06-06–2018-03-08 | Ended 2018-03-08\n- **WQAW** — Azteca - Lake Shore Maryland (WQAW) | Market: Lake Shore Maryland | Azteca | 2013-02-07–2013-11-15 | Ended 2013-11-15\n- **WRAL** — CBS - Raleigh (WRAL) | Market: Raleigh | CBS | 2016-01-13–2016-12-02 | Ended 2016-12-02\n- **WRAZ** — FOX - Raleigh (WRAZ) | Market: Raleigh | FOX | 2016-01-13–2016-12-02 | Ended 2016-12-02\n- **WRC** — NBC - Washington DC (WRC) | Market: Washington DC | NBC | 2009-07-02–2019-07-31 | Ended 2019-07-31\n- **WSET** — ABC - Lynchburg (WSET) | Market: Lynchburg | ABC | 2016-01-26–2016-03-01 | Ended 2016-03-01\n- **WSLS** — NBC - Roanoke (WSLS) | Market: Roanoke | NBC | 2016-01-26–2016-03-01 | Ended 2016-03-01\n- **WSOC** — ABC - Charlotte (WSOC) | Market: Charlotte | ABC | 2016-02-09–2016-03-23 | Ended 2016-03-23\n- **WSPA** — CBS - Spartanburg (WSPA) | Market: Spartanburg | CBS | 2015-12-28–2016-03-02 | Ended 2016-03-02\n- **WSVN** — FOX - Miami (WSVN) | Market: Miami | FOX | 2016-01-07–2016-03-23 | Ended 2016-03-23\n- **WTKR** — CBS - Norfolk (WTKR) | Market: Norfolk | CBS | 2016-01-06–2016-03-09 | Ended 2016-03-09\n- **WTMJ** — NBC - Milwaukee (WTMJ) | Market: Milwaukee | NBC | 2016-08-07–2016-12-15 | Ended 2016-12-15\n- **WTSP** — CBS - St. Petersburg (WTSP) | Market: St. Petersburg | CBS | 2016-01-06–2016-12-02 | Ended 2016-12-02\n- **WTTG** — FOX - Washington DC (WTTG) | Market: Washington DC | FOX | 2009-07-03–2019-09-25 | Ended 2019-09-25\n- **WTVD** — ABC - Durham (WTVD) | Market: Durham | ABC | 2016-01-13–2016-03-23 | Ended 2016-03-23\n- **WTVJ** — NBC - Miami (WTVJ) | Market: Miami | NBC | 2016-01-06–2016-03-23 | Ended 2016-03-23\n- **WTVT** — FOX - Tampa (WTVT) | Market: Tampa | FOX | 2016-01-06–2016-12-02 | Ended 2016-12-02\n- **WTXF** — FOX - Philadelphia (WTXF) | Market: Philadelphia | FOX | 2014-06-06–2018-03-08 | Ended 2018-03-08\n- **WUSA** — CBS - Washington DC (WUSA) | Market: Washington DC | CBS | 2009-07-02–2019-09-18 | Ended 2019-09-18\n- **WUVP** — Univision - Philadelphia (WUVP) | Market: Philadelphia | Univision | 2014-06-08–2018-03-08 | Ended 2018-03-08\n- **WVBT** — FOX - Virginia Beach (WVBT) | Market: Virginia Beach | FOX | 2016-01-07–2016-03-08 | Ended 2016-03-08\n- **WVEC** — ABC - Hampton (WVEC) | Market: Hampton | ABC | 2016-01-06–2016-03-09 | Ended 2016-03-09\n- **WXIX** — FOX - Newport KY (WXIX) | Market: Newport KY | FOX | 2016-01-06–2016-03-23 | Ended 2016-03-23\n- **WYFF** — NBC - Greenville (WYFF) | Market: Greenville | NBC | 2015-12-28–2016-03-02 | Ended 2016-03-02\n- **WZDC** — Telemundo - Washington DC (WZDC) | Market: Washington DC | Telemundo | 2011-04-04–2013-11-14 | Ended 2013-11-14"
+}

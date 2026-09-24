@@ -1,13 +1,13 @@
 /**
  * @fileoverview Shared date-range handling for the GDELT tools that accept an explicit
  * startDatetime/endDatetime window — the YYYYMMDDHHMMSS field pattern, the both-or-neither
- * pairing predicate, and the window partitioning the record-cap tools hand back as a
- * continuation contract.
+ * pairing predicate, record timestamps against a window, and the window partitioning and
+ * resume boundary the record-list tools hand back as a continuation contract.
  * @module mcp-server/tools/date-range
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
-import { resolveTimespan } from '@/services/gdelt/gdelt-fetch.js';
+import { formatDateShort, resolveTimespan } from '@/services/gdelt/gdelt-fetch.js';
 
 /**
  * GDELT's datetime wire format: exactly 14 digits, YYYYMMDDHHMMSS, no separators.
@@ -97,6 +97,23 @@ export function resolveEffectiveWindow(args: {
 }
 
 /**
+ * The ` Timespan "…" resolved to <start> – <end>.` sentence an empty-result notice carries when
+ * a call ran on a relative timespan, so the caller sees which dates it actually covered; `''`
+ * when an explicit window was pinned or the timespan does not parse.
+ */
+export function describeResolvedTimespan(args: {
+  timespan?: string | undefined;
+  startDatetime?: string | undefined;
+  endDatetime?: string | undefined;
+}): string {
+  if (!args.timespan || args.startDatetime || args.endDatetime) return '';
+  const range = resolveTimespan(args.timespan);
+  return range
+    ? ` Timespan "${args.timespan}" resolved to ${formatDateShort(range.start)} – ${formatDateShort(range.end)}.`
+    : '';
+}
+
+/**
  * Smallest span that still divides into two strictly-narrower halves. The second half
  * reaches back a second to cover the seam, so it costs `span - floor(span/2) + 1`
  * seconds — only under four does that stop shrinking.
@@ -141,7 +158,8 @@ export type WindowContinuation = {
 };
 
 /**
- * How a caller retrieves records left behind once `maxRecords` is already at its ceiling.
+ * How a caller retrieves records left behind once `maxRecords` is already at its ceiling, or
+ * once a page under a sort with no resume point is cut to the response byte budget.
  *
  * GDELT exposes no offset or cursor, so narrowing the time window is the only lever, and
  * each outcome is stated rather than implied: halves to re-query when the window divides,
@@ -164,7 +182,7 @@ export function planWindowContinuation(window: GdeltWindow | undefined): WindowC
     return {
       guidance:
         `The window ${window.startDatetime}–${window.endDatetime} is already too narrow to divide at GDELT's ` +
-        'one-second resolution, so the records past this cap are not retrievable through this API.',
+        'one-second resolution, so the remaining records are not retrievable through this API.',
     };
   }
 
@@ -174,10 +192,195 @@ export function planWindowContinuation(window: GdeltWindow | undefined): WindowC
     guidance:
       'GDELT exposes no offset or cursor. Re-run this query unchanged against each half of the current window — ' +
       `${first.startDatetime}–${first.endDatetime}, then ${second.startDatetime}–${second.endDatetime} ` +
-      '(both echoed in continuationWindows) — and split a half again if it also hits the cap. ' +
+      '(both echoed in continuationWindows) — and split a half again if it also hits the cap or comes back cut. ' +
       'The halves overlap by one second so nothing falls through the seam, so a record on that second can ' +
       'appear in both: de-duplicate on re-assembly.',
   };
+}
+
+/**
+ * One clock hour. Measured live against GDELT TV: a `startdatetime`/`enddatetime` window is
+ * answered on clip air time from `floor_hour(start)` through the end of `enddatetime`'s hour,
+ * and a window spanning under 30 minutes is rejected ("Timespan is too short." — 20 minutes
+ * rejected, 30 accepted).
+ */
+const HOUR_MS = 3_600_000;
+
+/**
+ * The window to send GDELT TV for a caller's window: the start floored to the clock hour and
+ * the end kept, or stretched to the end of that first hour when the window is shorter. GDELT
+ * answers the same whole hours either way — this never adds an hour the caller's window does
+ * not reach — but the widened span is one GDELT accepts, so a window of any width works. The
+ * caller's exact window is what the out-of-window drop then keeps.
+ *
+ * An end exactly on the clock hour is sent one second earlier: sent as is, it would have GDELT
+ * answer that whole next hour for the window's one final second, spending maxRecords on clips
+ * the drop then discards. That final second is left out — as GDELT documents ENDDATETIME, the
+ * end is exclusive there.
+ */
+export function tvRequestWindow(window: GdeltWindow): GdeltWindow {
+  const start = Math.floor(parseGdeltDatetime(window.startDatetime).getTime() / HOUR_MS) * HOUR_MS;
+  const end = Math.max(lastTvSecond(window), start + HOUR_MS - GDELT_RESOLUTION_MS);
+  return {
+    startDatetime: toGdeltDatetime(new Date(start)),
+    endDatetime: toGdeltDatetime(new Date(end)),
+  };
+}
+
+/** The last second of a window GDELT TV is asked for: its end, or a second before an on-the-hour end. */
+function lastTvSecond(window: GdeltWindow): number {
+  const end = parseGdeltDatetime(window.endDatetime).getTime();
+  return end % HOUR_MS === 0 ? end - GDELT_RESOLUTION_MS : end;
+}
+
+/** Whether GDELT capped the page that needs a continuation, and against which limit. */
+export type TvCap = 'none' | 'below-ceiling' | 'at-ceiling';
+
+/**
+ * The TV counterpart of {@link planWindowContinuation}. GDELT TV answers whole clock hours and
+ * the handler trims its answer to the requested window, so halves need no overlapping second:
+ * they share no second and cover the window exactly.
+ *
+ * The split falls on the clock hour nearest the middle whenever one lies inside the window,
+ * which gives the two halves disjoint hour sets — the split that helps when the cap left
+ * records behind, since any window inside one hour fetches that same capped hour. Inside a
+ * single hour a page cut to the byte budget still splits at the second: its withheld clips were
+ * fetched and each half fetches the hour again and keeps its own seconds. When that page was
+ * also capped, only clips past the cap stay out of reach — a higher maxRecords reaches them
+ * below the 3000 ceiling, nothing does at it. An uncut page capped at the ceiling with no hour
+ * inside has nothing a narrower window can add.
+ */
+export function planTvWindowContinuation(
+  window: GdeltWindow | undefined,
+  { cut, cap }: { cut: boolean; cap: TvCap },
+): WindowContinuation {
+  if (!window) return planWindowContinuation(undefined);
+
+  const start = parseGdeltDatetime(window.startDatetime).getTime();
+  const end = parseGdeltDatetime(window.endDatetime).getTime();
+  const middle = start + (end - start) / 2;
+  const hourInside = [Math.floor(middle / HOUR_MS), Math.ceil(middle / HOUR_MS)]
+    .map((hour) => hour * HOUR_MS)
+    .filter((boundary) => boundary > start + GDELT_RESOLUTION_MS && boundary < end)
+    .sort((a, b) => Math.abs(a - middle) - Math.abs(b - middle))[0];
+
+  let windows: [GdeltWindow, GdeltWindow] | undefined;
+  let capNote = '';
+  if (hourInside !== undefined) {
+    windows = [
+      {
+        startDatetime: window.startDatetime,
+        endDatetime: toGdeltDatetime(new Date(hourInside - GDELT_RESOLUTION_MS)),
+      },
+      { startDatetime: toGdeltDatetime(new Date(hourInside)), endDatetime: window.endDatetime },
+    ];
+  } else if (!cut) {
+    return {
+      guidance:
+        `No clock hour falls inside the window ${window.startDatetime}–${window.endDatetime}, and the TV API ` +
+        'answers in whole clock hours, so every narrower window inside it fetches the same capped set — the ' +
+        'remaining clips are not retrievable through this API.',
+    };
+  } else if (end - start >= MIN_TV_SPLITTABLE_MS) {
+    capNote =
+      cap === 'below-ceiling'
+        ? ' GDELT stopped at maxRecords within this hour, so clips past that cap are out of reach of any ' +
+          'narrower window.'
+        : cap === 'at-ceiling'
+          ? ' GDELT stopped at 3000 within this hour, so more clips matched upstream than any window inside ' +
+            'this hour can fetch.'
+          : '';
+    const midpoint =
+      start + Math.floor((end - start) / 2 / GDELT_RESOLUTION_MS) * GDELT_RESOLUTION_MS;
+    windows = [
+      { startDatetime: window.startDatetime, endDatetime: toGdeltDatetime(new Date(midpoint)) },
+      {
+        startDatetime: toGdeltDatetime(new Date(midpoint + GDELT_RESOLUTION_MS)),
+        endDatetime: window.endDatetime,
+      },
+    ];
+  } else {
+    return {
+      guidance:
+        `The window ${window.startDatetime}–${window.endDatetime} is already too narrow to divide at one-second ` +
+        'resolution, so the remaining clips are not retrievable through this API.',
+    };
+  }
+
+  const [first, second] = windows;
+  return {
+    windows,
+    guidance:
+      'GDELT exposes no offset or cursor. Re-run this query unchanged against each half of the current window — ' +
+      `${first.startDatetime}–${first.endDatetime}, then ${second.startDatetime}–${second.endDatetime} ` +
+      '(both echoed in continuationWindows) — and split a half again if it also hits the cap or comes back cut. ' +
+      'The TV API answers in whole clock hours and each response keeps only its own window, so the halves ' +
+      `share no second and no clip.${capNote}`,
+  };
+}
+
+/** Narrowest window split into two non-empty, second-disjoint halves: `[s, s+1]` and `[s+2, s+3]`. */
+const MIN_TV_SPLITTABLE_MS = 3 * GDELT_RESOLUTION_MS;
+
+/** Sort orders whose last emitted record is a point a follow-up window can resume from. */
+export type DateSort = 'dateDesc' | 'dateAsc';
+
+/**
+ * The boundary that resumes a date-sorted run after the last record a response emitted: under
+ * `dateDesc` an `endDatetime` one second past that record, under `dateAsc` a `startDatetime`
+ * one second before it. The other boundary stays whatever the caller's window had.
+ *
+ * Reaching one second past the record keeps it inside the resumed window under GDELT's
+ * documented exclusive boundaries, so records that share its second — and were cut — are
+ * returned again rather than skipped. Records from that second the response already emitted
+ * come back too, so callers de-duplicate on re-assembly.
+ */
+export function resumeBoundary(
+  sort: DateSort,
+  lastEmittedMs: number,
+): Pick<GdeltWindow, 'endDatetime'> | Pick<GdeltWindow, 'startDatetime'> {
+  return sort === 'dateDesc'
+    ? { endDatetime: toGdeltDatetime(new Date(lastEmittedMs + GDELT_RESOLUTION_MS)) }
+    : { startDatetime: toGdeltDatetime(new Date(lastEmittedMs - GDELT_RESOLUTION_MS)) };
+}
+
+/**
+ * The boundary that skips past the last emitted record's second: under `dateDesc` an
+ * `endDatetime` one second before it, under `dateAsc` a `startDatetime` one second after it.
+ * Offered when resuming at that second cannot make progress; records at the skipped second
+ * that the response did not emit are left behind.
+ */
+export function skipPastBoundary(
+  sort: DateSort,
+  lastEmittedMs: number,
+): Pick<GdeltWindow, 'endDatetime'> | Pick<GdeltWindow, 'startDatetime'> {
+  return sort === 'dateDesc'
+    ? { endDatetime: toGdeltDatetime(new Date(lastEmittedMs - GDELT_RESOLUTION_MS)) }
+    : { startDatetime: toGdeltDatetime(new Date(lastEmittedMs + GDELT_RESOLUTION_MS)) };
+}
+
+/**
+ * Epoch milliseconds of a record timestamp — DOC's `seendate` (`20240115T120000Z`) or TV's ISO
+ * 8601 clip date (`2024-01-15T12:00:00Z`) — or `undefined` when it is neither.
+ */
+export function parseRecordTimestamp(value: string): number | undefined {
+  const match = /^(\d{4})-?(\d{2})-?(\d{2})T(\d{2}):?(\d{2}):?(\d{2})Z$/.exec(value);
+  if (!match) return;
+  const [, year, month, day, hour, minute, second] = match;
+  const ms = Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}Z`);
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
+/**
+ * True when `ms` falls inside `window`, boundaries included. Inclusive on purpose: GDELT
+ * documents exclusive boundaries, but a record on a boundary second is one the caller's
+ * window names, and dropping it would open a gap if the boundaries behave inclusively.
+ */
+export function isWithinWindow(window: GdeltWindow, ms: number): boolean {
+  return (
+    ms >= parseGdeltDatetime(window.startDatetime).getTime() &&
+    ms <= parseGdeltDatetime(window.endDatetime).getTime()
+  );
 }
 
 /**

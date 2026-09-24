@@ -3,10 +3,11 @@
  * @module tests/tools/get-coverage-breakdown.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetCoverageBreakdown } from '@/mcp-server/tools/definitions/get-coverage-breakdown.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
+import { contentText, literalHtml, renderMarkdown } from './markdown-render.js';
 
 const SERIES = [
   {
@@ -135,19 +136,66 @@ describe('gdeltGetCoverageBreakdown', () => {
     expect(result.otherAggregated).toBeUndefined();
   });
 
-  it('throws no_breakdown_data when service returns empty array', async () => {
-    vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
-      getBreakdown: vi.fn().mockResolvedValue([]),
-    } as unknown as docServiceModule.GdeltDocService);
+  describe('zero-match answer', () => {
+    beforeEach(() => {
+      mockBreakdown([]);
+    });
 
-    const ctx = createMockContext({ errors: gdeltGetCoverageBreakdown.errors });
-    const input = gdeltGetCoverageBreakdown.input.parse({
-      query: 'noresults',
+    it('returns an empty overview with echoes and a notice, omitting dateResolution', async () => {
+      const result = await runToolContract(gdeltGetCoverageBreakdown, {
+        query: 'noresults',
+        breakdownBy: 'language',
+        startDatetime: '20240101000000',
+        endDatetime: '20240131235959',
+      });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toEqual({
+        topSeries: [],
+        effectiveQuery: 'noresults',
+        breakdownBy: 'language',
+        totalCount: 0,
+        startDatetime: '20240101000000',
+        endDatetime: '20240131235959',
+        notice: expect.stringMatching(/No breakdown data for "noresults".*[Bb]roaden/),
+      });
+      const text = result.content.map((b) => (b as { text?: string }).text ?? '').join('\n');
+      expect(text).not.toContain('Date Resolution');
+      expect(text).not.toContain('Peak');
+      expect(text).toContain('No breakdown series returned.');
+    });
+
+    it('never turns an empty breakdown into unknown_series, and omits selectedSeries', async () => {
+      const result = await runToolContract(gdeltGetCoverageBreakdown, {
+        query: 'noresults',
+        breakdownBy: 'country',
+        series: ['Atlantis'],
+      });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).not.toHaveProperty('selectedSeries');
+      expect((result.structuredContent as { notice?: string }).notice).toContain('series');
+    });
+
+    it('no longer declares a no_breakdown_data contract entry', () => {
+      expect(gdeltGetCoverageBreakdown.errors?.map((e) => e.reason)).not.toContain(
+        'no_breakdown_data',
+      );
+    });
+
+    it('describes the empty case on the notice field', () => {
+      expect(gdeltGetCoverageBreakdown.enrichment?.notice?.description).not.toMatch(
+        /Absent on successful responses/,
+      );
+    });
+  });
+
+  it('omits dateResolution when a single timestep leaves it undeterminable', async () => {
+    mockBreakdown([{ label: 'English', data: [{ date: '2024-01-01', value: 1 }] }]);
+    const result = await runToolContract(gdeltGetCoverageBreakdown, {
+      query: 'x',
       breakdownBy: 'language',
     });
-    await expect(gdeltGetCoverageBreakdown.handler(input, ctx)).rejects.toMatchObject({
-      data: { reason: 'no_breakdown_data' },
-    });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).not.toHaveProperty('dateResolution');
   });
 
   it('formats output with series labels and peaks', () => {
@@ -351,6 +399,75 @@ describe('gdeltGetCoverageBreakdown', () => {
       }
       expect(text).toContain('Country10');
       expect(text).toContain('series:');
+    });
+  });
+
+  /**
+   * Series labels reach content[] as literal text — in headings and as the first text of a
+   * list item, where a leading marker would otherwise open a nested block — while
+   * structuredContent keeps every raw label.
+   */
+  describe('Markdown escaping at the content[] boundary', () => {
+    const point = (value: number) => [{ date: '2024-01-15', value }];
+    const HOSTILE_SERIES = [
+      { label: 'United *States*', data: point(20) },
+      ...Array.from({ length: 9 }, (_, i) => ({ label: `Country${i + 1}`, data: point(19 - i) })),
+      { label: '1. Rank', data: point(3) },
+      { label: '> quoted', data: point(2) },
+      { label: '- dash', data: point(1.5) },
+      { label: '[Portugal]', data: point(1) },
+    ];
+
+    it('renders plain upstream values byte-identically to the pre-escaping format()', () => {
+      const blocks = gdeltGetCoverageBreakdown.format!({
+        dateResolution: 'day',
+        topSeries: [{ label: 'United States', data: [{ date: '2024-01-15', value: 2 }] }],
+        otherAggregated: [{ date: '2024-01-15', value: 0.25 }],
+        otherSeriesLabels: ['Portugal', 'Viet Nam'],
+        selectedSeries: [{ label: 'Portugal', data: [{ date: '2024-01-15', value: 0.1 }] }],
+      });
+      expect((blocks[0] as { text: string }).text).toBe(
+        '## GDELT Coverage Breakdown\n**Date Resolution:** day\n**Values:** normalized — each ' +
+          "value is the topic's share of that source's media output, not an article count. Small " +
+          'media markets with concentrated coverage rank above large markets with diverse output.\n\n' +
+          '### United States (total: 2.00)\nData points: 1\nPeak: 2.000 at 2024-01-15\n' +
+          '- 2024-01-15: 2.000\n\n### Other\nTotal: 0.25\nPeak: 0.250 at 2024-01-15\n' +
+          '- 2024-01-15: 0.250\n\n### Series folded into "Other" (2)\nRanked by total volume. ' +
+          'Re-call with series: ["<label>"] to get any of them in full.\n- Portugal\n- Viet Nam\n\n' +
+          '## Selected Series (1)\nComplete series for the labels requested via the series input.\n\n' +
+          '### Portugal (total: 0.10)\nData points: 1\nPeak: 0.100 at 2024-01-15\n- 2024-01-15: 0.100',
+      );
+    });
+
+    it('escapes labels in headings and list items, and leaves structuredContent raw', async () => {
+      mockBreakdown(HOSTILE_SERIES);
+      const result = await runToolContract(gdeltGetCoverageBreakdown, {
+        query: 'x',
+        breakdownBy: 'country',
+        series: ['[Portugal]'],
+      });
+      const sc = result.structuredContent as {
+        topSeries: Array<{ label: string }>;
+        otherSeriesLabels: string[];
+        selectedSeries: Array<{ label: string }>;
+      };
+      expect(sc.topSeries[0]?.label).toBe('United *States*');
+      expect(sc.otherSeriesLabels).toEqual(['1. Rank', '> quoted', '- dash', '[Portugal]']);
+      expect(sc.selectedSeries[0]?.label).toBe('[Portugal]');
+
+      const text = (result.content[0] as { text: string }).text;
+      expect(text).toContain(String.raw`### United \*States\* (total: 20.00)`);
+      expect(text).toContain(
+        ['- 1\\. Rank', '- \\> quoted', '- \\- dash', '- \\[Portugal\\]'].join('\n'),
+      );
+      expect(text).toContain(String.raw`### \[Portugal\] (total: 1.00)`);
+
+      const html = renderMarkdown(contentText(result));
+      expect(html).toContain(`<h3>${literalHtml('United *States*')} (total: 20.00)</h3>`);
+      for (const label of sc.otherSeriesLabels) {
+        expect(html).toContain(`<li>${literalHtml(label)}</li>`);
+      }
+      expect(html).not.toMatch(/<(ol|blockquote|em)>|<li>\s*<ul>/);
     });
   });
 });

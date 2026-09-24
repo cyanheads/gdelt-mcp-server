@@ -1,7 +1,7 @@
 <div align="center">
   <h1>@cyanheads/gdelt-mcp-server</h1>
   <p><b>Search and analyze global news coverage and US television transcripts via the GDELT Project's real-time APIs via MCP. STDIO or Streamable HTTP.</b>
-  <div>9 Tools</div>
+  <div>8 Tools</div>
   </p>
 </div>
 
@@ -35,24 +35,26 @@ News and television coverage analysis from the GDELT Project's DOC and TV APIs �
 
 | Tool | Description |
 |:---|:---|
-| `gdelt_search_articles` | Search the last 3 months of global news coverage (65+ languages) with full-text and filter operators. Returns up to 250 articles, and hands back the date windows to re-query when that ceiling is hit. |
+| `gdelt_search_articles` | Search the last 3 months of global news coverage (65+ languages) with full-text and filter operators. Fetches up to 250 articles, returns as many as fit a 48,000-byte response, and hands back the date windows to re-query for the rest. |
 | `gdelt_get_coverage_timeline` | Retrieve a time series of coverage volume or average tone for a query. `volume_with_articles` mode includes top articles per spike timestep, with `points` to render a timestep's full article list. |
 | `gdelt_get_tone_distribution` | Get a tone histogram (bins ~−30 to +30) showing whether coverage is uniformly negative, bimodal, or clustered near neutral. |
 | `gdelt_get_coverage_breakdown` | Break down coverage volume by source language or source country — a multi-series time series showing geographic propagation. Values are normalized shares of media output, not article counts. |
 | `gdelt_search_tv` | Search US television news closed captions (2009–Oct 2024) and return per-station airtime time series. |
-| `gdelt_get_tv_clips` | Retrieve up to 3,000 matching TV clips with transcript excerpts and Internet Archive viewing links, and the date windows to re-query when that ceiling is hit. |
+| `gdelt_get_tv_clips` | Retrieve matching TV clips with transcript excerpts and Internet Archive viewing links — up to 3,000 fetched, as many as fit a 48,000-byte response returned — and the date windows to re-query for the rest. |
 | `gdelt_get_tv_context` | Get the most frequent co-occurring words and phrases from TV clips matching a query. |
-| `gdelt_get_tv_trending` | Retrieve trending topics currently dominating US television news (updated every 15 minutes; no query required). |
-| `gdelt_list_tv_stations` | List all TV stations with market, network, and monitoring date ranges to verify station availability before querying. |
+| `gdelt_list_tv_stations` | List TV stations with market, network, and monitoring date ranges — all of them, or filtered by station ID, network, or market — to verify station availability before querying. |
 
 ## Capability reference
 
 ### `gdelt_search_articles` <sub>tool</sub>
 
 - Full GDELT query syntax: phrases, boolean OR, exclusion, filter operators (`sourcecountry:`, `sourcelang:`, `domain:`, `theme:`, `tone<`/`tone>`), proximity (`near20:`) and repetition (`repeat3:`)
-- Configurable sort (`relevance`, `dateDesc`, `dateAsc`, `toneDesc`, `toneAsc`, `hybridRel`) and result count, up to 250 per call
+- Configurable sort (`relevance`, `dateDesc`, `dateAsc`, `toneDesc`, `toneAsc`, `hybridRel`) and fetch count, up to 250 per call
 - Returns URL, title, publication date, domain, language, source country, and social image URL
-- 250 is a hard per-call ceiling, not a page size — GDELT exposes no cursor. At the ceiling, the response returns `continuationWindows`: the queried window halved and overlapping by a second so nothing falls through the seam; de-duplicate by `url`
+- Each response carries as many fetched articles as fit a 48,000-byte budget on each surface; the rest are counted in `withheldCount`, and the notice says how to reach them — never by raising `maxRecords`
+- `continuationWindows` on a page cut under `dateDesc`/`dateAsc` holds one window resuming from the last returned article — or skipping past its second when every returned article shares it; under the other sorts, and whenever `maxRecords` sits at its 250 ceiling, it holds the queried window halved and overlapping by a second so nothing falls through the seam. Articles on a boundary second can come back twice — de-duplicate by `url`
+- Articles GDELT returns from outside an explicit `startDatetime`/`endDatetime` window are dropped, and the notice counts them
+- 250 is a hard per-call ceiling, not a page size — GDELT exposes no cursor, so narrowing the date window is the only way past it
 
 ---
 
@@ -61,7 +63,7 @@ News and television coverage analysis from the GDELT Project's DOC and TV APIs �
 - Three modes: `volume` (normalized % per timestep), `volume_with_articles` (volume plus top articles per spike — signal detection in one call), `tone` (average sentiment per timestep)
 - Every article reference is always in `structuredContent`; the text surface renders the first 3 links per timestep beside that timestep's true count, and `points: ["<date>"]` renders named timesteps in full
 - Configurable smoothing (0–5 timesteps) and time range (`timespan`, or explicit `startDatetime`/`endDatetime`)
-- Date resolution (`15min`/`hour`/`day`) is inferred from the returned intervals
+- Date resolution (`15min`/`hour`/`day`) is inferred from the returned intervals, and omitted when fewer than two timesteps come back
 - A `points` date matching no timestep is rejected with the available timestep list, rather than silently ignored
 
 ---
@@ -96,9 +98,12 @@ News and television coverage analysis from the GDELT Project's DOC and TV APIs �
 
 ### `gdelt_get_tv_clips` <sub>tool</sub>
 
-- Up to 3,000 clips per call, sorted by relevance, date descending, or date ascending
+- Up to 3,000 clips fetched per call, sorted by relevance, date descending, or date ascending
 - Each clip: show name, station, air timestamp, 15-second transcript excerpt, direct Archive.org link, and optional thumbnail
-- 3,000 is a hard per-call ceiling, not a page size — GDELT exposes no cursor. At the ceiling, the response returns `continuationWindows`: the queried window halved and overlapping by a second; de-duplicate by `archiveUrl`
+- The TV API answers a window in whole clock hours (start floored to the hour, the end's hour included) and rejects one under 30 minutes, so the server requests whole hours — any window width works; an end exactly on the hour leaves out that final second — and drops clips dated outside an explicit `startDatetime`/`endDatetime` window, counting them in the notice (a `timespan` call drops nothing)
+- Each response carries as many in-window clips as fit a 48,000-byte budget on each surface; the rest are counted in `withheldCount`, and the notice says how to reach them. Below the 3,000 ceiling it says to continue at `maxRecords` 3,000, since each continuation request fetches whole hours and the clips outside its window take slots first
+- `continuationWindows` on a page cut under `dateDesc`/`dateAsc` holds one window resuming from the last returned clip (de-duplicate by `archiveUrl`) — or skipping past its second when every returned clip shares it; under `relevance`, and whenever `maxRecords` sits at its 3,000 ceiling, it holds the window split in two — on a clock hour when one falls inside it, otherwise at the second on a cut page — with the halves sharing no second
+- 3,000 is a hard per-call ceiling, not a page size — GDELT exposes no cursor, so narrowing the date window is the only way past it
 
 ---
 
@@ -110,17 +115,12 @@ News and television coverage analysis from the GDELT Project's DOC and TV APIs �
 
 ---
 
-### `gdelt_get_tv_trending` <sub>tool</sub>
-
-- No arguments — zero-input entry point for the current TV news cycle
-- Returns trending topics, keywords, and phrases across national networks, updated every 15 minutes
-- Reflects the frozen October 2024 TV archive, not a live feed
-
----
-
 ### `gdelt_list_tv_stations` <sub>tool</sub>
 
-- Returns every station with market, network, monitoring start date, and end date
+- Returns every station with market, network, monitoring start date, and end date — or only those matching the optional `stations`, `network`, and `market` filters
+- Filters match whole values case-insensitively and combine with AND (`network: "FOX"` does not match `FOXNEWS`); `activeCount` and `totalCount` count the returned stations
+- A filter that matches nothing returns an empty list with a notice naming it, and requested station IDs that match no station are named in the notice
+- The text surface groups stations as national (every `National*` market), international (`International`, `Japan`), and local/regional (US cities), each line naming its market
 - `isActive` is true when the end date is within the last 24 hours
 - Use to verify a station was active during a target time period, or to discover valid station IDs for the `stations` parameter on other TV tools
 
@@ -140,6 +140,7 @@ Agent-friendly output:
 - Discriminated series labels — timeline and breakdown responses carry typed `label` fields (`"Volume Intensity"`, `"Average Tone"`, language/country names) rather than positional arrays
 - Structured station metadata — `isActive` boolean and ISO 8601 date fields let agents reason about TV station availability without parsing date strings
 - Partial-coverage signals in distribution output — `neutralPct`, `peakNegativeBin`, `peakPositiveBin` summary fields let agents branch on sentiment without histogramming the raw bins themselves
+- Zero matches are a result, not an error — a query GDELT answers with nothing returns the normal output shape with empty arrays and a `notice` on how to broaden it; values that would have to be derived from returned data (`dateResolution`, `timeRange`, tone peaks, `neutralPct`) are omitted rather than defaulted
 
 ## Getting started
 
@@ -315,7 +316,7 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 |:----------|:--------|
 | `src/index.ts` | `createApp()` entry point — registers tools and inits services. |
 | `src/config` | Server-specific environment variable parsing and validation with Zod. |
-| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). Nine tools across DOC and TV APIs. |
+| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). Eight tools across DOC and TV APIs. |
 | `src/services/gdelt` | `GdeltDocService` and `GdeltTvService` wrapping the DOC and TV APIs, plus the shared outbound pacer every call queues behind. |
 | `tests/` | Unit and integration tests mirroring `src/`. |
 

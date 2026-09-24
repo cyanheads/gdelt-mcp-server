@@ -13,6 +13,7 @@ import {
   GDELT_DATETIME_PATTERN,
   gdeltDocTimespanSchema,
 } from '../date-range.js';
+import { escapeMarkdown } from '../markdown-escape.js';
 
 /** Maximum number of series to include before aggregating the rest into "Other". */
 const MAX_SERIES = 10;
@@ -51,12 +52,17 @@ function renderSeries(series: z.infer<typeof breakdownSeriesSchema>): string[] {
     series.data[0] ?? { date: '', value: 0 },
   );
   const lines = [
-    `\n### ${series.label} (total: ${total.toFixed(2)})`,
+    `\n### ${escapeMarkdown(series.label)} (total: ${total.toFixed(2)})`,
     `Data points: ${series.data.length}`,
   ];
-  if (peak.date) lines.push(`Peak: ${peak.value.toFixed(3)} at ${peak.date}`);
-  for (const d of series.data) lines.push(`- ${d.date}: ${d.value.toFixed(3)}`);
+  if (peak.date) lines.push(`Peak: ${peak.value.toFixed(3)} at ${escapeMarkdown(peak.date)}`);
+  for (const d of series.data) lines.push(renderPoint(d));
   return lines;
+}
+
+/** One `- date: value` list line; the upstream date is the list item's first text. */
+function renderPoint(point: { date: string; value: number }): string {
+  return `- ${escapeMarkdown(point.date, 'line-start')}: ${point.value.toFixed(3)}`;
 }
 
 export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
@@ -78,16 +84,9 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
 
   errors: [
     {
-      reason: 'no_breakdown_data',
-      code: JsonRpcErrorCode.NotFound,
-      when: 'No breakdown data returned for the query.',
-      recovery:
-        'Broaden the query, extend the timespan, or verify the query operators are correct.',
-    },
-    {
       reason: 'unknown_series',
       code: JsonRpcErrorCode.NotFound,
-      when: 'A label passed in the series input matches no series in this breakdown.',
+      when: 'A label passed in the series input matches no series in a non-empty breakdown.',
       recovery:
         'Read the labels listed in the error and retry series with exact matches from that list.',
     },
@@ -176,7 +175,11 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
   output: z.object({
     dateResolution: z
       .enum(['15min', 'hour', 'day'])
-      .describe('Temporal resolution of data points — 15min, hour, or day.'),
+      .optional()
+      .describe(
+        'Temporal resolution of data points — 15min, hour, or day — inferred from the spacing of the ' +
+          'returned timesteps. Omitted when fewer than two distinct timesteps came back.',
+      ),
     topSeries: z.array(breakdownSeriesSchema).describe('Top 10 series by total coverage volume.'),
     otherAggregated: z
       .array(
@@ -233,7 +236,8 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       .string()
       .optional()
       .describe(
-        'Recovery hint when no breakdown data was returned. Absent on successful responses.',
+        'Guidance when the query matched no coverage in the window — how to broaden the query or ' +
+          'extend the window. Absent when breakdown data was returned.',
       ),
   },
 
@@ -265,13 +269,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       ctx,
     );
 
-    if (allSeries.length === 0) {
-      throw ctx.fail('no_breakdown_data', `No breakdown data for "${input.query}"`, {
-        recovery: {
-          hint: `No breakdown data for "${input.query}". Try broadening the query or extending the time range.`,
-        },
-      });
-    }
+    const isEmpty = allSeries.every((s) => s.data.length === 0);
 
     // Sort by total volume descending, take top MAX_SERIES
     const sorted = allSeries
@@ -301,8 +299,9 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
 
     // Label selection re-filters the same complete upstream set the ranking sliced, so a
     // series named on a follow-up call reconstructs statelessly from query + dimension + label.
+    // An empty breakdown has no labels to name, so there a selection is moot, not wrong.
     const selectedSeries: Array<z.infer<typeof breakdownSeriesSchema>> = [];
-    if (input.series?.length) {
+    if (!isEmpty && input.series?.length) {
       const byLabel = new Map(allSeries.map((s) => [s.label, s]));
       const unknown: string[] = [];
       for (const label of input.series) {
@@ -334,6 +333,20 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       ...(input.endDatetime && { endDatetime: input.endDatetime }),
     });
 
+    // Every notice segment for this response accumulates here and is flushed once —
+    // ctx.enrich.notice is last-wins, so a second call would silently drop the first.
+    const notices: string[] = [];
+    if (isEmpty) {
+      notices.push(
+        `No breakdown data for "${input.query}". Broaden the query, extend the time window, or ` +
+          'verify the query operators are correct.',
+      );
+      if (input.series?.length) {
+        notices.push('The series input was not applied — this breakdown has no series.');
+      }
+    }
+    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
+
     ctx.log.info('gdelt_get_coverage_breakdown completed', {
       totalSeries: allSeries.length,
       topSeriesCount: topSeries.length,
@@ -341,7 +354,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
     });
 
     return {
-      dateResolution,
+      ...(dateResolution && { dateResolution }),
       topSeries,
       ...(otherAggregated ? { otherAggregated } : {}),
       ...(otherSeriesLabels ? { otherSeriesLabels } : {}),
@@ -355,13 +368,16 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
    * so a mutually-exclusive branch would leave the untaken arm unverified.
    */
   format: (result) => {
-    const lines: string[] = [
-      `## GDELT Coverage Breakdown`,
-      `**Date Resolution:** ${result.dateResolution}`,
+    const lines: string[] = [`## GDELT Coverage Breakdown`];
+    if (result.dateResolution) lines.push(`**Date Resolution:** ${result.dateResolution}`);
+    lines.push(
       `**Values:** normalized — each value is the topic's share of that source's media output, ` +
         `not an article count. Small media markets with concentrated coverage rank above large ` +
         `markets with diverse output.`,
-    ];
+    );
+    if (result.topSeries.every((s) => s.data.length === 0)) {
+      lines.push('No breakdown series returned.');
+    }
     for (const s of result.topSeries) lines.push(...renderSeries(s));
 
     if (result.otherAggregated) {
@@ -372,10 +388,10 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       );
       lines.push(`\n### Other`);
       lines.push(`Total: ${otherTotal.toFixed(2)}`);
-      if (otherPeak.date) lines.push(`Peak: ${otherPeak.value.toFixed(3)} at ${otherPeak.date}`);
-      for (const d of result.otherAggregated) {
-        lines.push(`- ${d.date}: ${d.value.toFixed(3)}`);
+      if (otherPeak.date) {
+        lines.push(`Peak: ${otherPeak.value.toFixed(3)} at ${escapeMarkdown(otherPeak.date)}`);
       }
+      for (const d of result.otherAggregated) lines.push(renderPoint(d));
     }
 
     if (result.otherSeriesLabels?.length) {
@@ -383,7 +399,9 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       lines.push(
         `Ranked by total volume. Re-call with series: ["<label>"] to get any of them in full.`,
       );
-      for (const label of result.otherSeriesLabels) lines.push(`- ${label}`);
+      for (const label of result.otherSeriesLabels) {
+        lines.push(`- ${escapeMarkdown(label, 'line-start')}`);
+      }
     }
 
     if (result.selectedSeries?.length) {
