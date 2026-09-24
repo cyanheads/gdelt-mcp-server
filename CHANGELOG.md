@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-09-24 · ⚠️ Breaking
+
+gdelt_get_tv_trending is retired and zero-match queries now succeed with a notice instead of a no_* error; upstream text is Markdown-escaped in content[], and article and clip pages fit a 48,000-byte budget with a continuation to the rest.
+
 ## [0.4.3](changelog/0.4.x/0.4.3.md) — 2026-09-22
 
 GDELT requests get a configurable per-request deadline bounding the whole call, the pacer now spaces from the previous response's completion instead of its start, and invalid TV stations and calendar-invalid or reversed date ranges are rejected with a proper contract instead of an opaque error.
