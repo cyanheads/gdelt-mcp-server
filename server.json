@@ -18,18 +18,8 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/gdelt-mcp-server",
-      "runtimeHint": "node",
+      "runtimeHint": "npx",
       "version": "0.6.0",
-      "packageArguments": [
-        {
-          "type": "positional",
-          "value": "run"
-        },
-        {
-          "type": "positional",
-          "value": "start:stdio"
-        }
-      ],
       "environmentVariables": [
         {
           "name": "GDELT_BASE_URL",
@@ -68,19 +58,15 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/gdelt-mcp-server",
-      "runtimeHint": "node",
+      "runtimeHint": "npx",
       "version": "0.6.0",
-      "packageArguments": [
-        {
-          "type": "positional",
-          "value": "run"
-        },
-        {
-          "type": "positional",
-          "value": "start:http"
-        }
-      ],
       "environmentVariables": [
+        {
+          "name": "MCP_TRANSPORT_TYPE",
+          "description": "Selects the HTTP transport.",
+          "format": "string",
+          "value": "http"
+        },
         {
           "name": "GDELT_BASE_URL",
           "description": "Override the base URL for the GDELT DOC and TV APIs.",
