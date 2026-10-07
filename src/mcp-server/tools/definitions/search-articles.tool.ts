@@ -226,7 +226,7 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
   async handler(input, ctx) {
     const dateRangeFault = describeDateRangeFault(input.startDatetime, input.endDatetime);
     if (dateRangeFault) {
-      throw ctx.fail('invalid_date_range', dateRangeFault, ctx.recoveryFor('invalid_date_range'));
+      throw ctx.fail('invalid_date_range', dateRangeFault);
     }
 
     ctx.log.info('gdelt_search_articles', { query: input.query });

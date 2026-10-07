@@ -246,7 +246,7 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
   async handler(input, ctx) {
     const dateRangeFault = describeDateRangeFault(input.startDatetime, input.endDatetime);
     if (dateRangeFault) {
-      throw ctx.fail('invalid_date_range', dateRangeFault, ctx.recoveryFor('invalid_date_range'));
+      throw ctx.fail('invalid_date_range', dateRangeFault);
     }
 
     ctx.log.info('gdelt_get_tv_clips', { query: input.query, maxRecords: input.maxRecords });

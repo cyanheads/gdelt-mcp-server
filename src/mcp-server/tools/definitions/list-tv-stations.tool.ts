@@ -149,7 +149,6 @@ export const gdeltListTvStations = tool('gdelt_list_tv_stations', {
       throw ctx.fail(
         'gdelt_unavailable',
         'GDELT TV station catalog came back empty — the endpoint may be temporarily unavailable.',
-        ctx.recoveryFor('gdelt_unavailable'),
       );
     }
 

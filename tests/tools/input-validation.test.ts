@@ -7,7 +7,7 @@
 
 import type { Context } from '@cyanheads/mcp-ts-core';
 import type { ErrorContract } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it } from 'vitest';
 import { gdeltGetCoverageBreakdown } from '@/mcp-server/tools/definitions/get-coverage-breakdown.tool.js';
 import { gdeltGetCoverageTimeline } from '@/mcp-server/tools/definitions/get-coverage-timeline.tool.js';
@@ -428,6 +428,15 @@ const IMPOSSIBLE_WINDOWS = [
 ] as const;
 
 /**
+ * Wire-level call: schema, handler, and the error envelope as a client gets it — including
+ * the declared `recovery` the framework fills onto a bare `ctx.fail(reason)`, which a direct
+ * `handler()` throw does not carry.
+ */
+function callWire(tool: DateRangeTool, input: Record<string, unknown>) {
+  return runToolContract(tool as unknown as Parameters<typeof runToolContract>[0], input as never);
+}
+
+/**
  * The handler guard runs before the service is resolved, so these cases need no service
  * mock: if the guard ever stops firing, the call falls through to an uninitialized-service
  * plain Error carrying no `data.reason`, and the assertions below fail rather than pass.
@@ -458,14 +467,21 @@ describe('date-range validity — enforced in the handler', () => {
       });
 
       it('names ordering in the recovery hint', async () => {
-        const ctx = createMockContext({ errors: tool.errors });
-        const input = tool.input.parse({
+        const result = await callWire(tool, {
           ...base,
           startDatetime: VALID_END,
           endDatetime: VALID_START,
         });
-        await expect(tool.handler(input, ctx)).rejects.toMatchObject({
-          data: { recovery: { hint: expect.stringMatching(/earlier than endDatetime/i) } },
+        expect(result).toMatchObject({
+          isError: true,
+          structuredContent: {
+            error: {
+              data: {
+                reason: 'invalid_date_range',
+                recovery: { hint: expect.stringMatching(/earlier than endDatetime/i) },
+              },
+            },
+          },
         });
       });
 
@@ -499,12 +515,17 @@ describe('date-range validity — enforced in the handler', () => {
       });
 
       it('surfaces a recovery hint naming both boundaries and the timespan fallback', async () => {
-        const ctx = createMockContext({ errors: tool.errors });
-        const input = tool.input.parse({ ...base, startDatetime: VALID_START });
-        await expect(tool.handler(input, ctx)).rejects.toMatchObject({
-          data: {
-            recovery: {
-              hint: expect.stringMatching(/startDatetime.*endDatetime.*timespan/s),
+        const result = await callWire(tool, { ...base, startDatetime: VALID_START });
+        expect(result).toMatchObject({
+          isError: true,
+          structuredContent: {
+            error: {
+              data: {
+                reason: 'invalid_date_range',
+                recovery: {
+                  hint: expect.stringMatching(/startDatetime.*endDatetime.*timespan/s),
+                },
+              },
             },
           },
         });

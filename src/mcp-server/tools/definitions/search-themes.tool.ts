@@ -138,7 +138,6 @@ export const gdeltSearchThemes = tool('gdelt_search_themes', {
       throw ctx.fail(
         'invalid_query',
         `Query "${input.query}" has no letter or digit to match against theme identifiers.`,
-        ctx.recoveryFor('invalid_query'),
       );
     }
 
