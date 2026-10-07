@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.6.1](changelog/0.6.x/0.6.1.md) — 2026-10-07
+
+Framework 0.13.13: tool error results carry a request ID and keep stack traces and root causes out of their data, and the Docker image installs its dependencies on the build platform.
+
 ## [0.6.0](changelog/0.6.x/0.6.0.md) — 2026-09-24
 
 New gdelt_search_themes tool finds GKG theme identifiers for the theme: operator the DOC tools accept, searching GDELT's theme lookup by identifier words.

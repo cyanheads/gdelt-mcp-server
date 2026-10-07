@@ -6,7 +6,7 @@
     "url": "https://github.com/cyanheads/gdelt-mcp-server",
     "source": "github"
   },
-  "version": "0.6.0",
+  "version": "0.6.1",
   "remotes": [
     {
       "type": "streamable-http",
@@ -19,7 +19,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/gdelt-mcp-server",
       "runtimeHint": "npx",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "environmentVariables": [
         {
           "name": "GDELT_BASE_URL",
@@ -59,7 +59,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/gdelt-mcp-server",
       "runtimeHint": "npx",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "environmentVariables": [
         {
           "name": "MCP_TRANSPORT_TYPE",
