@@ -145,8 +145,11 @@ describe('escapeMarkdown', () => {
 
   /**
    * One linear pass with bounded lookahead: the cost of the worst inputs grows with their
-   * length, never with its square. The span ratio leaves 4× headroom over linear (16×) and
-   * sits far below quadratic (256×).
+   * length, never with its square. Every timed sample escapes the same number of characters
+   * (one 80k value, four 20k, sixteen 5k), and the sizes alternate round by round, so
+   * preemption and GC pauses under a loaded suite land on every size alike; the fastest sample
+   * per size is its undisturbed cost. Linear keeps the per-character cost flat across each 4×
+   * step and quadratic quadruples it; the 2× bound sits between them.
    */
   it('stays linear on its worst cases', () => {
     const worstCases: Array<[string, (n: number) => string, MarkdownSlot]> = [
@@ -161,29 +164,27 @@ describe('escapeMarkdown', () => {
       ['dash run', (n) => `${'- '.repeat(n / 2 - 1)}-x`, 'line-start'],
     ];
     const SIZES = [5_000, 20_000, 80_000] as const;
-    const REPS = 20;
+    const CHARS_PER_SAMPLE = 80_000;
+    const ROUNDS = 12;
 
-    const timeOf = (value: string, slot: MarkdownSlot) => {
-      let best = Number.POSITIVE_INFINITY;
-      for (let trial = 0; trial < 5; trial++) {
-        const start = performance.now();
-        for (let r = 0; r < REPS; r++) escapeMarkdown(value, slot);
-        best = Math.min(best, (performance.now() - start) / REPS);
+    for (const [name, build, slot] of worstCases) {
+      const values = SIZES.map(build);
+      const fastest = SIZES.map(() => Number.POSITIVE_INFINITY);
+      for (let round = -1; round < ROUNDS; round++) {
+        for (const [k, size] of SIZES.entries()) {
+          const start = performance.now();
+          for (let r = 0; r < CHARS_PER_SAMPLE / size; r++)
+            escapeMarkdown(values[k] as string, slot);
+          const msPerChar = (performance.now() - start) / CHARS_PER_SAMPLE;
+          if (round >= 0) fastest[k] = Math.min(fastest[k] as number, msPerChar); // round -1 warms up
+        }
       }
-      return best;
-    };
-
-    for (const [, build, slot] of worstCases) {
-      escapeMarkdown(build(SIZES[0]), slot); // warm up
-      const [t5k, , t80k] = SIZES.map((size) => timeOf(build(size), slot)) as [
-        number,
-        number,
-        number,
-      ];
-      expect(t80k / Math.max(t5k, 0.01)).toBeLessThan(64);
-      expect(t80k).toBeLessThan(25);
+      const [c5k, c20k, c80k] = fastest as [number, number, number];
+      expect(c80k / c20k, `${name}: per-char cost, 20k → 80k`).toBeLessThan(2);
+      expect(c20k / c5k, `${name}: per-char cost, 5k → 20k`).toBeLessThan(2);
+      expect(c80k * 80_000, `${name}: ms per 80k call`).toBeLessThan(25);
     }
-  });
+  }, 30_000);
 
   it('escapes an 80,000-character nested value and an unclosed < exactly, and they render literally', () => {
     const nested = `${'<a'.repeat(20_000)}${'>'.repeat(40_000)}`;
