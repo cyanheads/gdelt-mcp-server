@@ -198,11 +198,11 @@ function declareTimeoutAsUnavailable(error: unknown): never {
  * reaching a caller is a broken contract. `retryable: false` matches the contract entry and
  * keeps {@link withRetry} from replaying a request the queue has no room for.
  *
- * The shed's own `retryAfter` is projected against the queue as it stands at the shed instant,
- * which is empty whenever the single in-flight slot rather than the cooldown gate was the real
- * constraint — so a caller that waited out its whole budget is handed a 0. `waitedMs` is that
- * caller's measured wait; when the projection has nothing to say, the message reports what the
- * request actually endured and the hint falls back to the configured request gap.
+ * The shed's own `retryAfter` is projected against the queue as it stands at the shed instant.
+ * While the single in-flight slot is held, the pacer floors it at the longest queued wait; with
+ * the slot free it can still project 0. `waitedMs` is the caller's measured wait; when the
+ * projection has nothing to say, the message reports what the request actually endured and the
+ * hint falls back to the configured request gap.
  */
 function declareShedAsRateLimited(error: unknown, waitedMs: number): never {
   if (!(error instanceof McpError) || error.data?.reason !== 'pacer_shed') throw error;

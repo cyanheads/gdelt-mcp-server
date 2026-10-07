@@ -364,7 +364,8 @@ describe('framework error envelope as a caller receives it', () => {
   });
 
   it('rejects out-of-schema arguments as InvalidParams with a recovery line', async () => {
-    const result = await callWithRawArguments({ query: 42 });
+    // A boolean, not a number: an integer sent for a string is repaired to its digits.
+    const result = await callWithRawArguments({ query: true });
     expect(result).toMatchObject({
       isError: true,
       structuredContent: {

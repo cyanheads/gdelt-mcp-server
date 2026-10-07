@@ -273,12 +273,11 @@ describe('gdeltFetch pacing', () => {
   });
 
   /**
-   * The pacer projects `retryAfter` against the queue as it stands at the shed instant, which
-   * is empty whenever `maxConcurrent` rather than the gate was the real constraint — so a
-   * caller that waited out its entire budget is told to retry in 0s. The measured wait is the
-   * number that caller can act on.
+   * When `maxConcurrent` rather than the gate is the real constraint, the pacer floors
+   * `retryAfter` at the longest queued wait — the shed caller's own included — so a caller
+   * that waited out its entire budget is told to wait that long, never 0s.
    */
-  it('reports the wait it actually endured when the pacer projects none', async () => {
+  it('reports the queued wait when the in-flight slot, not the gate, held the caller', async () => {
     disposeGdeltPacer();
     initGdeltPacer(SHORT_GAP_MS);
     mockedFetch.mockImplementation(
@@ -296,13 +295,17 @@ describe('gdeltFetch pacing', () => {
 
     expect(error.code).toBe(JsonRpcErrorCode.RateLimited);
     expect(error.message).toMatch(
-      new RegExp(`no slot opened in the ${GDELT_MAX_QUEUE_WAIT_MS / 1000}s this request waited`),
+      new RegExp(`no slot opens within ${GDELT_MAX_QUEUE_WAIT_MS / 1000}s`),
     );
     expect(error.data).toMatchObject({
       reason: 'gdelt_rate_limited',
       retryable: false,
-      retryAfter: 0,
-      recovery: { hint: expect.stringMatching(/wait about \d+ seconds/i) },
+      retryAfter: GDELT_MAX_QUEUE_WAIT_MS / 1000,
+      recovery: {
+        hint: expect.stringMatching(
+          new RegExp(`wait about ${GDELT_MAX_QUEUE_WAIT_MS / 1000} seconds`, 'i'),
+        ),
+      },
     });
 
     await vi.runAllTimersAsync();
