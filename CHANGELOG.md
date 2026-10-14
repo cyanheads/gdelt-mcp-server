@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.0](changelog/0.7.x/0.7.0.md) — 2026-10-14 · ⚠️ Breaking
+
+Breaking: the three DOC analytics tools page by offset within a 48,000-byte response and keep 3 article links per unit beside a true count; coverage breakdown drops the summed Other series; TV series and clips carry station IDs beside stationName; oversized limits run at the cap and report it; caller text in notices is quoted.
+
 ## [0.6.1](changelog/0.6.x/0.6.1.md) — 2026-10-07
 
 Framework 0.13.13: tool error results carry a request ID and keep stack traces and root causes out of their data, and the Docker image installs its dependencies on the build platform.
