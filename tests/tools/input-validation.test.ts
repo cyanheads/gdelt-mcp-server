@@ -1,12 +1,13 @@
 /**
  * @fileoverview Input validation tests for all tool schemas. Verifies that missing,
  * malformed, and out-of-range inputs are rejected by the Zod schemas before handlers run,
- * plus the cross-field date-range pairing rule the handlers enforce on top.
+ * that count inputs admit their clamp band past the per-call cap, plus the cross-field
+ * date-range pairing rule the handlers enforce on top.
  * @module tests/tools/input-validation.test
  */
 
 import type { Context } from '@cyanheads/mcp-ts-core';
-import type { ErrorContract } from '@cyanheads/mcp-ts-core/errors';
+import { type ErrorContract, JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it } from 'vitest';
 import { gdeltGetCoverageBreakdown } from '@/mcp-server/tools/definitions/get-coverage-breakdown.tool.js';
@@ -16,6 +17,7 @@ import { gdeltGetTvClips } from '@/mcp-server/tools/definitions/get-tv-clips.too
 import { gdeltGetTvContext } from '@/mcp-server/tools/definitions/get-tv-context.tool.js';
 import { gdeltListTvStations } from '@/mcp-server/tools/definitions/list-tv-stations.tool.js';
 import { gdeltSearchArticles } from '@/mcp-server/tools/definitions/search-articles.tool.js';
+import { gdeltSearchThemes } from '@/mcp-server/tools/definitions/search-themes.tool.js';
 import { gdeltSearchTv } from '@/mcp-server/tools/definitions/search-tv.tool.js';
 
 describe('gdeltSearchArticles input validation', () => {
@@ -25,10 +27,6 @@ describe('gdeltSearchArticles input validation', () => {
 
   it('rejects maxRecords below 1', () => {
     expect(() => gdeltSearchArticles.input.parse({ query: 'test', maxRecords: 0 })).toThrow();
-  });
-
-  it('rejects maxRecords above 250', () => {
-    expect(() => gdeltSearchArticles.input.parse({ query: 'test', maxRecords: 251 })).toThrow();
   });
 
   it('rejects non-integer maxRecords', () => {
@@ -172,19 +170,115 @@ describe('gdeltGetTvClips input validation', () => {
 
 /**
  * The byte budget bounds what a response carries, not what a call may fetch: both record-list
- * tools keep their full maxRecords range and defaults.
+ * tools keep their full maxRecords range. The clamp band past the ceiling, the hard ceiling,
+ * and the defaults are pinned by the count-input table below.
  */
 describe('maxRecords ranges under the response byte budget', () => {
   it.each([
-    ['gdelt_search_articles', gdeltSearchArticles, 250, 75],
-    ['gdelt_get_tv_clips', gdeltGetTvClips, 3000, 50],
-  ] as const)('%s accepts 1 through %i and defaults to %i', (_, tool, ceiling, fallback) => {
+    ['gdelt_search_articles', gdeltSearchArticles, 250],
+    ['gdelt_get_tv_clips', gdeltGetTvClips, 3000],
+  ] as const)('%s accepts 1 through its ceiling', (_, tool, ceiling) => {
     expect(tool.input.parse({ query: 'test', maxRecords: 1 }).maxRecords).toBe(1);
     expect(tool.input.parse({ query: 'test', maxRecords: ceiling }).maxRecords).toBe(ceiling);
-    expect(() => tool.input.parse({ query: 'test', maxRecords: ceiling + 1 })).toThrow();
-    expect(tool.input.parse({ query: 'test' }).maxRecords).toBe(fallback);
   });
 });
+
+/** The slice of a tool definition `runToolContract` takes, erased across the four tools. */
+type CountTool = Parameters<typeof runToolContract>[0];
+
+/**
+ * Every count input with a per-call cap: past the cap, up to ten times it, a call runs at the
+ * cap (pinned per tool in its own test file); past ten times it, the call is rejected. These run
+ * through `runToolContract`, which parses arguments as the production handler factory does —
+ * input repair included — and every case here is rejected before a handler runs, so no
+ * upstream stub is needed.
+ */
+const CLAMPED_COUNT_INPUTS: ReadonlyArray<{
+  name: string;
+  tool: CountTool;
+  parameter: 'maxRecords' | 'limit';
+  cap: number;
+  fallback: number;
+  base: Record<string, unknown>;
+}> = [
+  {
+    name: 'gdelt_search_articles',
+    tool: gdeltSearchArticles as unknown as CountTool,
+    parameter: 'maxRecords',
+    cap: 250,
+    fallback: 75,
+    base: { query: 'test' },
+  },
+  {
+    name: 'gdelt_get_tv_clips',
+    tool: gdeltGetTvClips as unknown as CountTool,
+    parameter: 'maxRecords',
+    cap: 3000,
+    fallback: 50,
+    base: { query: 'test', stations: ['CNN'] },
+  },
+  {
+    name: 'gdelt_search_tv',
+    tool: gdeltSearchTv as unknown as CountTool,
+    parameter: 'limit',
+    cap: 500,
+    fallback: 500,
+    base: { query: 'test', stations: ['CNN'] },
+  },
+  {
+    name: 'gdelt_search_themes',
+    tool: gdeltSearchThemes as unknown as CountTool,
+    parameter: 'limit',
+    cap: 100,
+    fallback: 25,
+    base: { query: 'drought' },
+  },
+];
+
+describe.each(CLAMPED_COUNT_INPUTS)(
+  '$name $parameter — clamp band and hard ceiling',
+  ({ tool, parameter, cap, fallback, base }) => {
+    const parse = (value: unknown) =>
+      (tool.input as unknown as { parse: (v: unknown) => Record<string, unknown> }).parse({
+        ...base,
+        ...(value !== undefined && { [parameter]: value }),
+      });
+    const call = (value: unknown) =>
+      runToolContract(tool, { ...base, [parameter]: value } as never);
+    const textOf = (result: Awaited<ReturnType<typeof call>>) =>
+      result.content.map((block) => (block as { text?: string }).text ?? '').join('\n');
+    const expectInvalidParams = (result: Awaited<ReturnType<typeof call>>) =>
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: JsonRpcErrorCode.InvalidParams } },
+      });
+
+    it('admits cap + 1 and ten times the cap to the handler as sent', () => {
+      expect(parse(cap + 1)[parameter]).toBe(cap + 1);
+      expect(parse(cap * 10)[parameter]).toBe(cap * 10);
+    });
+
+    it('rejects ten times the cap + 1 as invalid_arguments, naming the ceiling', async () => {
+      const result = await call(cap * 10 + 1);
+      expectInvalidParams(result);
+      expect(textOf(result)).toContain(
+        `${parameter} must be at most ${cap * 10} (a value above ${cap} runs at ${cap}).`,
+      );
+    });
+
+    it('rejects ten times the cap + 1 sent as a numeric string', async () => {
+      expectInvalidParams(await call(String(cap * 10 + 1)));
+    });
+
+    it.each([0, -1, 1.5, true, 'many'])('rejects %j as invalid_arguments', async (value) => {
+      expectInvalidParams(await call(value));
+    });
+
+    it('keeps its default', () => {
+      expect(parse(undefined)[parameter]).toBe(fallback);
+    });
+  },
+);
 
 describe('gdeltGetTvContext input validation', () => {
   it('rejects empty query', () => {
@@ -263,7 +357,6 @@ describe('gdeltSearchTv input validation', () => {
     expect(gdeltSearchTv.input.parse({ query: 'test' })).toMatchObject({ offset: 0, limit: 500 });
     expect(() => gdeltSearchTv.input.parse({ query: 'test', offset: -1 })).toThrow();
     expect(() => gdeltSearchTv.input.parse({ query: 'test', limit: 0 })).toThrow();
-    expect(() => gdeltSearchTv.input.parse({ query: 'test', limit: 501 })).toThrow();
   });
 });
 

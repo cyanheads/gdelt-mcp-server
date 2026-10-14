@@ -16,15 +16,24 @@ import {
   planWindowContinuation,
   resolveEffectiveWindow,
 } from '../date-range.js';
-import { escapeMarkdown, markdownUrl } from '../markdown-escape.js';
-import { fitToBudget, planCutNotice, recordCharge } from '../response-budget.js';
+import { CLAMP_HEADROOM, clampToCap, limitClampSchema, renderLimitClamp } from '../limit-clamp.js';
+import { escapeMarkdown, markdownQuote, markdownUrl, renderQueryEcho } from '../markdown-escape.js';
+import {
+  fitToBudget,
+  planCutNotice,
+  recordCharge,
+  renderContinuationWindows,
+} from '../response-budget.js';
 
 /**
- * Hard ceiling GDELT's DOC API serves in one article request, and the `maxRecords`
- * schema maximum. Past it there is no offset or cursor — the cap-hit disclosure
- * switches from "raise maxRecords" to partitioning the date window.
+ * Hard ceiling GDELT's DOC API serves in one article request. Past it there is no offset or
+ * cursor — the cap-hit disclosure switches from "raise maxRecords" to partitioning the date
+ * window. A larger `maxRecords`, up to {@link MAX_RECORDS_ACCEPTED}, runs at this ceiling.
  */
 const MAX_RECORDS_CEILING = 250;
+
+/** The `maxRecords` schema maximum: past it a call is rejected rather than clamped. */
+const MAX_RECORDS_ACCEPTED = MAX_RECORDS_CEILING * CLAMP_HEADROOM;
 
 /** One article record — the output item schema, and the type `renderArticle` renders. */
 const articleSchema = z
@@ -142,12 +151,16 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
       .number()
       .int()
       .min(1)
-      .max(MAX_RECORDS_CEILING)
+      .max(
+        MAX_RECORDS_ACCEPTED,
+        `maxRecords must be at most ${MAX_RECORDS_ACCEPTED} (a value above ${MAX_RECORDS_CEILING} runs at ${MAX_RECORDS_CEILING}).`,
+      )
       .default(75)
       .describe(
-        'Maximum number of articles to fetch (1–250); the response carries as many of them as fit its ' +
-          "48,000-byte budget. 250 is GDELT's hard per-call ceiling, not a page size — there is no cursor " +
-          'past it, so a query that fills 250 must be split into narrower startDatetime/endDatetime windows instead.',
+        'Maximum number of articles to fetch (1–250; a value up to 2500 runs at 250, and the response says so ' +
+          "in limitClamp). The response carries as many of them as fit its 48,000-byte budget. 250 is GDELT's " +
+          'hard per-call ceiling, not a page size — there is no cursor past it, so a query that fills 250 must be ' +
+          'split into narrower startDatetime/endDatetime windows instead.',
       ),
     sort: z
       .enum(['relevance', 'dateDesc', 'dateAsc', 'toneDesc', 'toneAsc', 'hybridRel'])
@@ -169,6 +182,7 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
     effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
     totalCount: z.number().describe('Number of articles returned in this response.'),
     timespan: z.string().optional().describe('Echoed timespan parameter when provided.'),
+    limitClamp: limitClampSchema,
     withheldCount: z
       .number()
       .optional()
@@ -186,7 +200,8 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
           'how many were dropped. When the response was cut to its 48,000-byte budget, how many articles it withheld ' +
           'and the route to them. When the maxRecords cap was reached on an uncut response, that more ' +
           'articles may exist — a higher maxRecords below the 250 ceiling, or a narrower date window at it. ' +
-          'Absent when a non-empty result set fit under both the cap and the budget.',
+          'Absent when a non-empty result set fit under both the cap and the budget and no article was ' +
+          'dropped as out of window.',
       ),
     continuationWindows: z
       .array(
@@ -212,15 +227,10 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
   },
 
   enrichmentTrailer: {
-    continuationWindows: {
-      render: (windows = []) =>
-        [
-          '**Continuation windows:**',
-          ...windows.map(
-            (w) => `- startDatetime: ${w.startDatetime}, endDatetime: ${w.endDatetime}`,
-          ),
-        ].join('\n'),
-    },
+    effectiveQuery: { render: renderQueryEcho },
+    timespan: { render: (timespan = '') => `**timespan:** ${markdownQuote(timespan)}` },
+    limitClamp: { render: renderLimitClamp },
+    continuationWindows: { render: renderContinuationWindows },
   },
 
   async handler(input, ctx) {
@@ -229,7 +239,8 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
       throw ctx.fail('invalid_date_range', dateRangeFault);
     }
 
-    ctx.log.info('gdelt_search_articles', { query: input.query });
+    const maxRecords = clampToCap(ctx, 'maxRecords', input.maxRecords, MAX_RECORDS_CEILING);
+    ctx.log.info('gdelt_search_articles', { query: input.query, maxRecords });
     const svc = getGdeltDocService();
     const result = await svc.searchArticles(
       {
@@ -237,7 +248,7 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
         ...(input.timespan && { timespan: input.timespan }),
         ...(input.startDatetime && { startDatetime: input.startDatetime }),
         ...(input.endDatetime && { endDatetime: input.endDatetime }),
-        maxRecords: input.maxRecords,
+        maxRecords,
         sort: input.sort,
       },
       ctx,
@@ -262,7 +273,7 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
     const emittedCount = fitToBudget(charges);
     const articles = fetched.slice(0, emittedCount);
     const cut = emittedCount < fetched.length;
-    const capHit = upstream.length >= input.maxRecords;
+    const capHit = upstream.length >= maxRecords;
     const broaden = pinned
       ? `Broaden the query, remove operators, widen the ${pinned.startDatetime}–${pinned.endDatetime} window, or try synonym terms.`
       : 'Broaden the query, remove operators, extend the timespan, or try synonym terms.';
@@ -275,9 +286,9 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
     // ctx.enrich.notice is last-wins, so a second call would silently drop the first.
     const notices: string[] = [];
     if (upstream.length === 0) {
-      notices.push(`No articles matched "${input.query}". ${broaden}`);
+      notices.push(`No articles matched ${markdownQuote(input.query)}. ${broaden}`);
     } else if (capHit && !cut) {
-      if (input.maxRecords < MAX_RECORDS_CEILING) {
+      if (maxRecords < MAX_RECORDS_CEILING) {
         notices.push(
           `Returned ${upstream.length} articles (maxRecords cap reached — there may be more). ` +
             `Raise maxRecords (up to ${MAX_RECORDS_CEILING}) to fetch more; a response carries only as many ` +
@@ -313,7 +324,7 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
         nextCharge: charges[emittedCount] as number,
         withheldStamps: fetched.slice(emittedCount).map((a) => a.seendate),
         fetchedCount: fetched.length,
-        maxRecords: input.maxRecords,
+        maxRecords,
         ceiling: MAX_RECORDS_CEILING,
         capHit,
         halve: planWindowContinuation,

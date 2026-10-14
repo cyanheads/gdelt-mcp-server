@@ -7,6 +7,8 @@ import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mc
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltSearchArticles } from '@/mcp-server/tools/definitions/search-articles.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
+import { initGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
+import { disposeGdeltPacer, initGdeltPacer } from '@/services/gdelt/gdelt-pacer.js';
 import { contentText, hrefFor, literalHtml, renderMarkdown } from './markdown-render.js';
 
 const ARTICLE = {
@@ -115,6 +117,13 @@ describe('gdeltSearchArticles', () => {
 
     it('describes the empty case on the notice field', () => {
       expect(gdeltSearchArticles.enrichment?.notice?.description).toMatch(/no articles matched/i);
+    });
+
+    /** The drop notice fires on an uncut page too, so the absence condition names the drop. */
+    it('counts an out-of-window drop among the cases the notice is present for', () => {
+      expect(gdeltSearchArticles.enrichment?.notice?.description).toMatch(
+        /Absent when a non-empty result set fit under both the cap and the budget and no article was dropped as out of window\.$/,
+      );
     });
   });
 
@@ -699,6 +708,135 @@ describe('gdeltSearchArticles', () => {
       const result = await runToolContract(gdeltSearchArticles, { query: 'x', timespan: '7d' });
       expect((result.structuredContent as ArticlePage).articles).toEqual([article]);
     });
+  });
+});
+
+/**
+ * A maxRecords above the 250 ceiling, up to 2500, runs exactly as a call at 250 — the same
+ * upstream request, cap-hit detection, byte-budget cut, notice, and continuation — and adds a
+ * `limitClamp` disclosure on both surfaces. At or below 250 nothing is disclosed.
+ */
+describe('gdelt_search_articles maxRecords clamp', () => {
+  const WINDOW = { startDatetime: '20240110000000', endDatetime: '20240120000000' };
+
+  type Run = { result: Awaited<ReturnType<typeof runToolContract>>; sent: unknown };
+
+  /** Run one call against a DOC stand-in that applies the maxRecords it is sent. */
+  async function run(all: Article[], extra: Record<string, unknown>): Promise<Run> {
+    useDocUpstream(all, 'exclusive');
+    const search = vi.mocked(docServiceModule.getGdeltDocService().searchArticles);
+    const result = await runToolContract(gdeltSearchArticles, {
+      query: 'climate',
+      ...WINDOW,
+      ...extra,
+    } as never);
+    return { result, sent: search.mock.calls[0]?.[0].maxRecords };
+  }
+
+  /** A run's structuredContent minus `limitClamp`, and its content[] lines minus the clamp line. */
+  function withoutClamp({ result }: Run) {
+    const { limitClamp: _, ...rest } = result.structuredContent as Record<string, unknown>;
+    const lines = contentText(result)
+      .split('\n')
+      .filter((line) => !line.startsWith('**Limit clamped:**'));
+    return { rest, lines };
+  }
+
+  it.each([
+    // Heavy articles: GDELT fills 250 and the page is cut to the byte budget.
+    [
+      'a cut, capped dateDesc page',
+      'dateDesc',
+      (i: number) => longArticle(i, seenAt(NOON, -i * 60)),
+    ],
+    // Compact articles: the full 250 fit, so only the at-ceiling cap notice speaks.
+    [
+      'an uncut, capped relevance page',
+      'relevance',
+      (i: number) => ({
+        ...ARTICLE,
+        url: `https://example.com/a${i}`,
+        seendate: seenAt(NOON, -i * 60),
+      }),
+    ],
+  ] as const)('runs %s at 251 and 2500 exactly as at 250', async (_, sort, make) => {
+    const all = Array.from({ length: 400 }, (_, i) => make(i));
+    const atCap = await run(all, { sort, maxRecords: 250 });
+    expect(atCap.sent).toBe(250);
+    expect(atCap.result.structuredContent).not.toHaveProperty('limitClamp');
+    expect(contentText(atCap.result)).not.toContain('Limit clamped');
+    expect((atCap.result.structuredContent as ArticlePage).notice).toMatch(
+      /maxRecords is already at its 250 ceiling/,
+    );
+
+    for (const requested of [251, 2500]) {
+      const clamped = await run(all, { sort, maxRecords: requested });
+      expect(clamped.sent).toBe(250);
+      expect(clamped.result.structuredContent).toMatchObject({
+        limitClamp: { parameter: 'maxRecords', requested, applied: 250 },
+      });
+      expect(contentText(clamped.result)).toContain(
+        `**Limit clamped:** maxRecords ${requested} → 250 (per-call cap)`,
+      );
+      expect(withoutClamp(clamped)).toEqual(withoutClamp(atCap));
+    }
+  });
+
+  it('clamps a numeric string past the ceiling like the number', async () => {
+    const all = Array.from({ length: 300 }, (_, i) => longArticle(i, seenAt(NOON, -i * 60)));
+    const clamped = await run(all, { sort: 'dateDesc', maxRecords: '251' });
+    expect(clamped.sent).toBe(250);
+    expect(clamped.result.isError).toBeFalsy();
+    expect(clamped.result.structuredContent).toMatchObject({
+      limitClamp: { parameter: 'maxRecords', requested: 251, applied: 250 },
+    });
+  });
+
+  it('discloses nothing at or below the ceiling, and still discloses a clamp on an empty result', async () => {
+    for (const maxRecords of [1, 75, 250]) {
+      const { result, sent } = await run([longArticle(0, seenAt(NOON, 0))], { maxRecords });
+      expect(sent).toBe(maxRecords);
+      expect(result.structuredContent).not.toHaveProperty('limitClamp');
+      expect(contentText(result)).not.toContain('Limit clamped');
+    }
+    const empty = await run([], { maxRecords: 2500 });
+    expect(empty.result.structuredContent).toMatchObject({
+      articles: [],
+      notice: expect.stringMatching(/No articles matched/),
+      limitClamp: { parameter: 'maxRecords', requested: 2500, applied: 250 },
+    });
+  });
+
+  /**
+   * The applied value reaches the DOC request itself: the real service and fetch path, with
+   * only the global `fetch` stubbed.
+   */
+  it('sends maxrecords=250 to GDELT for a clamped call', async () => {
+    vi.restoreAllMocks();
+    initGdeltPacer(0);
+    initGdeltDocService(
+      {} as never,
+      {} as never,
+      {
+        baseUrl: 'https://api.gdeltproject.org/api/v2',
+        requestDelayMs: 0,
+      } as never,
+    );
+    const upstream = vi.fn(async (_url: string) => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', upstream);
+    try {
+      const result = await runToolContract(gdeltSearchArticles, {
+        query: 'climate',
+        maxRecords: 2500,
+      });
+      expect(result.isError).toBeFalsy();
+      expect(upstream).toHaveBeenCalledTimes(1);
+      const url = new URL(String(upstream.mock.calls[0]?.[0]));
+      expect(url.searchParams.get('maxrecords')).toBe('250');
+    } finally {
+      vi.unstubAllGlobals();
+      disposeGdeltPacer();
+    }
   });
 });
 

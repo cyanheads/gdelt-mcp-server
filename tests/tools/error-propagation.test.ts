@@ -1,8 +1,9 @@
 /**
  * @fileoverview Tests that upstream errors (non-200s, malformed payloads, network failures)
  * are surfaced correctly and not swallowed for all tools, that the invalid_query reason
- * parseGdeltJson raises reaches the wire unchanged through each tool's handler, and that an
- * exhausted upstream timeout reaches the wire as the declared gdelt_unavailable contract.
+ * parseGdeltJson raises reaches the wire unchanged through each tool's handler, and that every
+ * transient upstream failure — an exhausted timeout, an HTML or empty body, an HTTP 5xx, a
+ * network error — reaches the wire as the declared gdelt_unavailable contract.
  * @module tests/tools/error-propagation.test
  */
 
@@ -455,7 +456,7 @@ describe('empty/sparse payload edge cases', () => {
     });
     const result = await gdeltGetCoverageBreakdown.handler(input, ctx);
     expect(result.topSeries).toHaveLength(1);
-    expect(result.topSeries[0]?.label).toBe('English');
+    expect(result.topSeries?.[0]?.label).toBe('English');
   });
 
   it('search-articles with exactly 250 articles (max) returns all of them', async () => {
@@ -477,27 +478,29 @@ describe('empty/sparse payload edge cases', () => {
   });
 
   it('get-tv-clips: clip without thumbnail is returned without error', async () => {
+    const clip = {
+      show: 'Morning Show',
+      station: 'MSNBC',
+      stationName: 'MSNBC',
+      date: '2020-05-01T06:00:00Z',
+      snippet: 'Coverage here…',
+      archiveUrl: 'https://archive.org/details/MSNBC_20200501',
+    };
     vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-      getTvClips: vi.fn().mockResolvedValue([
-        {
-          show: 'Morning Show',
-          station: 'MSNBC',
-          date: '2020-05-01T06:00:00Z',
-          snippet: 'Coverage here…',
-          archiveUrl: 'https://archive.org/details/MSNBC_20200501',
-        },
-      ]),
+      getTvClips: vi.fn().mockResolvedValue({ clips: [clip] }),
     } as unknown as tvServiceModule.GdeltTvService);
     const ctx = createMockContext({ errors: gdeltGetTvClips.errors });
     const input = gdeltGetTvClips.input.parse({ query: 'test' });
     const result = await gdeltGetTvClips.handler(input, ctx);
-    expect(result.clips[0]).not.toHaveProperty('thumbnail');
+    expect(result.clips).toStrictEqual([clip]);
   });
 
   it('search-tv: single data point series resolves without throwing', async () => {
     vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
       searchTv: vi.fn().mockResolvedValue({
-        series: [{ station: 'CNN', data: [{ date: '2024-01-01', value: 1.0 }] }],
+        series: [
+          { station: 'CNN', stationName: 'CNN', data: [{ date: '2024-01-01', value: 1.0 }] },
+        ],
         dateResolution: 'day',
         normalized: true,
       }),
@@ -737,5 +740,85 @@ describe('gdelt_unavailable on an exhausted upstream timeout', () => {
         }),
       ]),
     );
+  });
+});
+
+/**
+ * Upstream trouble that is not a timeout — an HTML or empty HTTP 200 body, an HTTP 5xx, a
+ * network error — exhausts the retry ladder well inside the default call deadline, and must
+ * reach the wire on the same `gdelt_unavailable` contract. Only the global `fetch` is stubbed:
+ * the real `fetchWithTimeout` maps each status and wraps each network error, so the codes and
+ * `data` the tools receive are the ones production sees. Every failure shape is classified at
+ * one seam, `gdeltFetch` (gdelt-fetch-retry.test.ts); here one shape per API checks the wiring
+ * to both wire surfaces.
+ */
+describe('gdelt_unavailable on a transient upstream failure', () => {
+  const SERVER_CONFIG = { baseUrl: 'https://api.gdeltproject.org/api/v2', requestDelayMs: 0 };
+
+  beforeEach(async () => {
+    const actual = await vi.importActual<typeof import('@cyanheads/mcp-ts-core/utils')>(
+      '@cyanheads/mcp-ts-core/utils',
+    );
+    vi.restoreAllMocks();
+    mockedFetchWithTimeout.mockReset();
+    mockedFetchWithTimeout.mockImplementation(actual.fetchWithTimeout);
+    vi.useFakeTimers();
+    initGdeltPacer(0);
+    initGdeltDocService({} as never, {} as never, SERVER_CONFIG as never);
+    initGdeltTvService({} as never, {} as never, SERVER_CONFIG as never);
+  });
+
+  afterEach(() => {
+    disposeGdeltPacer();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it.each<[string, () => Promise<Awaited<ReturnType<typeof runToolContract>>>, Response, object]>([
+    [
+      'DOC — an HTML 200 body',
+      () => runToolContract(gdeltSearchArticles, { query: 'climate' }),
+      new Response('<!DOCTYPE html><html></html>'),
+      {},
+    ],
+    [
+      'TV — HTTP 503',
+      () => runToolContract(gdeltGetTvClips, { query: 'climate', stations: ['CNN'] }),
+      new Response('upstream trouble', { status: 503 }),
+      { status: 503, errorSource: 'FetchHttpError' },
+    ],
+  ])('%s carries the contract on both surfaces', async (_, run, response, kept) => {
+    const upstream = vi.fn(async () => response.clone());
+    vi.stubGlobal('fetch', upstream);
+
+    const pending = run();
+    await vi.runAllTimersAsync();
+    const result = await pending;
+
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: JsonRpcErrorCode.ServiceUnavailable,
+          data: {
+            reason: 'gdelt_unavailable',
+            retryable: true,
+            retryAttempts: 4,
+            ...kept,
+            recovery: { hint: expect.stringMatching(/retry after a short delay/i) },
+          },
+        },
+      },
+    });
+    expect(result.content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          text: expect.stringMatching(
+            /Recovery:.*retry after a short delay.*\(reason gdelt_unavailable · retryable/is,
+          ),
+        }),
+      ]),
+    );
+    expect(upstream).toHaveBeenCalledTimes(4);
   });
 });

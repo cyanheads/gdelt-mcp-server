@@ -62,7 +62,8 @@ export type RawTvStation = {
 /** Raw TV clip from GDELT TV clipgallery mode. */
 export type RawTvClip = {
   show: string;
-  station: string;
+  /** The station's display label (its catalog `Description`), not its station ID. */
+  station?: string;
   date: string;
   snippet: string;
   preview_url: string;
@@ -89,7 +90,10 @@ export type TvStation = {
 /** Normalized TV clip for tool output. */
 export type TvClip = {
   show: string;
-  station: string;
+  /** Catalog station ID. Absent when the clip's label did not resolve to one. */
+  station?: string;
+  /** GDELT's display label for the station — its catalog description. Empty when GDELT sent none. */
+  stationName: string;
   date: string;
   snippet: string;
   archiveUrl: string;

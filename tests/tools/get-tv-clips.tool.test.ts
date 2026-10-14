@@ -7,12 +7,15 @@ import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mc
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetTvClips } from '@/mcp-server/tools/definitions/get-tv-clips.tool.js';
 import { parseGdeltJson } from '@/services/gdelt/gdelt-fetch.js';
+import { disposeGdeltPacer, initGdeltPacer } from '@/services/gdelt/gdelt-pacer.js';
 import * as tvServiceModule from '@/services/gdelt/gdelt-tv-service.js';
+import { initGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
 import { contentText, hrefFor, literalHtml, renderMarkdown } from './markdown-render.js';
 
 const CLIP = {
   show: 'Anderson Cooper 360',
   station: 'CNN',
+  stationName: 'CNN',
   date: '2024-01-15T20:00:00Z',
   snippet: 'The vaccine rollout continues as health officials…',
   archiveUrl: 'https://archive.org/details/CNN_20240115',
@@ -22,7 +25,7 @@ const CLIP = {
 describe('gdeltGetTvClips', () => {
   beforeEach(() => {
     vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-      getTvClips: vi.fn().mockResolvedValue([CLIP]),
+      getTvClips: vi.fn().mockResolvedValue({ clips: [CLIP] }),
     } as unknown as tvServiceModule.GdeltTvService);
   });
 
@@ -45,7 +48,7 @@ describe('gdeltGetTvClips', () => {
 
   it('passes stations and maxRecords to the service', async () => {
     const svc = {
-      getTvClips: vi.fn().mockResolvedValue([CLIP]),
+      getTvClips: vi.fn().mockResolvedValue({ clips: [CLIP] }),
     } as unknown as tvServiceModule.GdeltTvService;
     vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue(svc);
 
@@ -66,7 +69,7 @@ describe('gdeltGetTvClips', () => {
   describe('zero-match answer', () => {
     beforeEach(() => {
       vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-        getTvClips: vi.fn().mockResolvedValue([]),
+        getTvClips: vi.fn().mockResolvedValue({ clips: [] }),
       } as unknown as tvServiceModule.GdeltTvService);
     });
 
@@ -121,7 +124,7 @@ describe('gdeltGetTvClips', () => {
       date: `2024-01-${String(i + 1).padStart(2, '0')}T00:00:00Z`,
     }));
     vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-      getTvClips: vi.fn().mockResolvedValue(clips),
+      getTvClips: vi.fn().mockResolvedValue({ clips }),
     } as unknown as tvServiceModule.GdeltTvService);
 
     const ctx = createMockContext({ errors: gdeltGetTvClips.errors });
@@ -178,7 +181,7 @@ describe('gdeltGetTvClips', () => {
         archiveUrl: `https://archive.org/details/CNN_${i}`,
       }));
       vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-        getTvClips: vi.fn().mockResolvedValue(clips),
+        getTvClips: vi.fn().mockResolvedValue({ clips }),
       } as unknown as tvServiceModule.GdeltTvService);
 
       const ctx = createMockContext({ errors: gdeltGetTvClips.errors });
@@ -278,7 +281,7 @@ describe('gdeltGetTvClips', () => {
         archiveUrl: `https://archive.org/details/CNN_${i}`,
       }));
       vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-        getTvClips: vi.fn().mockResolvedValue(clips),
+        getTvClips: vi.fn().mockResolvedValue({ clips }),
       } as unknown as tvServiceModule.GdeltTvService);
 
       const ctx = createMockContext({ errors: gdeltGetTvClips.errors });
@@ -298,17 +301,18 @@ describe('gdeltGetTvClips', () => {
   describe('Markdown escaping at the content[] boundary', () => {
     const HOSTILE = {
       show: '*Breaking* [Live]',
-      station: 'CNN #',
+      station: 'CNN',
+      stationName: 'CNN <b>#</b>',
       date: '2024-01-15T20:00:00Z',
       snippet: 'line one\n- line two [x](y) <i>tag</i> &copy;',
       archiveUrl: 'https://archive.org/details/CNN_X#start/1/end/36',
       thumbnail: 'https://archive.org/thumb/CNN_(X).jpg',
     };
 
-    it('renders plain upstream values byte-identically to the pre-escaping format()', () => {
+    it('renders plain upstream values byte-identically to the expected format()', () => {
       const blocks = gdeltGetTvClips.format!({ clips: [CLIP] });
       expect((blocks[0] as { text: string }).text).toBe(
-        '## GDELT TV Clips\n\n### Anderson Cooper 360 — CNN\n**Date:** 2024-01-15T20:00:00Z\n' +
+        '## GDELT TV Clips\n\n### Anderson Cooper 360 — CNN (CNN)\n**Date:** 2024-01-15T20:00:00Z\n' +
           '**Snippet:** The vaccine rollout continues as health officials…\n' +
           '**View clip:** https://archive.org/details/CNN_20240115\n' +
           '**Thumbnail:** https://archive.org/thumb/CNN_20240115.jpg',
@@ -323,7 +327,7 @@ describe('gdeltGetTvClips', () => {
         [
           '## GDELT TV Clips',
           '',
-          String.raw`### \*Breaking\* \[Live\] — CNN \#`,
+          String.raw`### \*Breaking\* \[Live\] — CNN \<b>#\</b> (CNN)`,
           '**Date:** 2024-01-15T20:00:00Z',
           String.raw`**Snippet:** line one - line two \[x\](y) \<i>tag\</i> \&copy;`,
           '**View clip:** https://archive.org/details/CNN_X#start/1/end/36',
@@ -338,7 +342,7 @@ describe('gdeltGetTvClips', () => {
         mockClips([HOSTILE]);
         const result = await runToolContract(gdeltGetTvClips, { query: 'x', stations: ['CNN'] });
         const html = renderMarkdown(contentText(result), { gfmAutolinks });
-        expect(html).toContain(`<h3>${literalHtml('*Breaking* [Live] — CNN #')}</h3>`);
+        expect(html).toContain(`<h3>${literalHtml('*Breaking* [Live] — CNN <b>#</b> (CNN)')}</h3>`);
         expect(html).toContain(
           `<strong>Snippet:</strong> ${literalHtml('line one - line two [x](y) <i>tag</i> &copy;')}`,
         );
@@ -914,7 +918,7 @@ describe('gdeltGetTvClips', () => {
       ['20240116010500', '20240116031000', '20240116010000', '20240116031000'],
       ['20240116010000', '20240116020000', '20240116010000', '20240116015959'],
     ])('requests %s–%s as %s–%s', async (start, end, sentStart, sentEnd) => {
-      const upstream = vi.fn().mockResolvedValue([]);
+      const upstream = vi.fn().mockResolvedValue({ clips: [] });
       vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
         getTvClips: upstream,
       } as unknown as tvServiceModule.GdeltTvService);
@@ -1071,6 +1075,327 @@ describe('gdeltGetTvClips', () => {
   });
 });
 
+/**
+ * A maxRecords above the 3000 ceiling, up to 30000, runs exactly as a call at 3000 — the same
+ * upstream request, cap-hit detection, out-of-window slot count, byte-budget cut, notice, and
+ * continuation — and adds a `limitClamp` disclosure on both surfaces.
+ */
+describe('gdelt_get_tv_clips maxRecords clamp', () => {
+  // Not on the hour, so the whole-hour request returns clips from before the window too.
+  const WINDOW = { startDatetime: '20240116010500', endDatetime: '20240116045959' };
+
+  type Run = { result: Awaited<ReturnType<typeof runToolContract>>; sent: unknown };
+
+  async function run(all: Clip[], extra: Record<string, unknown>): Promise<Run> {
+    const getTvClips = measuredTvUpstream(all);
+    vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+      getTvClips,
+    } as unknown as tvServiceModule.GdeltTvService);
+    const result = await runToolContract(gdeltGetTvClips, {
+      query: 'x',
+      stations: ['CNN'],
+      sort: 'dateAsc',
+      ...WINDOW,
+      ...extra,
+    } as never);
+    return { result, sent: getTvClips.mock.calls[0]?.[0].maxRecords };
+  }
+
+  /** A run's structuredContent minus `limitClamp`, and its content[] lines minus the clamp line. */
+  function withoutClamp({ result }: Run) {
+    const { limitClamp: _, ...rest } = result.structuredContent as Record<string, unknown>;
+    const lines = contentText(result)
+      .split('\n')
+      .filter((line) => !line.startsWith('**Limit clamped:**'));
+    return { rest, lines };
+  }
+
+  // A clip every two seconds from 01:00:05 through the fourth hour: GDELT's whole-hour answer
+  // fills 3000 slots, 148 of them with clips from before the window, and the page is cut.
+  const ALL = Array.from({ length: 7000 }, (_, i) =>
+    longClip(i, secondsAfter('2024-01-16T01:00:05Z', i * 2)),
+  );
+
+  it('runs a cut, capped page at 3001 and 30000 exactly as at 3000', async () => {
+    const atCap = await run(ALL, { maxRecords: 3000 });
+    const atCapPage = atCap.result.structuredContent as ClipPage;
+    expect(atCap.sent).toBe(3000);
+    expect(atCapPage.withheldCount).toBeGreaterThan(0);
+    expect(atCapPage.notice).toMatch(/took 148 of the 3000 maxRecords slots/);
+    expect(atCap.result.structuredContent).not.toHaveProperty('limitClamp');
+    expect(contentText(atCap.result)).not.toContain('Limit clamped');
+
+    for (const requested of [3001, 30000]) {
+      const clamped = await run(ALL, { maxRecords: requested });
+      expect(clamped.sent).toBe(3000);
+      expect(clamped.result.structuredContent).toMatchObject({
+        limitClamp: { parameter: 'maxRecords', requested, applied: 3000 },
+      });
+      expect(contentText(clamped.result)).toContain(
+        `**Limit clamped:** maxRecords ${requested} → 3000 (per-call cap)`,
+      );
+      expect(withoutClamp(clamped)).toEqual(withoutClamp(atCap));
+    }
+  });
+
+  it('clamps a numeric string past the ceiling like the number', async () => {
+    const clamped = await run(ALL.slice(0, 50), { maxRecords: '3001' });
+    expect(clamped.sent).toBe(3000);
+    expect(clamped.result.isError).toBeFalsy();
+    expect(clamped.result.structuredContent).toMatchObject({
+      limitClamp: { parameter: 'maxRecords', requested: 3001, applied: 3000 },
+    });
+  });
+
+  /**
+   * The applied value reaches the TV request itself: the real service and fetch path, with
+   * only the global `fetch` stubbed.
+   */
+  it('sends maxrecords=3000 to GDELT for a clamped call', async () => {
+    vi.restoreAllMocks();
+    initGdeltPacer(0);
+    initGdeltTvService(
+      {} as never,
+      {} as never,
+      {
+        baseUrl: 'https://api.gdeltproject.org/api/v2',
+        requestDelayMs: 0,
+      } as never,
+    );
+    const upstream = vi.fn(async (_url: string) => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', upstream);
+    try {
+      const result = await runToolContract(gdeltGetTvClips, {
+        query: 'climate',
+        stations: ['CNN'],
+        maxRecords: 30000,
+      });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({
+        clips: [],
+        notice: expect.stringMatching(/No TV clips matched/),
+        limitClamp: { parameter: 'maxRecords', requested: 30000, applied: 3000 },
+      });
+      expect(upstream).toHaveBeenCalledTimes(1);
+      const url = new URL(String(upstream.mock.calls[0]?.[0]));
+      expect(url.searchParams.get('maxrecords')).toBe('3000');
+    } finally {
+      vi.unstubAllGlobals();
+      disposeGdeltPacer();
+    }
+  });
+});
+
+/**
+ * GDELT labels each clip with the station's catalog description; the service resolves it to the
+ * station ID. `station` carries that ID — the value a follow-up call's `stations` takes — and
+ * `stationName` the label, on both surfaces.
+ */
+describe('gdelt_get_tv_clips station IDs', () => {
+  const FOX = { ...CLIP, show: 'Hannity', station: 'FOXNEWS', stationName: 'FOX News' };
+  const UNMAPPED = {
+    show: 'Evening News',
+    stationName: 'KZZZ Local News',
+    date: CLIP.date,
+    snippet: 's',
+    archiveUrl: 'https://archive.org/details/KZZZ_1',
+  };
+
+  it('returns the station ID and the label on both surfaces', async () => {
+    mockClips([FOX, CLIP]);
+    const result = await runToolContract(gdeltGetTvClips, {
+      query: 'climate',
+      stations: ['FOXNEWS', 'CNN'],
+    });
+    expect((result.structuredContent as ClipPage).clips).toEqual([FOX, CLIP]);
+    expect(result.structuredContent).not.toHaveProperty('notice');
+    expect(contentText(result)).toContain('### Hannity — FOX News (FOXNEWS)');
+    expect(contentText(result)).toContain('### Anderson Cooper 360 — CNN (CNN)');
+  });
+
+  it('names a label with no catalog entry, joining the cap-hit notice instead of replacing it', async () => {
+    mockClips([FOX, UNMAPPED, CLIP]);
+    const result = await runToolContract(gdeltGetTvClips, {
+      query: 'x',
+      stations: ['CNN'],
+      maxRecords: 3,
+    });
+    const sc = result.structuredContent as ClipPage;
+    expect(sc.clips).toEqual([FOX, UNMAPPED, CLIP]);
+    expect(sc.notice).toMatch(/maxRecords cap reached/);
+    expect(sc.notice).toMatch(/labeled "KZZZ Local News".*gdelt_list_tv_stations/);
+    expect(contentText(result)).toContain(sc.notice!);
+    expect(contentText(result)).toContain('### Evening News — KZZZ Local News (no station ID)');
+  });
+
+  /** Clips GDELT sent without a label are counted as such, beside the catalog outage. */
+  it('counts clips GDELT returned without a station label, beside an unavailable catalog', async () => {
+    const unlabeled = [
+      { ...UNMAPPED, stationName: '' },
+      { ...UNMAPPED, stationName: '', archiveUrl: 'https://archive.org/details/KZZZ_2' },
+    ];
+    mockClips([...unlabeled, { ...UNMAPPED, stationName: 'FOX News' }], true);
+    const result = await runToolContract(gdeltGetTvClips, { query: 'x', stations: ['CNN'] });
+    const sc = result.structuredContent as ClipPage;
+    expect(sc.clips.slice(0, 2)).toEqual(unlabeled);
+    expect(sc.notice).toMatch(
+      /^GDELT returned 2 clips without a station label, so their stationName is empty and station is absent\. Station IDs could not be resolved/,
+    );
+    expect(contentText(result)).toContain(sc.notice!);
+    expect(contentText(result)).toContain('### Evening News — (no station label)\n');
+  });
+
+  it('says station IDs could not be resolved when the catalog was unavailable', async () => {
+    const labelOnly = [
+      { ...UNMAPPED, stationName: 'FOX News' },
+      { ...UNMAPPED, stationName: 'CNN', archiveUrl: 'https://archive.org/details/CNN_2' },
+    ];
+    mockClips(labelOnly, true);
+    const result = await runToolContract(gdeltGetTvClips, { query: 'x', stations: ['CNN'] });
+    const sc = result.structuredContent as ClipPage;
+    expect(sc.clips).toEqual(labelOnly);
+    expect(sc.notice).toMatch(/Station IDs could not be resolved.*gdelt_list_tv_stations/);
+    expect(sc.notice).not.toMatch(/labeled/);
+    expect(contentText(result)).toContain(sc.notice!);
+  });
+
+  it('names only labels on the clips the response returns, not on clips the budget withheld', async () => {
+    const heavy = exactFitClips(100, 480);
+    mockClips([...heavy, { ...UNMAPPED, date: secondsAfter(DAY, 200) }]);
+    const result = await runToolContract(gdeltGetTvClips, {
+      query: 'x',
+      stations: ['CNN'],
+      maxRecords: 3000,
+      startDatetime: '20240701000000',
+      endDatetime: '20240702000000',
+    });
+    const sc = result.structuredContent as ClipPage;
+    expect(sc.clips).toHaveLength(100);
+    expect(sc.withheldCount).toBe(1);
+    expect(sc.notice).not.toMatch(/KZZZ/);
+  });
+
+  /**
+   * The heading renders the label and the ID, and the budget charges the rendered heading. A
+   * label of `*`s renders escaped at two bytes per character against one in JSON, so the rendered
+   * line is the larger charge; one more `*` takes a page fitting exactly 48,000 bytes over by two
+   * while its JSON stays under. A heading without the label would leave JSON the charge and fit
+   * all 100.
+   */
+  it('charges each clip for the station label and ID its heading renders', async () => {
+    const stars = { stationName: `KZZZ ${'*'.repeat(100)}` };
+    const fitted = exactFitClips(100, 480, stars);
+    expect(utf8(JSON.stringify(fitted[0])) + 1).toBeLessThan(470);
+    const longer = fitted.map((clip, i) =>
+      i === 50 ? { ...clip, stationName: `${clip.stationName}*` } : clip,
+    );
+    expect(chargeOf(longer[50]!)).toBe(482);
+    mockClips(longer);
+    const result = await runToolContract(gdeltGetTvClips, {
+      query: 'x',
+      stations: ['CNN'],
+      maxRecords: 3000,
+      startDatetime: '20240701000000',
+      endDatetime: '20240702000000',
+    });
+    const sc = result.structuredContent as ClipPage;
+    expect(sc.clips).toHaveLength(99);
+    expect(sc.withheldCount).toBe(1);
+  });
+
+  it('describes the station fields and the unresolved-ID notice', () => {
+    const item = gdeltGetTvClips.output.shape.clips.element.shape;
+    expect(item.station.description).toMatch(
+      /^Station ID — the value the stations input and the station: operator take .*Absent when GDELT's label for the station could not be resolved to an ID/,
+    );
+    expect(item.stationName.description).toMatch(
+      /^GDELT's display label for the station .*Empty when GDELT returned the clip without one/,
+    );
+    expect(gdeltGetTvClips.enrichment?.notice?.description).toMatch(
+      /When a returned clip has no station ID, why: GDELT returned it without a station label, or its station catalog did not load or has no entry for the named label — with how to look the ID up\./,
+    );
+    // The drop notice fires on an uncut page too, so the absence condition names the drop.
+    expect(gdeltGetTvClips.enrichment?.notice?.description).toMatch(
+      /Absent when a non-empty result set fit under both the cap and the budget, no clip was dropped as out of window, and every clip carries its station ID\.$/,
+    );
+  });
+
+  /**
+   * The #58 repro end to end through the real service and fetch path, with only the global
+   * `fetch` stubbed: the clip request goes first, the catalog request after it, and the clip
+   * labeled "FOX News" comes back as station FOXNEWS.
+   */
+  it('resolves a clip label through the real service, requesting the catalog after the clips', async () => {
+    vi.restoreAllMocks();
+    initGdeltPacer(0);
+    initGdeltTvService(
+      {} as never,
+      {} as never,
+      {
+        baseUrl: 'https://api.gdeltproject.org/api/v2',
+        requestDelayMs: 0,
+        requestTimeoutMs: 60_000,
+      } as never,
+    );
+    const catalog = {
+      station_details: [
+        {
+          StationID: 'FOXNEWS',
+          Description: 'FOX News',
+          Market: 'National',
+          Network: 'FOXNEWS',
+          StartDate: '20090702',
+          EndDate: '20241010',
+        },
+      ],
+    };
+    const clipgallery = {
+      clips: [
+        {
+          show: 'Hannity',
+          station: 'FOX News',
+          date: '2024-01-03T02:00:00Z',
+          snippet: 'climate',
+          preview_url: 'https://archive.org/details/FOXNEWSW_1',
+        },
+      ],
+    };
+    const upstream = vi.fn(async (url: string) => {
+      const mode = new URL(url).searchParams.get('mode');
+      return new Response(JSON.stringify(mode === 'stationdetails' ? catalog : clipgallery), {
+        status: 200,
+      });
+    });
+    vi.stubGlobal('fetch', upstream);
+    try {
+      const result = await runToolContract(gdeltGetTvClips, {
+        query: 'climate',
+        stations: ['FOXNEWS'],
+        startDatetime: '20240101000000',
+        endDatetime: '20240107235959',
+      });
+      expect(result.isError).toBeFalsy();
+      expect((result.structuredContent as ClipPage).clips).toEqual([
+        {
+          show: 'Hannity',
+          station: 'FOXNEWS',
+          stationName: 'FOX News',
+          date: '2024-01-03T02:00:00Z',
+          snippet: 'climate',
+          archiveUrl: 'https://archive.org/details/FOXNEWSW_1',
+        },
+      ]);
+      expect(upstream.mock.calls.map(([url]) => new URL(url).searchParams.get('mode'))).toEqual([
+        'clipgallery',
+        'stationdetails',
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+      disposeGdeltPacer();
+    }
+  });
+});
+
 // ─── Fixtures and fakes ───────────────────────────────────────────────────────
 
 const BUDGET = 48_000;
@@ -1087,9 +1412,12 @@ type ClipPage = {
   continuationWindows?: Array<{ startDatetime: string; endDatetime: string }>;
 };
 
-function mockClips(clips: unknown[]) {
+function mockClips(clips: unknown[], stationCatalogUnavailable = false) {
   vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-    getTvClips: vi.fn().mockResolvedValue(clips),
+    getTvClips: vi.fn().mockResolvedValue({
+      clips,
+      ...(stationCatalogUnavailable && { stationCatalogUnavailable }),
+    }),
   } as unknown as tvServiceModule.GdeltTvService);
 }
 
@@ -1132,6 +1460,7 @@ function longClip(i: number, date: string): Clip {
   return {
     show: `Morning Report — édition spéciale ${i}`,
     station: 'CNN',
+    stationName: 'CNN',
     date,
     snippet: `気候変動についての報道 ${'ü'.repeat(120)} ${'世界の天気'.repeat(30)} clip ${i}`,
     archiveUrl: `https://archive.org/details/CNNW_20240701_${String(i).padStart(4, '0')}_${'Morning_Report_'.repeat(4)}#start/${i}/end/${i + 35}`,
@@ -1140,9 +1469,9 @@ function longClip(i: number, date: string): Clip {
 }
 
 /** `count` clips each charged exactly `charge` bytes, found by padding the snippet. */
-function exactFitClips(count: number, charge: number): Clip[] {
+function exactFitClips(count: number, charge: number, extra: Partial<Clip> = {}): Clip[] {
   return Array.from({ length: count }, (_, i) => {
-    const base = CLIP_AT(secondsAfter(DAY, i), 1000 + i);
+    const base = { ...CLIP_AT(secondsAfter(DAY, i), 1000 + i), ...extra };
     for (let pad = 0; pad < charge; pad++) {
       const clip = { ...base, snippet: `s${'x'.repeat(pad)}` };
       if (chargeOf(clip) === charge) return clip;
@@ -1186,6 +1515,6 @@ function measuredTvUpstream(all: Clip[]) {
     if (params.sort === 'dateDesc') matched.sort((a, b) => b.at - a.at || a.index - b.index);
     else if (params.sort === 'dateAsc') matched.sort((a, b) => a.at - b.at || a.index - b.index);
     else matched.sort((a, b) => ((a.index * 7919) % 613) - ((b.index * 7919) % 613));
-    return matched.slice(0, params.maxRecords).map(({ clip }) => clip);
+    return { clips: matched.slice(0, params.maxRecords).map(({ clip }) => clip) };
   });
 }

@@ -157,6 +157,19 @@ describe('GdeltThemeService loading', () => {
     ).rejects.toMatchObject(UNAVAILABLE);
   });
 
+  /** The failure detail is runtime text that can carry anything; the message quotes it inert. */
+  it('quotes the failure detail onto one inert line of the message', async () => {
+    fetchSpy.mockRejectedValue(new TypeError('fetch failed\n# HEAD <img src=x>'));
+    const error = (await new GdeltThemeService(1000)
+      .search('drought', createMockContext())
+      .catch((e: unknown) => e)) as Error;
+    expect(error).toMatchObject(UNAVAILABLE);
+    expect(error.message).not.toContain('\n');
+    expect(error.message).toMatch(
+      /^GDELT's GKG theme lookup could not be downloaded: ".*fetch failed\\\\n# HEAD \\<img src=x>"$/,
+    );
+  });
+
   it('surfaces a timeout as gdelt_unavailable', async () => {
     fetchSpy.mockImplementation(
       (_url, init) =>

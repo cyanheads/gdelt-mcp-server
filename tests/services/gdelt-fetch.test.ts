@@ -350,4 +350,43 @@ describe('parseGdeltJson', () => {
       });
     }
   });
+
+  /**
+   * The message is the `Error:` line of content[], which reaches the client as written. A body
+   * excerpt in it is upstream text, so it is quoted: JSON-encoded onto one line, then escaped, so
+   * no newline, heading, or tag in the body can open markup there.
+   */
+  describe('upstream body excerpts in the message are quoted as inert text', () => {
+    const messageOf = (body: string, apiLabel: string) => {
+      try {
+        parseGdeltJson(body, apiLabel);
+      } catch (err) {
+        return (err as Error).message;
+      }
+      throw new Error('parseGdeltJson should have thrown');
+    };
+
+    it('quotes an unparseable body excerpt', () => {
+      expect(messageOf('x\n# HEAD <img src=x>', 'GDELT DOC')).toBe(
+        String.raw`GDELT DOC API returned unparseable response: "x\\n# HEAD \<img src=x>"`,
+      );
+    });
+
+    it('quotes the excerpt of a rejection GDELT wrote around caller text', () => {
+      expect(messageOf('Invalid Station: <img src=x>\n# HEAD\n', 'GDELT TV')).toBe(
+        String.raw`GDELT TV API rejected the query: "Invalid Station: \<img src=x>\\n# HEAD"`,
+      );
+    });
+
+    it('keeps a plain rejection sentence readable inside the quotes', () => {
+      expect(messageOf('Your query was too short or too long.', 'GDELT DOC')).toBe(
+        'GDELT DOC API rejected the query: "Your query was too short or too long."',
+      );
+    });
+
+    it('quotes no more than the first 200 characters of the body', () => {
+      const message = messageOf(`x${'y'.repeat(400)}`, 'GDELT DOC');
+      expect(message).toBe(`GDELT DOC API returned unparseable response: "x${'y'.repeat(199)}"`);
+    });
+  });
 });

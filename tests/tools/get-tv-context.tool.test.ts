@@ -122,6 +122,75 @@ describe('gdeltGetTvContext', () => {
     });
   });
 
+  /**
+   * GDELT computes the word cloud from a relevance-ranked sample of the matching clips (its TV API
+   * documentation says the 200 most relevant), not from every matching clip — so two windows or
+   * stations cannot be compared from one call. Every non-empty result says so.
+   */
+  describe('sampling disclosure', () => {
+    const SAMPLE =
+      /GDELT's relevance-ranked sample of matching clips, documented as the 200 most relevant, not all matching coverage/;
+    const COMPARE = /compare windows or stations with a separate, narrower call for each/;
+
+    function mockContext(result: unknown) {
+      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+        getTvContext: vi.fn().mockResolvedValue(result),
+      } as unknown as tvServiceModule.GdeltTvService);
+    }
+
+    it('carries the sampling notice on both surfaces of a non-empty result', async () => {
+      mockContext(CONTEXT_RESULT);
+      const result = await runToolContract(gdeltGetTvContext, {
+        query: 'climate',
+        stations: ['CNN'],
+        startDatetime: '20240101000000',
+        endDatetime: '20240107235959',
+      });
+      const sc = result.structuredContent as { notice: string; totalCount: number };
+      expect(sc.notice).toMatch(SAMPLE);
+      expect(sc.notice).toMatch(COMPARE);
+      expect(sc.totalCount).toBe(42);
+      expect(contentText(result)).toContain(sc.notice);
+    });
+
+    it('carries it without a clip count, leaving totalCount absent', async () => {
+      mockContext({ words: [{ label: 'climate', score: 100 }] });
+      const result = await runToolContract(gdeltGetTvContext, {
+        query: 'climate',
+        stations: ['CNN'],
+      });
+      expect(result.structuredContent).toMatchObject({ notice: expect.stringMatching(SAMPLE) });
+      expect(result.structuredContent).not.toHaveProperty('totalCount');
+    });
+
+    it('keeps the no-data notice alone on an empty result', async () => {
+      mockContext({ words: [] });
+      const result = await runToolContract(gdeltGetTvContext, {
+        query: 'noresults',
+        stations: ['CNN'],
+      });
+      const notice = (result.structuredContent as { notice: string }).notice;
+      expect(notice).toMatch(/^No TV context data for "noresults"\./);
+      expect(notice).not.toMatch(/relevance-ranked/);
+    });
+
+    it('describes the sample in the tool, words, score, and notice descriptions — and no term cap', () => {
+      const word = gdeltGetTvContext.output.shape.words.element.shape;
+      const descriptions = [
+        gdeltGetTvContext.description,
+        gdeltGetTvContext.output.shape.words.description,
+        word.score.description,
+        gdeltGetTvContext.enrichment?.notice?.description,
+      ];
+      for (const text of descriptions) {
+        expect(text).toMatch(/relevance-ranked sample of matching clips/);
+        expect(text).toMatch(/documented as the 200 most relevant/);
+        expect(text).not.toMatch(/200 (terms|words)|(at most|up to|top) 200/i);
+      }
+      expect(gdeltGetTvContext.enrichment?.notice?.description).toMatch(/every non-empty result/i);
+    });
+  });
+
   it('passes startDatetime/endDatetime through to the service', async () => {
     const mockGetTvContext = vi.fn().mockResolvedValue(CONTEXT_RESULT);
     vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({

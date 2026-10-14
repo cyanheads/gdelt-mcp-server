@@ -10,6 +10,7 @@ import { planWindowContinuation } from '@/mcp-server/tools/date-range.js';
 import {
   type CutPage,
   fitToBudget,
+  pageByOffset,
   planCutNotice,
   RESPONSE_BYTE_BUDGET,
   recordCharge,
@@ -37,6 +38,88 @@ describe('fitToBudget', () => {
 
   it('emits nothing from nothing', () => {
     expect(fitToBudget([])).toBe(0);
+  });
+
+  it('charges reserved bytes before the first record', () => {
+    expect(fitToBudget([20_000, 20_000], 8_000)).toBe(2);
+    expect(fitToBudget([20_000, 20_000], 8_001)).toBe(1);
+  });
+
+  it('still emits one record when the reserve alone fills the budget', () => {
+    expect(fitToBudget([1, 1], RESPONSE_BYTE_BUDGET + 1)).toBe(1);
+  });
+});
+
+describe('pageByOffset', () => {
+  const noun = { singular: 'timestep', plural: 'timesteps' };
+  const quarter = RESPONSE_BYTE_BUDGET / 4;
+  /** Units that are their own charges. */
+  const pageOf = (charges: number[], offset: number, reserved?: number) =>
+    pageByOffset(charges, (charge) => charge, offset, noun, reserved);
+
+  it('returns the whole result with no continuation or notice when it fits', () => {
+    expect(pageOf([quarter, quarter, quarter, quarter], 0)).toEqual({ end: 4 });
+  });
+
+  it('charges only the units from the offset through the first that crosses the budget', () => {
+    const charged: number[] = [];
+    const units = Array.from({ length: 200 }, (_, i) => i);
+    const page = pageByOffset(
+      units,
+      (i) => {
+        charged.push(i);
+        return quarter;
+      },
+      40,
+      noun,
+    );
+    expect(page.end).toBe(44);
+    expect(charged).toEqual([40, 41, 42, 43, 44]);
+  });
+
+  it('cuts at the budget, naming the range, the total, and where to continue', () => {
+    const page = pageOf([quarter, quarter, quarter, quarter, quarter, quarter], 0);
+    expect(page.end).toBe(4);
+    expect(page.nextOffset).toBe(4);
+    expect(page.notice).toBe(
+      'Returned timesteps 1–4 of 6 timesteps; timestep 5 would push this response past its ' +
+        '48,000-byte budget. Continue with offset 4 (nextOffset) and otherwise identical inputs.',
+    );
+  });
+
+  it('pages from the offset, and names a last page that does not start at zero', () => {
+    const charges = [quarter, quarter, quarter, quarter, quarter, quarter];
+    const page = pageOf(charges, 4);
+    expect(page).toEqual({
+      end: 6,
+      notice: 'Returned timesteps 5–6 of 6 timesteps — the last page.',
+    });
+  });
+
+  it('emits a unit larger than the budget alone, with a continuation when more remain', () => {
+    const page = pageOf([RESPONSE_BYTE_BUDGET * 2, 1, 1], 0);
+    expect(page.end).toBe(1);
+    expect(page.nextOffset).toBe(1);
+    expect(page.notice).toMatch(/^Returned timestep 1 of 3 timesteps; timestep 2 would push/);
+  });
+
+  it('charges the reserve on every page', () => {
+    // Without the reserve, a page from offset 3 would hold all four remaining units.
+    const charges = Array.from({ length: 7 }, () => quarter);
+    expect(pageOf(charges, 0, quarter)).toMatchObject({ end: 3, nextOffset: 3 });
+    expect(pageOf(charges, 3, quarter)).toMatchObject({ end: 6, nextOffset: 6 });
+  });
+
+  it('walks every unit exactly once, in order, across pages', () => {
+    const charges = Array.from({ length: 50 }, (_, i) => 1_000 + ((i * 7_919) % 30_000));
+    const seen: number[] = [];
+    let offset: number | undefined = 0;
+    while (offset !== undefined) {
+      const page = pageOf(charges, offset);
+      for (let i = offset; i < page.end; i++) seen.push(i);
+      offset = page.nextOffset;
+    }
+    expect(seen).toEqual(charges.map((_, i) => i));
   });
 });
 

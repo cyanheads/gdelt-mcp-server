@@ -13,8 +13,9 @@ import {
   serviceUnavailable,
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
-import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
+import { defaultIsTransient, fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
+import { markdownQuote } from '@/mcp-server/tools/markdown-escape.js';
 import {
   GDELT_MAX_QUEUE_WAIT_MS,
   getGdeltPacer,
@@ -49,9 +50,10 @@ export const GDELT_UNAVAILABLE_DATA = {
  * The whole call's wall-clock budget, as a multiple of `GDELT_REQUEST_TIMEOUT_MS`. Derived
  * rather than configured separately, since the two numbers are only meaningful against each
  * other. At 2× it is the deadline rather than the attempt count that bounds the ladder: two
- * timeout-length attempts fit, and four fast failures still do.
+ * timeout-length attempts fit, and four fast failures still do. The TV service's station-catalog
+ * wait never runs past this deadline either, counted from the start of the tool call.
  */
-const GDELT_CALL_DEADLINE_MULTIPLIER = 2;
+export const GDELT_CALL_DEADLINE_MULTIPLIER = 2;
 
 /** Apply timespan or explicit date range to URL params. */
 export function applyTimeRange(
@@ -119,6 +121,9 @@ export function formatDateShort(d: Date): string {
  * whatever is left of the total budget so an attempt cannot overshoot it; the budget itself is
  * `GDELT_CALL_DEADLINE_MULTIPLIER` times that, threaded through `withRetry`'s `deadlineMs` so
  * the caller gets this server's classified error rather than their own transport timeout.
+ *
+ * `maxRetries` overrides the ladder's retry count — 0 for a best-effort side lookup that must
+ * not hold its caller through backoffs.
  */
 export function gdeltFetch<T>(
   baseUrl: string,
@@ -126,6 +131,7 @@ export function gdeltFetch<T>(
   ctx: Context,
   operation: string,
   apiLabel: string,
+  { maxRetries }: { maxRetries?: number } = {},
 ): Promise<T> {
   const { requestTimeoutMs } = getServerConfig();
   return withRetry(
@@ -159,30 +165,41 @@ export function gdeltFetch<T>(
       operation,
       context: ctx,
       baseDelayMs: 5100,
+      ...(maxRetries !== undefined && { maxRetries }),
       signal: ctx.signal,
       deadlineMs: requestTimeoutMs * GDELT_CALL_DEADLINE_MULTIPLIER,
     },
-  ).catch(declareTimeoutAsUnavailable);
+  ).catch((error: unknown) => declareTransientAsUnavailable(error, ctx.signal));
 }
 
 /**
- * Re-label an exhausted upstream timeout as the declared `gdelt_unavailable` contract entry.
+ * Re-label an upstream failure the retry ladder treated as transient as the declared
+ * `gdelt_unavailable` contract entry.
  *
- * Two shapes reach here, both as a `Timeout` no tool declares: a `FetchTimeout` enriched by
- * {@link withRetry} after the last attempt, and the `retry_deadline_exceeded` the total budget
- * raises. Both mean the same thing to a caller — GDELT did not answer — so both surface the
- * contract's `ServiceUnavailable` code, its `retryable: true`, and its recovery hint, with
- * `errorSource` and `retryAttempts` kept in `data` for whoever reads the logs.
+ * Every `ServiceUnavailable` or `Timeout` that {@link defaultIsTransient} accepts lands here
+ * after the ladder gives up: an HTML or empty HTTP 200 body, an HTTP 5xx (a 504 arrives as
+ * `Timeout`), a network error, a `FetchTimeout` on the last attempt, and the
+ * `retry_deadline_exceeded` the total budget raises. They all mean the same thing to a caller —
+ * GDELT did not answer with data — so each surfaces the contract's `ServiceUnavailable` code,
+ * its `retryable: true`, and its recovery hint, with `status`, `errorSource`, and
+ * `retryAttempts` kept in `data` for whoever reads the logs.
  *
- * Keyed on the timeout shape, never on "the call failed": a caller abort arrives as a
- * `RequestCancelled` carrying `errorSource: 'FetchAborted'`, and telling a client to retry a
- * request nobody is waiting for would be worse than saying nothing.
+ * What the ladder refused to retry stays as it was: `defaultIsTransient` rejects an error
+ * carrying `retryable: false` (HTTP 501) and a caller-side `FetchSignalTimeout`. A call whose
+ * own signal has aborted is never re-labelled either — a mid-fetch abort arrives as
+ * `RequestCancelled`, an abort mid-backoff rethrows the signal's reason, and telling a client
+ * to retry a request nobody is waiting for would be worse than saying nothing.
  */
-function declareTimeoutAsUnavailable(error: unknown): never {
-  if (!(error instanceof McpError) || error.code !== JsonRpcErrorCode.Timeout) throw error;
-  const isExhaustedAttempt = error.data?.errorSource === 'FetchTimeout';
-  const isDeadlineExpiry = error.data?.reason === 'retry_deadline_exceeded';
-  if (!isExhaustedAttempt && !isDeadlineExpiry) throw error;
+function declareTransientAsUnavailable(error: unknown, signal: AbortSignal): never {
+  if (
+    signal.aborted ||
+    !(error instanceof McpError) ||
+    (error.code !== JsonRpcErrorCode.ServiceUnavailable &&
+      error.code !== JsonRpcErrorCode.Timeout) ||
+    !defaultIsTransient(error)
+  ) {
+    throw error;
+  }
   throw new McpError(
     JsonRpcErrorCode.ServiceUnavailable,
     error.message,
@@ -411,7 +428,9 @@ function looksLikeGdeltRejection(text: string): boolean {
 /**
  * Parse a GDELT response body, classifying the non-JSON bodies GDELT returns for
  * upstream trouble (HTML, empty) and caller-side query rejections (see
- * `GDELT_REJECTIONS`) before falling back to a generic serialization failure.
+ * `GDELT_REJECTIONS`) before falling back to a generic serialization failure. A body
+ * excerpt echoed in an error message is quoted, since the message reaches content[] as
+ * its `Error:` line.
  *
  * Exported for direct testing — production callers reach it through `gdeltFetch`.
  */
@@ -453,14 +472,14 @@ export function parseGdeltJson<T>(text: string, apiLabel: string): T {
       // ValidationError is outside withRetry's transient set, so this fails fast
       // instead of replaying a query GDELT will reject identically every time.
       throw validationError(
-        `${apiLabel} API rejected the query: ${text.trim().slice(0, BODY_EXCERPT_LIMIT)}`,
+        `${apiLabel} API rejected the query: ${markdownQuote(text.trim().slice(0, BODY_EXCERPT_LIMIT))}`,
         { reason: 'invalid_query', recovery: { hint } },
       );
     }
     // Truncated JSON, gateway garbage, or any non-sentence body — genuinely unparseable and
     // not the caller's fault; stays on the SerializationError path (settled in #18).
     throw serializationError(
-      `${apiLabel} API returned unparseable response: ${text.slice(0, BODY_EXCERPT_LIMIT)}`,
+      `${apiLabel} API returned unparseable response: ${markdownQuote(text.slice(0, BODY_EXCERPT_LIMIT))}`,
     );
   }
 }

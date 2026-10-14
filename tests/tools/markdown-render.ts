@@ -36,6 +36,15 @@ export function hrefFor(url: string): string {
   return md.utils.escapeHtml(md.normalizeLink(url));
 }
 
+/**
+ * Rendered HTML with the links GFM makes of bare http(s) URLs unwrapped to their text — a URL in
+ * escaped text is still linked that way, as any URL in prose is, and that is the one element
+ * such text may produce. What remains shows whether the text displays intact.
+ */
+export function withoutWebAutolinks(html: string): string {
+  return html.replace(/<a href="https?:\/\/[^"]*">|<\/a>/g, '');
+}
+
 /** Concatenated text of every text block in a tool result's `content[]`. */
 export function contentText(result: { content: unknown[] }): string {
   return result.content.map((block) => (block as { text?: string }).text ?? '').join('');

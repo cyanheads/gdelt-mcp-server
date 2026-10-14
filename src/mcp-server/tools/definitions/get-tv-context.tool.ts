@@ -12,15 +12,29 @@ import {
   describeResolvedTimespan,
   GDELT_DATETIME_PATTERN,
 } from '../date-range.js';
-import { escapeMarkdown } from '../markdown-escape.js';
+import { escapeMarkdown, markdownQuote, renderQueryEcho } from '../markdown-escape.js';
+
+/**
+ * The population GDELT computes the word cloud from. Its TV API documentation names the 200
+ * most relevant matching clips; GDELT reports no analyzed-clip count beside the terms, so the
+ * size is cited as documented rather than stated as something this server enforces.
+ */
+const SAMPLE_SCOPE =
+  "GDELT's relevance-ranked sample of matching clips, documented as the 200 most relevant, not " +
+  'all matching coverage';
+
+/** The disclosure every non-empty result carries, and the descriptions repeat. */
+const SAMPLING_NOTICE =
+  `Terms and scores come from ${SAMPLE_SCOPE} — compare windows or stations with a separate, ` +
+  'narrower call for each.';
 
 export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
   title: 'Get GDELT TV Context',
   description:
     'Get the top co-occurring words and phrases from TV news clips matching a query — ' +
     'the vocabulary framing a topic on television. ' +
-    'Returns the most frequent non-stopword terms from matching clips, with relative frequency scores ' +
-    '(0–100, where 100 = the query term itself). ' +
+    'Returns the most frequent non-stopword terms with relative frequency scores ' +
+    `(0–100, where 100 = the query term itself). ${SAMPLING_NOTICE} ` +
     'Use to understand narrative framing, identify related concepts mentioned alongside a topic, ' +
     'or generate follow-up search terms. ' +
     'TV data spans 2009–October 2024.',
@@ -113,16 +127,16 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
             score: z
               .number()
               .describe(
-                'Relative frequency score (0–100). The query term itself scores 100; ' +
-                  'other terms are proportional to their co-occurrence frequency.',
+                'Relative frequency score (0–100). The query term itself scores 100; other terms ' +
+                  `are proportional to their co-occurrence frequency within ${SAMPLE_SCOPE}.`,
               ),
           })
           .describe('A co-occurring term with its relative frequency score.'),
       )
-      .describe('Co-occurring terms sorted by score descending.'),
+      .describe(`Co-occurring terms from ${SAMPLE_SCOPE}, sorted by score descending.`),
   }),
 
-  // Agent-facing context — query echo, clips analyzed, and notice on empty results.
+  // Agent-facing context — query echo, clips analyzed, and the sampling or no-data notice.
   // Reaches structuredContent and content[] automatically; never in the domain return.
   enrichment: {
     effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
@@ -137,10 +151,15 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       .string()
       .optional()
       .describe(
-        'Guidance when no clips matched, so there is no vocabulary to report — the resolved timespan ' +
-          'window, the October 2024 archive cutoff, and how to broaden the query or check station ' +
-          'coverage. Absent when terms were returned.',
+        `On every non-empty result, that terms and scores come from ${SAMPLE_SCOPE} — compare ` +
+          'windows or stations with a separate, narrower call for each. When no clips matched, so ' +
+          'there is no vocabulary to report, the resolved timespan window, the October 2024 archive ' +
+          'cutoff, and how to broaden the query or check station coverage.',
       ),
+  },
+
+  enrichmentTrailer: {
+    effectiveQuery: { render: renderQueryEcho },
   },
 
   async handler(input, ctx) {
@@ -166,13 +185,13 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
     ctx.enrich.echo(input.query);
     if (result.clipsAnalyzed != null) ctx.enrich.total(result.clipsAnalyzed);
 
-    if (result.words.length === 0) {
-      ctx.enrich.notice(
-        `No TV context data for "${input.query}".${describeResolvedTimespan(input)} TV data ends ` +
-          'October 2024 — broaden the query, extend the window, or use gdelt_list_tv_stations to ' +
-          'check coverage.',
-      );
-    }
+    ctx.enrich.notice(
+      result.words.length === 0
+        ? `No TV context data for ${markdownQuote(input.query)}.${describeResolvedTimespan(input)} TV data ends ` +
+            'October 2024 — broaden the query, extend the window, or use gdelt_list_tv_stations to ' +
+            'check coverage.'
+        : SAMPLING_NOTICE,
+    );
 
     ctx.log.info('gdelt_get_tv_context completed', { wordCount: result.words.length });
     return {

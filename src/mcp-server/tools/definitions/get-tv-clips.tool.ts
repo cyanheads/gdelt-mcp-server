@@ -18,21 +18,44 @@ import {
   type TvCap,
   tvRequestWindow,
 } from '../date-range.js';
-import { escapeMarkdown, markdownUrl } from '../markdown-escape.js';
-import { fitToBudget, planCutNotice, recordCharge } from '../response-budget.js';
+import { CLAMP_HEADROOM, clampToCap, limitClampSchema, renderLimitClamp } from '../limit-clamp.js';
+import { escapeMarkdown, markdownQuote, markdownUrl, renderQueryEcho } from '../markdown-escape.js';
+import {
+  fitToBudget,
+  planCutNotice,
+  recordCharge,
+  renderContinuationWindows,
+} from '../response-budget.js';
+import { describeUnresolvedStations, stationLabel } from '../station-ids.js';
 
 /**
- * Hard ceiling GDELT's TV API serves in one clip request, and the `maxRecords` schema
- * maximum. Past it there is no offset or cursor — the cap-hit disclosure switches from
- * "raise maxRecords" to partitioning the date window.
+ * Hard ceiling GDELT's TV API serves in one clip request. Past it there is no offset or
+ * cursor — the cap-hit disclosure switches from "raise maxRecords" to partitioning the date
+ * window. A larger `maxRecords`, up to {@link MAX_RECORDS_ACCEPTED}, runs at this ceiling.
  */
 const MAX_RECORDS_CEILING = 3000;
+
+/** The `maxRecords` schema maximum: past it a call is rejected rather than clamped. */
+const MAX_RECORDS_ACCEPTED = MAX_RECORDS_CEILING * CLAMP_HEADROOM;
 
 /** One clip record — the output item schema, and the type `renderClip` renders. */
 const clipSchema = z
   .object({
     show: z.string().describe('Show name (e.g. "Anderson Cooper 360").'),
-    station: z.string().describe('Station ID (e.g. "CNN").'),
+    station: z
+      .string()
+      .optional()
+      .describe(
+        'Station ID — the value the stations input and the station: operator take (e.g. ' +
+          '"FOXNEWS"). Absent when GDELT\'s label for the station could not be resolved to an ID; ' +
+          'notice says why.',
+      ),
+    stationName: z
+      .string()
+      .describe(
+        'GDELT\'s display label for the station (e.g. "FOX News"). Empty when GDELT returned the ' +
+          'clip without one; notice says so.',
+      ),
     date: z.string().describe('Air datetime in ISO 8601 format.'),
     snippet: z.string().describe('15-second transcript excerpt surrounding the match.'),
     archiveUrl: z.string().describe('Internet Archive URL to view the full 1-minute clip.'),
@@ -56,10 +79,12 @@ function noClipGuidance(input: {
         'station IDs with gdelt_list_tv_stations.';
 }
 
+const CLIP_NOUN = { singular: 'clip', plural: 'clips' };
+
 /** One clip's content[] block. format() and the byte budget both use it, so the charge is exact. */
 function renderClip(c: z.infer<typeof clipSchema>): string {
   const lines = [
-    `\n### ${escapeMarkdown(c.show)} — ${escapeMarkdown(c.station, 'heading-end')}`,
+    `\n### ${escapeMarkdown(c.show)} — ${escapeMarkdown(stationLabel(c), 'heading-end')}`,
     `**Date:** ${escapeMarkdown(c.date)}`,
     `**Snippet:** ${escapeMarkdown(c.snippet)}`,
     `**View clip:** ${markdownUrl(c.archiveUrl)}`,
@@ -74,8 +99,9 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
     "Retrieve the top matching TV news clips for a query from the Internet Archive's " +
     'Television News Archive: fetches up to 3,000 and returns as many as fit a 48,000-byte response — ' +
     'the rest are counted in withheldCount, with a continuation to reach them. Each clip includes show ' +
-    'name, station, air timestamp, a 15-second transcript excerpt, and a direct link to view the full ' +
-    'one-minute clip. Use after gdelt_search_tv to read the actual transcript content driving a coverage spike. ' +
+    "name, the station's display name — with its station ID when that name resolves to one — air " +
+    'timestamp, a 15-second transcript excerpt, and a direct link to view the full one-minute clip. Use after gdelt_search_tv to read the actual transcript content ' +
+    "driving a coverage spike — pass a series' station value as stations here. " +
     'GDELT answers TV windows in whole clock hours; clips it returns from outside an explicit startDatetime/endDatetime ' +
     'window are dropped, and continuing a cut response at maxRecords 3000 leaves room for them. ' +
     '3,000 is a hard per-call ceiling and GDELT offers no cursor: when a query fills it or a response comes ' +
@@ -162,12 +188,16 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
       .number()
       .int()
       .min(1)
-      .max(MAX_RECORDS_CEILING)
+      .max(
+        MAX_RECORDS_ACCEPTED,
+        `maxRecords must be at most ${MAX_RECORDS_ACCEPTED} (a value above ${MAX_RECORDS_CEILING} runs at ${MAX_RECORDS_CEILING}).`,
+      )
       .default(50)
       .describe(
-        'Maximum number of clips to fetch (1–3000); the response carries as many of them as fit its ' +
-          "48,000-byte budget. 3000 is GDELT's hard per-call ceiling, not a page size — there is no cursor " +
-          'past it, so a query that fills 3000 must be split into narrower startDatetime/endDatetime windows instead.',
+        'Maximum number of clips to fetch (1–3000; a value up to 30000 runs at 3000, and the response says so ' +
+          "in limitClamp). The response carries as many of them as fit its 48,000-byte budget. 3000 is GDELT's " +
+          'hard per-call ceiling, not a page size — there is no cursor past it, so a query that fills 3000 must be ' +
+          'split into narrower startDatetime/endDatetime windows instead.',
       ),
     sort: z
       .enum(['relevance', 'dateDesc', 'dateAsc'])
@@ -187,6 +217,7 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
   enrichment: {
     effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
     totalCount: z.number().describe('Number of clips returned.'),
+    limitClamp: limitClampSchema,
     withheldCount: z
       .number()
       .optional()
@@ -205,8 +236,11 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
           'the response was cut to its ' +
           '48,000-byte budget, how many clips it withheld and the route to them. When the maxRecords cap was ' +
           'reached on an uncut response, that more clips may exist — a higher maxRecords below the 3000 ' +
-          'ceiling, or a narrower date window at it. Absent when a non-empty result set fit under both the ' +
-          'cap and the budget.',
+          'ceiling, or a narrower date window at it. When a returned clip has no station ID, why: ' +
+          'GDELT returned it without a station label, or its station catalog did not load or has no ' +
+          'entry for the named label — with how to look the ID up. Absent when a non-empty result set fit ' +
+          'under both the cap and the budget, no clip was dropped as out of window, and every clip carries ' +
+          'its station ID.',
       ),
     continuationWindows: z
       .array(
@@ -232,15 +266,9 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
   },
 
   enrichmentTrailer: {
-    continuationWindows: {
-      render: (windows = []) =>
-        [
-          '**Continuation windows:**',
-          ...windows.map(
-            (w) => `- startDatetime: ${w.startDatetime}, endDatetime: ${w.endDatetime}`,
-          ),
-        ].join('\n'),
-    },
+    effectiveQuery: { render: renderQueryEcho },
+    limitClamp: { render: renderLimitClamp },
+    continuationWindows: { render: renderContinuationWindows },
   },
 
   async handler(input, ctx) {
@@ -249,7 +277,8 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
       throw ctx.fail('invalid_date_range', dateRangeFault);
     }
 
-    ctx.log.info('gdelt_get_tv_clips', { query: input.query, maxRecords: input.maxRecords });
+    const maxRecords = clampToCap(ctx, 'maxRecords', input.maxRecords, MAX_RECORDS_CEILING);
+    ctx.log.info('gdelt_get_tv_clips', { query: input.query, maxRecords });
     const svc = getGdeltTvService();
 
     // GDELT TV answers whole clock hours — the start floored to the hour, the end's hour
@@ -259,13 +288,13 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
       input.startDatetime && input.endDatetime
         ? tvRequestWindow({ startDatetime: input.startDatetime, endDatetime: input.endDatetime })
         : undefined;
-    const upstream = await svc.getTvClips(
+    const { clips: upstream, stationCatalogUnavailable } = await svc.getTvClips(
       {
         query: input.query,
         ...(input.stations?.length && { stations: input.stations }),
         ...(input.timespan && { timespan: input.timespan }),
         ...requested,
-        maxRecords: input.maxRecords,
+        maxRecords,
         sort: input.sort,
       },
       ctx,
@@ -289,8 +318,8 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
     const emittedCount = fitToBudget(charges);
     const clips = fetched.slice(0, emittedCount);
     const cut = emittedCount < fetched.length;
-    const capHit = upstream.length >= input.maxRecords;
-    const belowCeiling = input.maxRecords < MAX_RECORDS_CEILING;
+    const capHit = upstream.length >= maxRecords;
+    const belowCeiling = maxRecords < MAX_RECORDS_CEILING;
     const cap: TvCap = !capHit ? 'none' : belowCeiling ? 'below-ceiling' : 'at-ceiling';
     // Every continuation request is widened to whole hours, and the clips it fetches from
     // outside its window fill a small maxRecords before the ones inside it. This is the one
@@ -309,10 +338,10 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
     const notices: string[] = [];
     if (upstream.length === 0) {
       notices.push(
-        `No TV clips matched "${input.query}".${describeResolvedTimespan(input)} ${noClipGuidance(input)}`,
+        `No TV clips matched ${markdownQuote(input.query)}.${describeResolvedTimespan(input)} ${noClipGuidance(input)}`,
       );
     } else if (capHit && !cut) {
-      if (input.maxRecords < MAX_RECORDS_CEILING) {
+      if (belowCeiling) {
         notices.push(
           `GDELT returned ${upstream.length} clips (maxRecords cap reached — there may be more). ` +
             `Raise maxRecords (up to ${MAX_RECORDS_CEILING}) to fetch more; a response carries only as many ` +
@@ -334,7 +363,7 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
         `${dropped === 1 ? 'it was' : 'they were'} dropped.`;
       notices.push(
         capHit
-          ? `${droppedClips} ${dropped === 1 ? 'It' : 'They'} took ${dropped} of the ${input.maxRecords} ` +
+          ? `${droppedClips} ${dropped === 1 ? 'It' : 'They'} took ${dropped} of the ${maxRecords} ` +
               'maxRecords slots, so in-window clips past them were not fetched.'
           : `${droppedClips} That is expected at any window edge not on the hour — including the edges ` +
               'continuationWindows hands back — and not a sign of missing results.',
@@ -347,7 +376,7 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
     }
     if (cut) {
       const plan = planCutNotice({
-        noun: { singular: 'clip', plural: 'clips' },
+        noun: CLIP_NOUN,
         dedupeKey: 'archiveUrl',
         sort: input.sort,
         window,
@@ -356,7 +385,7 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
         nextCharge: charges[emittedCount] as number,
         withheldStamps: fetched.slice(emittedCount).map((c) => c.date),
         fetchedCount: fetched.length,
-        maxRecords: input.maxRecords,
+        maxRecords,
         ceiling: MAX_RECORDS_CEILING,
         capHit,
         halve: (w) => planTvWindowContinuation(w, { cut: true, cap }),
@@ -368,6 +397,12 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
       });
       notices.push(plan.notice);
     }
+    const unresolved = describeUnresolvedStations(
+      clips,
+      stationCatalogUnavailable === true,
+      CLIP_NOUN,
+    );
+    if (unresolved) notices.push(unresolved);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
     ctx.log.info('gdelt_get_tv_clips completed', {

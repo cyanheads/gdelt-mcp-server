@@ -8,10 +8,14 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGdeltThemeService, themeQueryWords } from '@/services/gdelt/gdelt-theme-service.js';
-import { escapeMarkdown } from '../markdown-escape.js';
+import { CLAMP_HEADROOM, clampToCap, limitClampSchema, renderLimitClamp } from '../limit-clamp.js';
+import { escapeMarkdown, markdownQuote, renderQueryEcho } from '../markdown-escape.js';
 
 /** Page-size ceiling: 100 of the longest identifiers stay near 17 KB of structuredContent. */
 const MAX_MATCHES_PER_PAGE = 100;
+
+/** The `limit` schema maximum: past it a call is rejected; up to it, clamped to the page ceiling. */
+const MAX_LIMIT_ACCEPTED = MAX_MATCHES_PER_PAGE * CLAMP_HEADROOM;
 
 export const gdeltSearchThemes = tool('gdelt_search_themes', {
   title: 'Search GDELT GKG Themes',
@@ -28,7 +32,8 @@ export const gdeltSearchThemes = tool('gdelt_search_themes', {
     'matches, the search retries once with a trailing s dropped from each word of four or more ' +
     'letters, and says so. Matches rank an exact identifier first, then by the count the lookup ' +
     'lists — a static prevalence figure, not a live article total — and each carries a paste-ready ' +
-    'operator such as theme:TAX_DISEASE_OUTBREAK. Page with offset and limit.',
+    'operator such as theme:TAX_DISEASE_OUTBREAK. Page with offset and limit (up to 100 matches per page; ' +
+    'a larger limit runs at 100).',
   annotations: { readOnlyHint: true, openWorldHint: true },
 
   errors: [
@@ -78,9 +83,15 @@ export const gdeltSearchThemes = tool('gdelt_search_themes', {
       .number()
       .int()
       .min(1)
-      .max(MAX_MATCHES_PER_PAGE)
+      .max(
+        MAX_LIMIT_ACCEPTED,
+        `limit must be at most ${MAX_LIMIT_ACCEPTED} (a value above ${MAX_MATCHES_PER_PAGE} runs at ${MAX_MATCHES_PER_PAGE}).`,
+      )
       .default(25)
-      .describe(`Maximum matches returned in this response (1–${MAX_MATCHES_PER_PAGE}).`),
+      .describe(
+        `Maximum matches returned in this response (1–${MAX_MATCHES_PER_PAGE}; a value up to ` +
+          `${MAX_LIMIT_ACCEPTED} runs at ${MAX_MATCHES_PER_PAGE}, and the response says so in limitClamp).`,
+      ),
   }),
 
   output: z.object({
@@ -108,7 +119,11 @@ export const gdeltSearchThemes = tool('gdelt_search_themes', {
       ),
     totalMatches: z.number().describe('Total themes matching the query, across all pages.'),
     offset: z.number().describe('Zero-based offset of this page.'),
-    limit: z.number().describe('Maximum matches requested for this page.'),
+    limit: z
+      .number()
+      .describe(
+        'Maximum matches this page holds — the requested limit, or 100 when a larger one was clamped.',
+      ),
     nextOffset: z
       .number()
       .optional()
@@ -124,6 +139,7 @@ export const gdeltSearchThemes = tool('gdelt_search_themes', {
     totalCount: z
       .number()
       .describe('Total themes matching the query — the same figure as totalMatches.'),
+    limitClamp: limitClampSchema,
     notice: z
       .string()
       .optional()
@@ -133,11 +149,16 @@ export const gdeltSearchThemes = tool('gdelt_search_themes', {
       ),
   },
 
+  enrichmentTrailer: {
+    effectiveQuery: { render: renderQueryEcho },
+    limitClamp: { render: renderLimitClamp },
+  },
+
   async handler(input, ctx) {
     if (themeQueryWords(input.query).length === 0) {
       throw ctx.fail(
         'invalid_query',
-        `Query "${input.query}" has no letter or digit to match against theme identifiers.`,
+        `Query ${markdownQuote(input.query)} has no letter or digit to match against theme identifiers.`,
       );
     }
 
@@ -151,12 +172,13 @@ export const gdeltSearchThemes = tool('gdelt_search_themes', {
         offset: input.offset,
         totalMatches,
         recovery: {
-          hint: `Retry with offset 0–${totalMatches - 1}; "${input.query}" has ${totalMatches} matches.`,
+          hint: `Retry with offset 0–${totalMatches - 1}; ${markdownQuote(input.query)} has ${totalMatches} matches.`,
         },
       });
     }
 
-    const page = matches.slice(input.offset, input.offset + input.limit).map((m) => ({
+    const limit = clampToCap(ctx, 'limit', input.limit, MAX_MATCHES_PER_PAGE);
+    const page = matches.slice(input.offset, input.offset + limit).map((m) => ({
       theme: m.theme,
       count: m.count,
       operator: `theme:${m.theme}`,
@@ -166,16 +188,17 @@ export const gdeltSearchThemes = tool('gdelt_search_themes', {
 
     // Every notice segment accumulates here and is flushed once — ctx.enrich.notice is last-wins.
     const notices: string[] = [];
-    const singular = singularWords && `"${singularWords.join(' ')}"`;
+    const singular = singularWords && markdownQuote(singularWords.join(' '));
+    const query = markdownQuote(input.query);
     if (totalMatches > 0 && singular) {
       notices.push(
-        `No theme matched "${input.query}" as given; these are the matches for ${singular}, with a ` +
+        `No theme matched ${query} as given; these are the matches for ${singular}, with a ` +
           'trailing "s" dropped from each word of four or more letters.',
       );
     }
     if (totalMatches === 0) {
       notices.push(
-        `No GKG theme matched "${input.query}"${singular ? ` or ${singular}` : ''}. Theme ` +
+        `No GKG theme matched ${query}${singular ? ` or ${singular}` : ''}. Theme ` +
           'identifiers carry no labels or synonyms — retry gdelt_search_themes with fewer words, a ' +
           'singular, or a shorter stem (e.g. "displac" instead of "displacement").',
       );
@@ -189,7 +212,7 @@ export const gdeltSearchThemes = tool('gdelt_search_themes', {
       matches: page,
       totalMatches,
       offset: input.offset,
-      limit: input.limit,
+      limit,
       ...(nextOffset != null && { nextOffset }),
     };
   },

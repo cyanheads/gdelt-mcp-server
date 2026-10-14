@@ -6,14 +6,14 @@
 
 | Name | Description | Key Inputs | Annotations |
 |:-----|:------------|:-----------|:------------|
-| `gdelt_search_articles` | Search the last 3 months of global news coverage (65 languages) with full-text and filter operators. Query supports phrases, boolean OR, `sourcecountry:`, `sourcelang:`, `domain:`, `theme:` (GKG taxonomy), `tone<`/`tone>`, `near:`, and `repeat:` operators. Fetches up to 250 articles with URL, title, source country, language, publication date, and social image URL, and returns as many as fit a 48,000-byte budget per surface; the rest are counted in `withheldCount`. 250 is a hard ceiling with no cursor past it — at the cap, or on a page cut to the budget, the response returns `continuationWindows` to re-query. | `query`, `timespan`, `startDatetime`, `endDatetime`, `maxRecords`, `sort` | `readOnlyHint: true`, `openWorldHint: true` |
-| `gdelt_get_coverage_timeline` | Retrieve a time series showing when coverage of a topic spiked — either as normalized volume (% of all global coverage) or as average tone. Use `mode: volume_with_articles` for the signal-detection workflow: each timestep includes the top articles that drove that spike, so a single call reveals both the spike and its cause. The text surface renders the first 3 links per timestep beside its true count; `points` renders named timesteps in full. Tone timeline shows sentiment shifts over time; combine with `gdelt_get_tone_distribution` for the full tonal picture. | `query`, `mode` (volume \| volume_with_articles \| tone), `timespan`, `startDatetime`, `endDatetime`, `smoothing`, `points` | `readOnlyHint: true`, `openWorldHint: true` |
-| `gdelt_get_tone_distribution` | Get the tonal distribution of articles matching a query as a histogram (bins from ~-30 to +30). Unlike a single average tone score, the histogram reveals whether coverage is uniformly negative, bimodal (some extremely positive, some extremely negative), or clustered near neutral. Each bin includes representative article URLs. Distinct from `gdelt_get_coverage_timeline` (mode: tone) — this is a snapshot distribution across all matching articles, not a time series. | `query`, `timespan`, `startDatetime`, `endDatetime` | `readOnlyHint: true`, `openWorldHint: true` |
-| `gdelt_get_coverage_breakdown` | Break down coverage volume over time by source language or source country, returning a multi-series time series (one series per language or country). Shows which countries or languages drove early vs. late coverage — useful for tracing how a story propagated geographically. Returns the top 10 series by total volume to keep output size manageable; remaining series are aggregated into an "Other" bucket and named in `otherSeriesLabels`, so any of them can be retrieved complete via the `series` input. Values are normalized — the topic's share of media output, not absolute article counts, so small media markets with concentrated coverage rank above large markets with diverse output. | `query`, `breakdownBy` (language \| country), `timespan`, `startDatetime`, `endDatetime`, `series` | `readOnlyHint: true`, `openWorldHint: true` |
-| `gdelt_search_themes` | Find GKG theme identifiers for the `theme:` operator the four DOC tools accept, by matching query words against the identifiers in GDELT's GKG theme lookup (no labels exist). Every word must begin one of an identifier's `_`/`-`-separated parts or run across consecutive parts, or all the words joined must; one disclosed plural fallback on zero matches. Ranked exact identifier first, then by the lookup's listed count, then by identifier; each match carries a paste-ready `operator`. | `query`, `offset`, `limit` | `readOnlyHint: true`, `openWorldHint: true` |
-| `gdelt_search_tv` | Search US television news closed captions (2009–Oct 2024, 150+ stations) for spoken mentions of a query. Returns query-matching per-station coverage as normalized airtime percentages or raw 15-second clip counts. Up to 10 stations may be selected with `stations`, or a `station:` query operator can supply selection. Results are ISO-normalized; page membership uses deterministic date-then-station order, and returned points are grouped by station. `nextOffset` retrieves the next page of up to 500 points. | `query`, `stations`, `timespan`, `startDatetime`, `endDatetime`, `smoothing`, `normalize`, `dateres`, `offset`, `limit` | `readOnlyHint: true`, `openWorldHint: true` |
-| `gdelt_get_tv_clips` | Retrieve the top matching TV news clips for a query from the Internet Archive's Television News Archive — up to 3,000 fetched, clips dated outside an explicit `startDatetime`/`endDatetime` window dropped, and as many as fit a 48,000-byte budget per surface returned; the rest are counted in `withheldCount`. Each clip includes show name, station, air timestamp, a 15-second transcript excerpt, and a direct link to view the full one-minute clip. Use after `gdelt_search_tv` to read the actual content driving a coverage spike. 3,000 is a hard ceiling with no cursor past it — at the cap, or on a page cut to the budget, the response returns `continuationWindows` to re-query. | `query`, `stations`, `timespan`, `startDatetime`, `endDatetime`, `maxRecords`, `sort` (relevance \| dateDesc \| dateAsc) | `readOnlyHint: true`, `openWorldHint: true` |
-| `gdelt_get_tv_context` | Get the top co-occurring words and phrases from TV news clips matching a query — the vocabulary framing a topic on television. Returns the most frequent non-stopword terms from matching clips, with relative frequency scores. Use to understand narrative framing, identify related concepts, or generate follow-up search terms. | `query`, `stations`, `timespan` | `readOnlyHint: true`, `openWorldHint: true` |
+| `gdelt_search_articles` | Search the last 3 months of global news coverage (65 languages) with full-text and filter operators. Query supports phrases, boolean OR, `sourcecountry:`, `sourcelang:`, `domain:`, `theme:` (GKG taxonomy), `tone<`/`tone>`, `near:`, and `repeat:` operators. Fetches up to 250 articles with URL, title, source country, language, publication date, and social image URL, and returns as many as fit a 48,000-byte budget per surface; the rest are counted in `withheldCount`. 250 is a hard ceiling with no cursor past it — at the cap, or on a page cut to the budget, the response returns `continuationWindows` to re-query. A `maxRecords` up to 2,500 runs at 250 and is disclosed in `limitClamp`; above 2,500 it is rejected. | `query`, `timespan`, `startDatetime`, `endDatetime`, `maxRecords`, `sort` | `readOnlyHint: true`, `openWorldHint: true` |
+| `gdelt_get_coverage_timeline` | Retrieve a time series showing when coverage of a topic spiked — either as normalized volume (% of all global coverage) or as average tone. Use `mode: volume_with_articles` for the signal-detection workflow: each timestep includes the top articles that drove that spike, so a single call reveals both the spike and its cause. Both surfaces carry the first 3 links per timestep beside `referenceCount`, its true count; `points` returns only the named timesteps, each in full. A response carries as many whole timesteps as fit a 48,000-byte budget per surface, with `nextOffset` for the next page. Tone timeline shows sentiment shifts over time; combine with `gdelt_get_tone_distribution` for the full tonal picture. | `query`, `mode` (volume \| volume_with_articles \| tone), `timespan`, `startDatetime`, `endDatetime`, `smoothing`, `points`, `offset` | `readOnlyHint: true`, `openWorldHint: true` |
+| `gdelt_get_tone_distribution` | Get the tonal distribution of articles matching a query as a histogram (bins from ~-30 to +30). Unlike a single average tone score, the histogram reveals whether coverage is uniformly negative, bimodal (some extremely positive, some extremely negative), or clustered near neutral. Each bin carries its first 3 representative article links beside `referenceCount`; `bins` returns only the named bins, each in full. A response carries as many whole bins as fit a 48,000-byte budget per surface, with `nextOffset` for the next page; the summary covers the whole histogram. Distinct from `gdelt_get_coverage_timeline` (mode: tone) — this is a snapshot distribution across all matching articles, not a time series. | `query`, `timespan`, `startDatetime`, `endDatetime`, `bins`, `offset` | `readOnlyHint: true`, `openWorldHint: true` |
+| `gdelt_get_coverage_breakdown` | Break down coverage volume over time by source language or source country, returning a multi-series time series (one series per language or country). Shows which countries or languages drove early vs. late coverage — useful for tracing how a story propagated geographically. Returns the top 10 series ranked by the sum of their values; every other series is named in `otherSeriesLabels`, and the `series` input returns only the named series, each complete, under `selectedSeries`. A response carries as many whole series as fit a 48,000-byte budget per surface, with `nextOffset` for the next page. Values are normalized — the topic's share of each source's media output, not absolute article counts, so small media markets with concentrated coverage rank above large markets with diverse output, and values from different sources are never summed into a share. | `query`, `breakdownBy` (language \| country), `timespan`, `startDatetime`, `endDatetime`, `series`, `offset` | `readOnlyHint: true`, `openWorldHint: true` |
+| `gdelt_search_themes` | Find GKG theme identifiers for the `theme:` operator the four DOC tools accept, by matching query words against the identifiers in GDELT's GKG theme lookup (no labels exist). Every word must begin one of an identifier's `_`/`-`-separated parts or run across consecutive parts, or all the words joined must; one disclosed plural fallback on zero matches. Ranked exact identifier first, then by the lookup's listed count, then by identifier; each match carries a paste-ready `operator`. Pages of up to 100 matches; a `limit` up to 1,000 runs at 100 and is disclosed in `limitClamp`. | `query`, `offset`, `limit` | `readOnlyHint: true`, `openWorldHint: true` |
+| `gdelt_search_tv` | Search US television news closed captions (2009–Oct 2024, 150+ stations) for spoken mentions of a query. Returns query-matching per-station coverage as normalized airtime percentages or raw 15-second clip counts. Up to 10 stations may be selected with `stations`, or a `station:` query operator can supply selection. Results are ISO-normalized; each series carries GDELT's label (`stationName`) and, when the label resolves, its station ID (`station`); page membership uses deterministic date-then-station-name order, and returned points are grouped by station. `nextOffset` retrieves the next page of up to 500 points; a `limit` up to 5,000 runs at 500 and is disclosed in `limitClamp`. | `query`, `stations`, `timespan`, `startDatetime`, `endDatetime`, `smoothing`, `normalize`, `dateres`, `offset`, `limit` | `readOnlyHint: true`, `openWorldHint: true` |
+| `gdelt_get_tv_clips` | Retrieve the top matching TV news clips for a query from the Internet Archive's Television News Archive — up to 3,000 fetched, clips dated outside an explicit `startDatetime`/`endDatetime` window dropped, and as many as fit a 48,000-byte budget per surface returned; the rest are counted in `withheldCount`. Each clip includes show name, station label and — when the label resolves — station ID, air timestamp, a 15-second transcript excerpt, and a direct link to view the full one-minute clip. Use after `gdelt_search_tv`, passing a series' `station` as `stations`, to read the actual content driving a coverage spike. 3,000 is a hard ceiling with no cursor past it — at the cap, or on a page cut to the budget, the response returns `continuationWindows` to re-query. A `maxRecords` up to 30,000 runs at 3,000 and is disclosed in `limitClamp`; above 30,000 it is rejected. | `query`, `stations`, `timespan`, `startDatetime`, `endDatetime`, `maxRecords`, `sort` (relevance \| dateDesc \| dateAsc) | `readOnlyHint: true`, `openWorldHint: true` |
+| `gdelt_get_tv_context` | Get the top co-occurring words and phrases from TV news clips matching a query — the vocabulary framing a topic on television. Returns the most frequent non-stopword terms, with relative frequency scores, from GDELT's relevance-ranked sample of matching clips (documented as the 200 most relevant), not all matching coverage. Use to understand narrative framing, identify related concepts, or generate follow-up search terms. | `query`, `stations`, `timespan`, `startDatetime`, `endDatetime` | `readOnlyHint: true`, `openWorldHint: true` |
 | `gdelt_list_tv_stations` | List the television stations available for TV search with their market, network, monitoring start date, and monitoring end date — every station, or only those matching the optional `stations`, `network`, and `market` filters (exact, case-insensitive, combined with AND). Stations with an end date within the last 24 hours are considered active; stations with earlier end dates are discontinued. Use before querying to verify a station was active during the target time period. | `stations`, `network`, `market` (all optional) | `readOnlyHint: true`, `openWorldHint: true` |
 
 ### Resources
@@ -108,6 +108,7 @@ the framework merges in (also rendered as the `content[]` trailer).
   effectiveQuery: string;  // echoed query for chaining
   totalCount: number;      // articles in this response
   timespan?: string;       // echoed when supplied
+  limitClamp?: { parameter: 'maxRecords'; requested: number; applied: number };  // only when maxRecords > 250 ran at 250
   withheldCount?: number;  // fetched minus returned; only on a page cut to the budget
   notice?: string;         // empty result, budget cut, or maxRecords cap reached
   continuationWindows?: Array<{ startDatetime: string; endDatetime: string }>;  // resume window or halves
@@ -120,77 +121,93 @@ the framework merges in (also rendered as the `content[]` trailer).
   dateResolution?: '15min' | 'hour' | 'day';  // omitted with fewer than two distinct timesteps
   series: Array<{
     label: string;  // "Volume Intensity" or "Average Tone"
-    data: Array<{
+    data: Array<{   // the timesteps of this page
       date: string;   // ISO 8601
       value: number;  // normalized % (volume) or avg score (tone), -100 to +100
-      articles?: Array<{ url: string; title: string }>;  // volume_with_articles only; always complete
+      articles?: Array<{ url: string; title: string }>;  // volume_with_articles only; first 3, or all for a `points`-named timestep
+      referenceCount?: number;  // articles GDELT returned for the timestep; present whenever articles is
     }>;
+    pointCount?: number;                       // points in the whole series, across every page
+    peak?: { date: string; value: number };   // largest |value| in the whole series; may lie outside data
   }>;
-  expandedPoints?: string[];  // timestep dates rendered with their full article list; echoes the `points` input
+  expandedPoints?: string[];  // echoes the `points` input — the timesteps this response is restricted to
+  nextOffset?: number;        // offset of the next page; absent on the last page
   // enrichment
   effectiveQuery: string;
   mode: 'volume' | 'volume_with_articles' | 'tone';
-  totalCount: number;         // data points across all series
+  totalCount: number;         // data points across all series of the full timeline
   startDatetime?: string;     // echoed when supplied
   endDatetime?: string;       // echoed when supplied
-  notice?: string;            // only when the window held no coverage
+  notice?: string;            // when the window held no coverage, or which timesteps of how many this page holds
 }
 ```
 
-`structuredContent` always carries every article for every timestep. `format()` renders the first
-3 per timestep next to that timestep's true count; the `points: string[]` input names timesteps to
-render in full. An unmatched date throws `unknown_point` listing the available dates. See
-[Per-point article rendering stays capped by default](#per-point-article-rendering-stays-capped-by-default).
+Both surfaces carry the first 3 articles per timestep beside `referenceCount`; the `points: string[]`
+input returns only the named timesteps, in timeline order, each with every article. An unmatched date
+throws `unknown_point` listing the available dates. `offset` pages the timesteps (or the named ones);
+past the last one it throws `offset_out_of_range` naming the valid range, and on an empty timeline it
+is ignored. See
+[Analytics responses page whole units within the byte budget](#analytics-responses-page-whole-units-within-the-byte-budget).
 
 ### `gdelt_get_tone_distribution`
 ```ts
 {
-  histogram: Array<{
+  histogram: Array<{          // the bins of this page, most negative first
     bin: number;  // tone bin integer (typically -30 to +30)
     count: number;
-    articles: Array<{ url: string; title: string }>;  // top articles in this bin
+    articles: Array<{ url: string; title: string }>;  // first 3 representative articles, or all for a `bins`-named bin
+    referenceCount: number;   // representative articles GDELT returned for the bin
   }>;
-  summary: {
+  summary: {                  // over the whole histogram, never the page
     peakNegativeBin?: number;  // omitted when no negative bin was returned
     peakPositiveBin?: number;  // omitted when no positive bin was returned
     neutralPct?: number;       // % of articles in -2 to +2 range; omitted when no article was counted
   };
+  nextOffset?: number;         // offset of the next page; absent on the last page
   // enrichment
   effectiveQuery: string;
   totalCount: number;          // articles across all bins
   startDatetime?: string;      // echoed when supplied
   endDatetime?: string;        // echoed when supplied
-  notice?: string;             // only when no articles matched
+  notice?: string;             // when no articles matched, or which bins of how many this page holds
 }
 ```
+
+The `bins: number[]` input returns only the named bins, in histogram order, each with every
+representative article; an unmatched bin throws `unknown_bin` listing the available bins. `offset`
+pages the bins (or the named ones) like the timeline's.
 
 ### `gdelt_get_coverage_breakdown`
 ```ts
 {
   dateResolution?: '15min' | 'hour' | 'day';  // omitted with fewer than two distinct timesteps
-  topSeries: Array<{        // top 10 by total volume
+  topSeries?: Array<{       // overview page: of the top 10 by the sum of their values, those of this page in rank order
     label: string;          // language name or country name
-    data: Array<{ date: string; value: number }>;  // normalized share of media output, not article counts
+    data: Array<{ date: string; value: number }>;  // normalized share of that source's media output, not article counts
   }>;
-  otherAggregated?: Array<{ date: string; value: number }>;  // remaining series combined; same normalized scale
-  otherSeriesLabels?: string[];   // labels of every series folded into otherAggregated, ranked
-  selectedSeries?: Array<{        // complete series for each label passed to the `series` input
+  otherSeriesLabels?: string[];   // overview pages: every series beyond the top 10, ranked
+  selectedSeries?: Array<{        // selection page: complete series for the labels passed to `series`, in that order
     label: string;
     data: Array<{ date: string; value: number }>;
   }>;
+  nextOffset?: number;            // offset of the next page; absent on the last page
   // enrichment
   effectiveQuery: string;
   breakdownBy: 'language' | 'country';
-  totalCount: number;             // total series before truncation to the top 10
+  totalCount: number;             // total series GDELT returned
   startDatetime?: string;         // echoed when supplied
   endDatetime?: string;           // echoed when supplied
-  notice?: string;                // only when the window held no coverage
+  notice?: string;                // when the window held no coverage, or which series of how many this page holds
 }
 ```
 
 The `series: string[]` input takes labels from `otherSeriesLabels` (or `topSeries[].label`) and
-returns each one complete under `selectedSeries`, alongside the unchanged overview. An unmatched
-label throws `unknown_series` listing the available labels rather than being skipped.
+returns only those, each complete, under `selectedSeries` — no overview. An unmatched label throws
+`unknown_series` listing the available labels rather than being skipped. `offset` pages the ranked
+top 10 — `otherSeriesLabels` is charged against the budget first, on every overview page — or the
+selected series. Nothing sums series beyond the top 10: each value is a share of one source's output,
+and shares of different sources' output do not add into a share; the per-series header labels its
+ranking key "sum of values", not a total.
 
 ### `gdelt_search_themes`
 ```ts
@@ -202,11 +219,12 @@ label throws `unknown_series` listing the available labels rather than being ski
   }>;                     // exact identifier first, then count descending, then identifier
   totalMatches: number;   // across all pages
   offset: number;
-  limit: number;          // 1–100, default 25
+  limit: number;          // applied: 1–100, default 25; a request up to 1,000 runs at 100
   nextOffset?: number;    // only when more matches remain
   // enrichment
   effectiveQuery: string;
   totalCount: number;     // same figure as totalMatches
+  limitClamp?: { parameter: 'limit'; requested: number; applied: number };  // only when limit > 100 ran at 100
   notice?: string;        // plural-fallback disclosure, or retry guidance on zero matches
 }
 ```
@@ -227,27 +245,32 @@ one line per match: identifier, count, and the operator in backticks.
   dateResolution?: 'hour' | 'day' | 'week' | 'month' | 'year';  // reported, pinned via dateres, or inferred
   timeRange?: { start: string; end: string };  // omitted on an empty page
   series: Array<{
-    station: string;   // e.g. "CNN"
+    station?: string;    // station ID, e.g. "FOXNEWS"; absent when the label did not resolve
+    stationName: string; // GDELT's label, e.g. "FOX News"; empty when GDELT sent none
     data: Array<{ date: string; value: number }>;  // ISO date; normalized % or raw 15-second clip count
   }>;
   normalized: boolean;
   totalPoints: number; // complete upstream point count before paging
   offset: number;
-  limit: number;       // 1–500
+  limit: number;       // applied: 1–500; a request up to 5,000 runs at 500
   nextOffset?: number;
   // enrichment
   effectiveQuery: string;
   totalCount: number;  // station series in this page
-  notice?: string;     // only when the query matched no TV coverage
+  limitClamp?: { parameter: 'limit'; requested: number; applied: number };  // only when limit > 500 ran at 500
+  notice?: string;     // no TV coverage, or a returned series without a station ID
 }
 ```
+
+The `content[]` summary under each station heading — points, sum, peak — covers only that station's points on the returned page and says so (`Points on this page: 500 | Sum on this page: …`, `Page peak: …`); a timeline longer than one page has a different sum and peak on every page.
 
 ### `gdelt_get_tv_clips`
 ```ts
 {
   clips: Array<{
     show: string;        // show name
-    station: string;     // station ID
+    station?: string;    // station ID; absent when the label did not resolve
+    stationName: string; // GDELT's label for the station; empty when GDELT sent none
     date: string;        // ISO 8601 air datetime
     snippet: string;     // 15-second transcript excerpt
     archiveUrl: string;  // Internet Archive clip URL
@@ -256,8 +279,9 @@ one line per match: identifier, count, and the operator in backticks.
   // enrichment
   effectiveQuery: string;
   totalCount: number;      // clips in this response
+  limitClamp?: { parameter: 'maxRecords'; requested: number; applied: number };  // only when maxRecords > 3,000 ran at 3,000
   withheldCount?: number;  // in-window clips fetched minus returned; only on a page cut to the budget
-  notice?: string;         // empty result, out-of-window drops, budget cut, or maxRecords cap reached
+  notice?: string;         // empty result, out-of-window drops, budget cut, maxRecords cap reached, or a clip without a station ID
   continuationWindows?: Array<{ startDatetime: string; endDatetime: string }>;  // resume window or halves
 }
 ```
@@ -272,9 +296,11 @@ one line per match: identifier, count, and the operator in backticks.
   // enrichment
   effectiveQuery: string;
   totalCount?: number;  // clips the terms were computed from; absent when GDELT reports no count
-  notice?: string;      // only when no clips matched
+  notice?: string;      // every non-empty result: the sampling disclosure; no clips matched: the no-data guidance
 }
 ```
+
+GDELT computes the word cloud from a relevance-ranked sample of the matching clips — its TV API documentation names the 200 most relevant — not from all matching coverage, and its response reports no analyzed-clip count. Every non-empty result says so in `notice`, as do the tool, `words`, and `score` descriptions: comparing windows or stations takes a separate, narrower call for each. No term ceiling is claimed — the documented 200-term ceiling is not enforced upstream (`trump` on CNN returned 448 terms for 2024-01-01–07, measured 2026-10-14) — and the sample size is cited as GDELT documents it, not as something this server enforces.
 
 ### `gdelt_list_tv_stations`
 ```ts
@@ -336,7 +362,7 @@ Used for: "When did coverage of X spike?" / pandemic signal detection workflow
 | Mode | DOC API `mode` param | Returns |
 |:-----|:---------------------|:--------|
 | `volume` | `timelinevol` | Normalized % of all global coverage per timestep |
-| `volume_with_articles` | `timelinevolinfo` | Same as volume + top 10 articles per spike timestep |
+| `volume_with_articles` | `timelinevolinfo` | Same as volume + the first 3 of up to 10 top articles per spike timestep (all of them for timesteps named in `points`) |
 | `tone` | `timelinetone` | Average sentiment score per timestep |
 
 The `volume_with_articles` mode is the key signal-detection mode — it lets an agent identify a spike and immediately see what was driving it without a follow-up `gdelt_search_articles` call.
@@ -387,9 +413,9 @@ The server once exposed GDELT's TV trending-topics endpoint as a zero-argument t
 
 ### Zero matches are a successful empty result
 
-GDELT answers a valid query that matches nothing with HTTP 200 `{}`. Every query tool returns that as a success in its normal output shape — empty arrays, `totalCount: 0` (absent on `gdelt_get_tv_context` unless GDELT reports a clip count), the usual query and date echoes — plus a `notice` carrying the guidance an error's recovery hint used to carry, including the resolved `timespan` range on the TV tools. An empty result is a normal search outcome, and an error envelope would drop the shape, totals, and echoes an agent chains on.
+GDELT answers a valid query that matches nothing with HTTP 200 `{}`. Every query tool returns that as a success in its normal output shape — empty arrays, `totalCount: 0` (absent on `gdelt_get_tv_context` unless GDELT reports a clip count), the usual query and date echoes — plus a `notice` carrying the retry guidance, including the resolved `timespan` range on the TV tools. An empty result is a normal search outcome, and an error envelope would drop the shape, totals, and echoes an agent chains on.
 
-Values that can only be derived from returned points are omitted, never defaulted: `dateResolution` (unless GDELT reported it or `dateres` pinned it), `gdelt_search_tv`'s `timeRange`, the tone summary's peaks (also when no bin exists on that side), and `neutralPct` when no article was counted. Fewer than two distinct timesteps leave `dateResolution` undeterminable, so it is omitted then too. Selectors that name timesteps, series, or offsets (`points`, `series`, `offset`) have nothing to be wrong about on an empty result, so they never raise `unknown_point`, `unknown_series`, or `offset_out_of_range` there. Upstream rejections, rate limits, timeouts, and malformed or empty bodies stay errors.
+Values that can only be derived from returned points are omitted, never defaulted: `dateResolution` (unless GDELT reported it or `dateres` pinned it), `gdelt_search_tv`'s `timeRange`, the tone summary's peaks (also when no bin exists on that side), and `neutralPct` when no article was counted. Fewer than two distinct timesteps leave `dateResolution` undeterminable, so it is omitted then too. Selectors that name timesteps, bins, series, or offsets (`points`, `bins`, `series`, `offset`) have nothing to be wrong about on an empty result, so they never raise `unknown_point`, `unknown_bin`, `unknown_series`, or `offset_out_of_range` there. Upstream rejections, rate limits, timeouts, and malformed or empty bodies stay errors.
 
 The one exception is `gdelt_list_tv_stations`: its unfiltered catalog is static, so an empty one is GDELT failing and surfaces as the retryable `gdelt_unavailable`. A filter that matches no station is still a success — `stations: []` with a notice naming the filter.
 
@@ -409,7 +435,7 @@ Windows narrower than four seconds cannot yield two strictly-narrower halves, so
 
 ### Record pages are cut to a 48,000-byte budget per surface
 
-A full page overflows a client's context long before the record cap: 3,000 clips measured 1.88 MB of `structuredContent` and 1.84 MB of `content[]` text, and 250 articles at the measured median of 460 bytes come to about 115 KB. `gdelt_search_articles` and `gdelt_get_tv_clips` therefore emit fetched records in upstream order while their running charge fits 48,000 bytes, always emitting at least one. Each record is charged the larger of its `structuredContent` JSON element and its rendered `format()` block, each with its separator; the handler renders through the same per-record function `format()` uses, so the charge is exact and both surfaces carry the same records by construction. The charge is taken after Markdown escaping. Heading, enrichment, and trailer ride on top, so each surface stays under 50,000 bytes even for long multi-byte records. A budget, not a smaller `maxRecords` maximum, because record sizes vary with title, snippet, and URL length, and a count limit would either waste the context on short records or overflow it on long ones; `maxRecords` keeps its 1–250 and 1–3,000 ranges and still sets what GDELT is asked for.
+A full page overflows a client's context long before the record cap: 3,000 clips measured 1.88 MB of `structuredContent` and 1.84 MB of `content[]` text, and 250 articles at the measured median of 460 bytes come to about 115 KB. `gdelt_search_articles` and `gdelt_get_tv_clips` therefore emit fetched records in upstream order while their running charge fits 48,000 bytes, always emitting at least one. Each record is charged the larger of its `structuredContent` JSON element and its rendered `format()` block, each with its separator; the handler renders through the same per-record function `format()` uses, so the charge is exact and both surfaces carry the same records by construction. The charge is taken after Markdown escaping. Heading, enrichment, and trailer ride on top, so each surface stays under 50,000 bytes even for long multi-byte records. A budget, not a smaller `maxRecords` maximum, because record sizes vary with title, snippet, and URL length, and a count limit would either waste the context on short records or overflow it on long ones; `maxRecords` keeps its 250 and 3,000 per-call ceilings (larger values clamp to them — see *Oversized counts clamp to the per-call cap*) and still sets what GDELT is asked for. The three DOC analytics tools charge their units against the same budget and page them by `offset` — see *Analytics responses page whole units within the byte budget*.
 
 A cut page reports `withheldCount` (fetched minus returned), one notice, and a continuation — never a larger `maxRecords` as the way to fit more into that response. (Below the ceiling, `gdelt_get_tv_clips` does tell the caller to continue at `maxRecords` 3,000, for the reason under *TV windows are answered in whole clock hours*.) Under `dateDesc`/`dateAsc` the last returned record is a resume point: `continuationWindows` holds one window from the caller's other boundary to one second past it (`endDatetime` for `dateDesc`, `startDatetime` for `dateAsc`), which re-returns that record's second so the records cut from it are not skipped; callers de-duplicate. DOC `seendate` values sit on 15-minute boundaries, so several articles routinely share that second. That resume window is offered only when a call on it would emit a record the page did not — at least one returned record lies outside it, and the next withheld record fits after the ones it re-returns. Otherwise (every returned record shares the resume second, which is common on DOC's 15-minute `seendate` buckets) only the withheld records at that second are out of reach: `continuationWindows` holds the window skipping past it (`endDatetime` one second before it under `dateDesc`, `startDatetime` one second after it under `dateAsc`), and the notice says the records at that second are lost and every earlier (or later) one is reachable. The notice says the rest cannot be reached by narrowing the date window only when that skipped window would be empty — inverted against the other boundary, or, on an uncapped page, holding none of the fetched records. A call with no known window gets the resume (or skip) timestamp to pair with a boundary of its choosing. The relevance, tone, and hybrid sorts have no resume point and get the halves above.
 
@@ -423,13 +449,29 @@ Measured live against the TV API with a known week of clips: a `startdatetime`/`
 
 GDELT titles, labels, clip shows and snippets, context terms, and station metadata are third-party text. Rendered raw, a nested `[x](y)` breaks an article link, `*…*` becomes emphasis, a trailing ` #` drops from a heading, `<b>` and `&copy;` render as HTML and ©, and a snippet line break opens a new list item. Every `format()` interpolation of upstream text goes through one shared escaper (`src/mcp-server/tools/markdown-escape.ts`); `structuredContent` keeps the raw value, and nothing is decoded or stripped. The escaper is a single linear pass that escapes only where CommonMark/GFM would parse markup — `_` only at a word boundary, `<` only before a tag or autolink opener, `&` only before a complete entity, a trailing `#` run only at a heading's end, a leading block marker only as a list item's first text — so a value without markup characters renders byte-identical (the live 159-station catalog is the regression fixture). Line breaks become spaces. Displayed URLs are never backslash-escaped. A plain bare URL passes through byte-identical; one carrying a character the escaper would change (a boundary `_`, `*`, `~`, a bracket, a backtick, a backslash, an entity) renders in autolink form, `<https://…>`, so it displays intact under strict CommonMark as well as under GFM's autolink literal — including two URLs in one paragraph whose underscores would otherwise pair up. A space, `<`, `>`, and ASCII controls cannot sit in an autolink and no valid URL carries them raw, so bare URLs percent-encode them; a value with no scheme cannot be an autolink and is escaped as text. A `[title](url)` destination is never displayed but must resolve to exactly the upstream URL: it takes the angle-bracket form when it contains a space or parenthesis, and its `\` and entity-forming `&` are backslash-escaped, because CommonMark decodes backslash escapes and entity references inside a destination and a backslash escape is the only way to keep the literal character — percent-encoding would change the URL (`%26` is not a query separator, and browsers read `\` as `/`).
 
+Caller text that server prose quotes back goes through `markdownQuote` in the same module: the query in an empty-result notice and in the trailer's `Query:` line, a timespan, `gdelt_list_tv_stations` filters, and the `series` labels, `points` dates, and query named in an error or recovery hint. It is JSON-encoded, then escaped as text, so it displays as exactly its JSON encoding: a plain query reads `"climate change"`, while a newline, `#`, `>`, a fence, or `<script>` can neither end the notice's blockquote nor open markup. JSON rather than the escaper alone because the encoding keeps the quoted span unambiguous — a `"` inside the value is escaped, so it cannot fake the closing quote — and shows a line break as `\n` instead of folding it into a space. `structuredContent` keeps `effectiveQuery` and `timespan` verbatim; a notice or error message is one string on both surfaces, so it carries the quoted form. Upstream labels and dates listed beside them in a recovery hint go through the escaper.
+
 Multi-line `format()` output separates a list from the next paragraph with a blank line; without one, CommonMark lazy continuation folds the paragraph into the list's last item (#49 — tone histogram bin headers joined the previous bin's article list).
 
 ### TV timeline responses use bounded point pages
 
-`gdelt_search_tv` selects page membership from the full result in date-then-station order, then returns those points grouped by station. Each response carries at most 500 points from the requested `offset`. The same bounded page is used for `structuredContent` and rendered in full in `content[]`; `nextOffset` retrieves the next non-overlapping page with identical query inputs. A deterministic 10-station × 50-point formatter fixture measures 28,449 bytes of structured JSON and 15,936 bytes of rendered text at the ceiling. Ten station selectors and the 500-point ceiling therefore keep request construction and both MCP surfaces bounded without hiding points on one client surface.
+`gdelt_search_tv` selects page membership from the full result in date-then-station-name order, then returns those points grouped by station. Each response carries at most 500 points from the requested `offset`. The same bounded page is used for `structuredContent` and rendered in full in `content[]`; `nextOffset` retrieves the next non-overlapping page with identical query inputs. A deterministic page of the ten longest live station labels × 50 hourly points, each series carrying its ID and label, measures 23,892 bytes of structured JSON and 16,550 bytes of rendered text at the ceiling. Ten station selectors and the 500-point ceiling therefore keep request construction and both MCP surfaces bounded without hiding points on one client surface.
 
 This is server-side pagination over a fresh upstream timeline, not a GDELT cursor. Historical archive queries are the intended workflow; callers paging a mutable window should keep every query input fixed and expect new upstream data to change later pages.
+
+### TV station labels resolve to station IDs through the catalog
+
+GDELT labels timeline series and clips with a station's catalog description (`FOX News`, `CBS - St. Petersburg (WTSP)`), never the ID its `station:` operator takes (`FOXNEWS`, `WTSP`) — passing a label back fails as `Invalid Station`. `gdelt_search_tv` and `gdelt_get_tv_clips` therefore return the ID as `station` and the label as `stationName`, resolving each label by exact match against the `stationdetails` description. Measured live, every label on 42 distinct stations — local affiliates under `network:` included — equals its description, and all 159 descriptions are unique; spelling or case heuristics fail outright (`Russia Today` is `RT`, `DeutscheWelle` is `DW`), and the clip URL prefix is not the ID either (`FOXNEWSW_…`). A bundled static map was the alternative; the live catalog was chosen so `gdelt_list_tv_stations` stays the one source of station data.
+
+The catalog is a side lookup and never sinks the answer. It is loaded once per process, after the call's own request and only when a label needs resolving, and shared by both tools; concurrent first calls share one load, which runs under its own signal so a cancelled caller cannot fail the others. The load is a single request, never the retry ladder: a failed or empty load leaves every row with `stationName` and no `station`, the notice says IDs could not be resolved, nothing is kept, and the next call loads it again; a caller's own cancellation still fails its call as cancelled. A call waits for the catalog at most 45 seconds from its start (or its whole deadline, twice `GDELT_REQUEST_TIMEOUT_MS`, when that is shorter), then answers without IDs. A load still running once every call awaiting it has stopped waiting is abandoned: its request is aborted, freeing the one GDELT request slot it holds, and it counts as failed — nothing is kept, and the next call loads again. Left to its own 60-second attempt timeout, a hung catalog request held that slot after the call had answered, delaying the next GDELT request from any tool by about 15 seconds. MCP clients commonly give up on a call at 60 seconds; retried through the full ladder, a catalog 5xx adds about 36 seconds to the first TV call, and a wait bounded only by the 120-second call deadline lets a slow main request plus a retrying catalog cost the caller the whole answer the IDs only label. A label the catalog lacks keeps `stationName`, omits `station` (optional in both schemas), and is named in the notice — quoted there with `markdownQuote`, since the notice reaches `content[]` as written. A series or clip GDELT sends with no label at all has nothing to resolve: its `stationName` is empty rather than a stand-in that would read as a label, it is never looked up, and the notice says GDELT returned it without a station label. Pages order by `stationName`, which every row carries whether or not its ID resolved, so a missing ID never changes page membership.
+
+### Oversized counts clamp to the per-call cap
+
+`maxRecords` on `gdelt_search_articles` (250) and `gdelt_get_tv_clips` (3,000), and `limit` on `gdelt_search_tv` (500) and `gdelt_search_themes` (100), accept up to ten times their cap. A value above the cap runs exactly as a call at the cap — the upstream request, cap-hit detection, byte-budget cut, notices, continuation, and the `limit` output all use the applied value — and the response adds `limitClamp: { parameter, requested, applied }`, rendered in `content[]` as `**Limit clamped:** maxRecords 400 → 250 (per-call cap)`. Above ten times the cap the call is rejected as invalid arguments, which keeps a hard ceiling against absurd input. Rejecting every value past the cap made a caller repeat an otherwise valid read that has one obvious reading; raising the caps would undo the output and provider bounds they exist for. More than 10 `stations` on `gdelt_search_tv` still rejects: the station list scopes one measurement, so running a subset would change the answer rather than defer part of it.
+
+### Every transient upstream failure is `gdelt_unavailable`
+
+Each DOC and TV tool declares `gdelt_unavailable` (`ServiceUnavailable`, retryable, with a recovery hint). The shared fetch helper attaches it to every `ServiceUnavailable` or `Timeout` the retry ladder treated as transient once the ladder gives up — an HTML or empty HTTP 200 body, an HTTP 5xx (a 504 arrives as `Timeout`), a network error, a timeout on the last attempt, and the call deadline expiring — keeping `status`, `errorSource`, and `retryAttempts` in `data`. What the ladder refused to retry passes through unchanged: HTTP 501 (`retryable: false`), a caller-side `TimeoutError`, rate limits (`gdelt_rate_limited`), query rejections (`invalid_query`), and unparseable bodies. A call whose own signal has aborted is never relabelled — a client that went away is not told to retry.
 
 ### The GKG theme lookup is fetched once per process
 
@@ -445,9 +487,13 @@ DOC and TV timeline dates are normalized at the service boundary (`YYYYMMDD` →
 
 Timeline smoothing is sent upstream as `TIMELINESMOOTH`. TV clips use `DateAsc`/`DateDesc`; DOC article search exposes `dateDesc`, `dateAsc`, `toneDesc`, `toneAsc`, and `hybridRel`, while `relevance` omits `SORT` to use GDELT's documented default.
 
-### Per-point article rendering stays capped by default
+### Analytics responses page whole units within the byte budget
 
-`gdelt_get_coverage_timeline`'s `structuredContent` carries every article reference GDELT returns for every timestep; only `format()` caps the rendered links, at 3 per point. Measured with the real `format()` at the documented maximum (288 timesteps × 10 articles), rendering all of them produces **567 KB** of `content[]` against **180 KB** capped — roughly triple, and far past what any sibling tool emits. The cap therefore stays, but it is neither silent nor terminal: each point prints its true count alongside how many links it showed, and `points: [...]` renders named timesteps in full for **+1.4 KB** per point. Cheap selective expansion is what makes the default cap defensible.
+`gdelt_get_coverage_timeline`, `gdelt_get_tone_distribution`, and `gdelt_get_coverage_breakdown` page their results because a whole result overflows a client's context. At GDELT's documented maxima — 288 15-minute timesteps under 72 hours, 10 references per timestep or bin, 61 tone bins — with 100-character titles and URLs, every unit of a timeline in one response comes to about 657 KB of `structuredContent` (every reference) and 196 KB of `content[]`, a tone histogram to about 138 / 133 KB, and a 200-country breakdown to about 158 / 104 KB, reaching about 2.8 / 1.8 MB with all 190 labels beyond the top 10 selected.
+
+Each tool fills a page from `offset` with whole units — timesteps, bins, series — while their running charge fits the shared 48,000-byte budget, always emitting one; the charge is the record-list rule (*Record pages are cut to a 48,000-byte budget per surface*), taken through the same per-unit renderer `format()` uses. A cut page returns `nextOffset`, and any page that is not the whole result carries a notice naming the units it returned out of the total, so a `content[]` reader knows the response is a slice. Walking `nextOffset` with identical inputs returns every unit once, in order. `offset` rather than continuation windows because these are aggregates over one upstream request: re-fetching with the same inputs reproduces the same unit list, and a window cannot split a histogram or a series. `totalCount`, `dateResolution`, the tone `summary`, and each timeline series' `pointCount` and `peak` are computed over the full upstream result, never the page — a line that reads as a series summary reads the same on every page, and the timeline's text says `**Data points:** 288 in the series, 63 in this response` when the page holds only part of it. Breakdown series and tone bins are never split across pages, so their per-unit sums, peaks, and counts are whole by construction. Charges are taken lazily, from `offset` to the first unit that crosses the budget.
+
+Both surfaces carry the first 3 references per timestep or bin beside `referenceCount`, so they hold the same units and references by construction; `points` (timeline) and `bins` (tone) return only the named units, each with every reference. A breakdown `series` selection returns only `selectedSeries`; the ranked overview pages `topSeries` with `otherSeriesLabels` on every page, charged before any series, and a `points` selection's `expandedPoints` echo is charged ahead of its timesteps the same way. Measured on those fixtures — the `response budget (#54)` suites in `tests/tools/get-coverage-timeline.tool.test.ts`, `get-tone-distribution.tool.test.ts`, and `get-coverage-breakdown.tool.test.ts` — no page exceeds about 48.2 KB on either surface, and one named timestep is about 2.5 KB. The timeline walks in 5 pages, all 288 timesteps named in 17, and `volume` mode at 288 timesteps is one page; the tone histogram fits one page and all 61 bins named walk in 3; the breakdown overview walks in 4 pages, the 190-label selection in 64.
 
 ---
 

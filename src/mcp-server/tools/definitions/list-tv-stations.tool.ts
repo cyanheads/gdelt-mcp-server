@@ -9,7 +9,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
 import type { TvStation } from '@/services/gdelt/types.js';
-import { escapeMarkdown } from '../markdown-escape.js';
+import { escapeMarkdown, markdownQuote } from '../markdown-escape.js';
 
 /** Non-US markets in the catalog. Every other market not starting with `National` is a US city. */
 const INTERNATIONAL_MARKETS = new Set(['International', 'Japan']);
@@ -175,10 +175,10 @@ export const gdeltListTvStations = tool('gdelt_list_tv_stations', {
     // Every notice segment for this response accumulates here and is flushed once —
     // ctx.enrich.notice is last-wins, so a second call would silently drop the first.
     const notices: string[] = [];
-    const quotedIds = [...requestedIds.values()].map((id) => `"${id}"`).join(', ');
+    const quotedIds = [...requestedIds.values()].map(markdownQuote).join(', ');
     const attributeFilters = [
-      network && `network "${network}"`,
-      market && `market "${market}"`,
+      network && `network ${markdownQuote(network)}`,
+      market && `market ${markdownQuote(market)}`,
     ].filter(Boolean);
     if (returned.length === 0) {
       const applied = [requestedIds.size > 0 && `stations [${quotedIds}]`, ...attributeFilters];
@@ -192,10 +192,13 @@ export const gdeltListTvStations = tool('gdelt_list_tv_stations', {
     const excludedIds = [...requestedIds]
       .filter(([key]) => catalogIds.has(key) && !returnedIds.has(key))
       .map(([, id]) => id);
-    if (unknownIds.length > 0) notices.push(`No station has ID ${unknownIds.join(', ')}.`);
+    if (unknownIds.length > 0) {
+      notices.push(`No station has ID ${unknownIds.map(markdownQuote).join(', ')}.`);
+    }
     if (excludedIds.length > 0) {
       notices.push(
-        `${excludedIds.join(', ')} ${excludedIds.length === 1 ? 'is a station' : 'are stations'} ` +
+        `${excludedIds.map(markdownQuote).join(', ')} ` +
+          `${excludedIds.length === 1 ? 'is a station' : 'are stations'} ` +
           `but did not match ${attributeFilters.join(' and ')}.`,
       );
     }

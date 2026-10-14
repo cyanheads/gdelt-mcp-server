@@ -72,18 +72,16 @@ describe('gdelt_search_themes definition', () => {
     });
   });
 
-  it.each([
-    [{ query: 'x', limit: 0 }],
-    [{ query: 'x', limit: 101 }],
-    [{ query: 'x', offset: -1 }],
-    [{}],
-  ])('rejects out-of-bounds input %j as InvalidParams', async (input) => {
-    const result = await callWire(input);
-    expect(result).toMatchObject({
-      isError: true,
-      structuredContent: { error: { code: JsonRpcErrorCode.InvalidParams } },
-    });
-  });
+  it.each([[{ query: 'x', limit: 0 }], [{ query: 'x', offset: -1 }], [{}]])(
+    'rejects out-of-bounds input %j as InvalidParams',
+    async (input) => {
+      const result = await callWire(input);
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: JsonRpcErrorCode.InvalidParams } },
+      });
+    },
+  );
 
   it('accepts limit 1 and 100', async () => {
     for (const limit of [1, 100]) {
@@ -232,6 +230,71 @@ describe('gdelt_search_themes paging', () => {
     const out = structured(await callWire({ query: 'drought', offset: 4 }));
     expect(out.matches.map((m) => m.theme)).toEqual(['TAX_DISEASE_WORSTER_DROUGHT_SYNDROME']);
     expect(out).not.toHaveProperty('nextOffset');
+  });
+});
+
+/**
+ * A limit above the 100-match page ceiling, up to 1000, runs exactly as limit 100 — the same
+ * page, nextOffset, and `limit` output — plus a `limitClamp` disclosure on both surfaces. Served
+ * a 150-theme lookup so a 100-match page leaves matches for nextOffset.
+ */
+describe('gdelt_search_themes limit clamp', () => {
+  const LOOKUP = Array.from(
+    { length: 150 },
+    (_, i) => `CLAMPZZ_${String(i).padStart(3, '0')}\t${1000 - i}`,
+  ).join('\n');
+
+  beforeEach(() => {
+    fetchSpy.mockImplementation(async (url) => {
+      if (String(url) !== GKG_THEMES_URL) throw new Error('unmocked fetch');
+      return new Response(LOOKUP, { status: 200 });
+    });
+  });
+
+  it('runs limit 101 and 1000 exactly as limit 100, disclosing the clamp', async () => {
+    const atCap = await callWire({ query: 'clampzz', limit: 100 });
+    expect(structured(atCap)).toMatchObject({ totalMatches: 150, limit: 100, nextOffset: 100 });
+    expect(structured(atCap).matches).toHaveLength(100);
+    expect(atCap.structuredContent).not.toHaveProperty('limitClamp');
+    expect(textOf(atCap)).not.toContain('Limit clamped');
+
+    for (const requested of [101, 1000]) {
+      const clamped = await callWire({ query: 'clampzz', limit: requested });
+      const { limitClamp, ...rest } = clamped.structuredContent as Record<string, unknown>;
+      expect(limitClamp).toEqual({ parameter: 'limit', requested, applied: 100 });
+      expect(rest).toEqual(atCap.structuredContent);
+      const text = textOf(clamped);
+      expect(text).toContain(`**Limit clamped:** limit ${requested} → 100 (per-call cap)`);
+      expect(text).toContain('**Page:** offset 0, limit 100');
+      expect(text).toContain('**Matches 1–100 of 150**');
+    }
+  });
+
+  it('clamps a numeric string past the ceiling like the number', async () => {
+    const clamped = await callWire({ query: 'clampzz', limit: '101' });
+    expect(clamped.isError).toBeFalsy();
+    expect(structured(clamped)).toMatchObject({
+      limit: 100,
+      limitClamp: { parameter: 'limit', requested: 101, applied: 100 },
+    });
+  });
+
+  it('pages the remainder from nextOffset under a clamped limit', async () => {
+    const second = await callWire({ query: 'clampzz', limit: 1000, offset: 100 });
+    expect(structured(second)).toMatchObject({ offset: 100, limit: 100, totalMatches: 150 });
+    expect(structured(second).matches).toHaveLength(50);
+    expect(structured(second)).not.toHaveProperty('nextOffset');
+  });
+
+  it('keeps the zero-match notice beside the clamp disclosure', async () => {
+    const result = await callWire({ query: 'zzqxv', limit: 1000 });
+    expect(result.isError).toBeFalsy();
+    expect(structured(result)).toMatchObject({
+      matches: [],
+      limit: 100,
+      notice: expect.stringMatching(/No GKG theme matched "zzqxv"/),
+      limitClamp: { parameter: 'limit', requested: 1000, applied: 100 },
+    });
   });
 });
 

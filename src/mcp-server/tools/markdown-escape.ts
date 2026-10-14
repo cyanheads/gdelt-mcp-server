@@ -1,9 +1,10 @@
 /**
- * @fileoverview Markdown escaping for upstream text interpolated into `content[]`. GDELT titles,
- * labels, snippets, and station metadata are third-party text; rendered raw they parse as
- * markup — a nested `[x](y)` breaks a link, `*…*` turns into emphasis, `<b>` renders as HTML, a
- * newline opens a new list item. Escaping applies to `content[]` only; `structuredContent` keeps
- * the raw value, and nothing is decoded or stripped.
+ * @fileoverview Markdown escaping for upstream and caller text interpolated into `content[]`.
+ * GDELT titles, labels, snippets, and station metadata are third-party text, and a query or
+ * filter is the caller's; rendered raw they parse as markup — a nested `[x](y)` breaks a link,
+ * `*…*` turns into emphasis, `<b>` renders as HTML, a newline opens a new list item or ends a
+ * notice. Escaping applies to `content[]` only; `structuredContent` keeps the raw value, and
+ * nothing is decoded or stripped.
  * @module mcp-server/tools/markdown-escape
  */
 
@@ -114,6 +115,22 @@ export function escapeMarkdown(value: string, slot: MarkdownSlot = 'inline'): st
     }
   }
   return out + text.slice(flushed);
+}
+
+/**
+ * A value quoted inside server-authored prose — a notice, an error message, a recovery hint, a
+ * trailer echo — where the caller wrote it: JSON-encoded, so it stays on one line with its
+ * quotes and control characters escaped, then escaped as inline text, so it displays as exactly
+ * its JSON encoding and opens no markup. A plain value reads as `"value"`. The leading quote
+ * keeps a block marker off the start of a line, which a notice's first text is.
+ */
+export function markdownQuote(value: string): string {
+  return escapeMarkdown(JSON.stringify(value));
+}
+
+/** The `effectiveQuery` line of a `content[]` trailer: the echoed query, quoted as text. */
+export function renderQueryEcho(query: string): string {
+  return `Query: ${markdownQuote(query)}`;
 }
 
 /** A URI autolink's scheme, per CommonMark: a letter, then 1–31 letters, digits, `+`, `.`, `-`. */

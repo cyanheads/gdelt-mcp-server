@@ -12,7 +12,48 @@ import {
   GDELT_DATETIME_PATTERN,
   gdeltDocTimespanSchema,
 } from '../date-range.js';
-import { escapeMarkdown, markdownLinkDestination } from '../markdown-escape.js';
+import {
+  escapeMarkdown,
+  markdownLinkDestination,
+  markdownQuote,
+  renderQueryEcho,
+} from '../markdown-escape.js';
+import { pageByOffset, recordCharge } from '../response-budget.js';
+
+/**
+ * Representative article links carried per bin, on both surfaces, for bins the caller did not
+ * name in `bins`. GDELT returns up to 10 per bin across as many as 61 bins, so each bin keeps its
+ * first 3 beside `referenceCount`, its true total, and `bins` returns the named bins in full.
+ */
+const ARTICLES_PER_BIN = 3;
+
+const BIN_NOUN = { singular: 'bin', plural: 'bins' };
+
+type HistogramBin = {
+  bin: number;
+  count: number;
+  articles: Array<{ url: string; title: string }>;
+  referenceCount: number;
+};
+
+/** One bin's header and article links — the block format() renders and the budget charges. */
+function renderBin(b: HistogramBin): string {
+  const bar = '█'.repeat(Math.min(Math.ceil(b.count / 5), 20));
+  const shown =
+    b.referenceCount > b.articles.length
+      ? `(${b.articles.length} of ${b.referenceCount} links shown)`
+      : '';
+  // The blank line ends the previous bin's article list; without it CommonMark lazy
+  // continuation folds this header into that list's last item.
+  const header = [`**Bin ${b.bin > 0 ? '+' : ''}${b.bin}:** ${b.count} articles`, bar, shown]
+    .filter(Boolean)
+    .join(' ');
+  const lines = [`\n${header}`];
+  for (const a of b.articles) {
+    lines.push(`  - [${escapeMarkdown(a.title)}](${markdownLinkDestination(a.url)})`);
+  }
+  return lines.join('\n');
+}
 
 /** The bin carrying the most articles, or `undefined` when there is no bin to choose from. */
 function peakBin(bins: Array<{ bin: number; count: number }>): number | undefined {
@@ -28,13 +69,30 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
     'Get the tonal distribution of articles matching a query as a histogram (bins approximately -30 to +30). ' +
     'Unlike a single average tone score, the histogram reveals whether coverage is uniformly negative, ' +
     'bimodal (some articles extremely positive and some extremely negative), or clustered near neutral. ' +
-    'Each bin includes representative article URLs. ' +
+    'Each bin carries its first 3 representative article links and referenceCount, how many GDELT returned; ' +
+    'name bins in the bins input to get only those bins, each with every link. ' +
+    'A response carries as many whole bins as fit its size budget; when more remain it returns nextOffset — ' +
+    'pass it back as offset with otherwise identical inputs for the next page. ' +
     'Distinct from gdelt_get_coverage_timeline (mode: tone) — this is a snapshot distribution ' +
     'across all matching articles, not a time series. ' +
     'Use gdelt_get_coverage_timeline with mode "tone" to see how sentiment shifted over time.',
   annotations: { readOnlyHint: true, openWorldHint: true },
 
   errors: [
+    {
+      reason: 'unknown_bin',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'A value passed in the bins input matches no bin in a non-empty histogram.',
+      recovery:
+        'Read the bins listed in the error and retry bins with exact matches from that list.',
+    },
+    {
+      reason: 'offset_out_of_range',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'The requested offset is at or beyond the last bin of a non-empty histogram, or of the bins named in bins.',
+      recovery:
+        'Retry with an offset inside the range the error names, or with nextOffset from the preceding response.',
+    },
     {
       reason: 'invalid_date_range',
       code: JsonRpcErrorCode.ValidationError,
@@ -100,6 +158,24 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
         'End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
           '(e.g. 20240131235959). Must pair with startDatetime; supplying only one of the two is rejected.',
       ),
+    bins: z
+      .array(z.number().int())
+      .optional()
+      .describe(
+        'Tone bins to return alone, e.g. [-7, 4]. Take them from histogram[].bin in a prior response, or ' +
+          'from the list an unknown_bin error prints. The response then carries only these bins, in ' +
+          'histogram order, each with every representative article link instead of the first 3. A value ' +
+          'matching no bin is rejected rather than silently ignored.',
+      ),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .default(0)
+      .describe(
+        'Zero-based bin offset — into the histogram, or into the bins named in bins. Pass nextOffset ' +
+          'from the preceding response, with otherwise identical inputs, to get the next page.',
+      ),
   }),
 
   output: z.object({
@@ -118,11 +194,21 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
                   })
                   .describe('A representative article for this tone bin.'),
               )
-              .describe('Representative articles in this tone bin.'),
+              .describe(
+                'Representative articles in this tone bin — the first 3, or all of them for a bin named in bins.',
+              ),
+            referenceCount: z
+              .number()
+              .describe(
+                'How many representative articles GDELT returned for this bin; articles carries the first 3 ' +
+                  'unless the bin was named in bins.',
+              ),
           })
           .describe('A single tone histogram bin with article count and representative articles.'),
       )
-      .describe('Tone histogram sorted from most negative to most positive bin.'),
+      .describe(
+        'The bins of this page, sorted from most negative to most positive — the whole histogram when it fits.',
+      ),
     summary: z
       .object({
         peakNegativeBin: z
@@ -145,15 +231,23 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
           ),
       })
       .describe(
-        'Summary statistics derived from the histogram. Each value is omitted when the histogram cannot support it — all of them on an empty result.',
+        'Summary statistics derived from the whole histogram, not this page. Each value is omitted when the histogram cannot support it — all of them on an empty result.',
+      ),
+    nextOffset: z
+      .number()
+      .optional()
+      .describe(
+        'Offset of the next page, for the same inputs. Absent when this page reaches the last bin.',
       ),
   }),
 
-  // Agent-facing context — query echo and notice on empty results.
+  // Agent-facing context — query echo and the empty-result or paging notice.
   // Reaches structuredContent and content[] automatically; never in the domain return.
   enrichment: {
     effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
-    totalCount: z.number().describe('Total number of articles across all histogram bins.'),
+    totalCount: z
+      .number()
+      .describe('Total number of articles across all histogram bins, not only this page.'),
     startDatetime: z
       .string()
       .optional()
@@ -167,8 +261,13 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
       .optional()
       .describe(
         'Guidance when no articles matched in the window — how to broaden the query or extend the ' +
-          'window. Absent when tone data was returned.',
+          'window — or, when this response is one page of several, which bins it returned out of how ' +
+          'many. Absent when the whole histogram fit in one response.',
       ),
+  },
+
+  enrichmentTrailer: {
+    effectiveQuery: { render: renderQueryEcho },
   },
 
   async handler(input, ctx) {
@@ -204,6 +303,53 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
       ...(totalCount > 0 && { neutralPct: Math.round((neutralCount / totalCount) * 100) }),
     };
 
+    const isEmpty = bins.length === 0;
+    // An empty histogram has no bins to name, so there a bins selection is moot, not wrong.
+    const named = !isEmpty && input.bins?.length ? new Set(input.bins) : undefined;
+
+    // A bins value that matches no bin would return nothing for it and say nothing — reject it.
+    if (named) {
+      const available = new Set(bins.map((b) => b.bin));
+      const unknown = [...named].filter((bin) => !available.has(bin));
+      if (unknown.length > 0) {
+        const listed = unknown.join(', ');
+        throw ctx.fail('unknown_bin', `No tone bin ${listed}`, {
+          unknownBins: unknown,
+          recovery: {
+            hint: `This histogram has no bin ${listed}. Available: ${[...available].join(', ')}.`,
+          },
+        });
+      }
+    }
+
+    // The pageable units: every bin, or only the named ones. A named bin keeps every
+    // representative article; any other keeps the first ARTICLES_PER_BIN.
+    const units: HistogramBin[] = bins
+      .filter((b) => !named || named.has(b.bin))
+      .map((b) => ({
+        bin: b.bin,
+        count: b.count,
+        articles: named ? b.articles : b.articles.slice(0, ARTICLES_PER_BIN),
+        referenceCount: b.articles.length,
+      }));
+
+    // An empty histogram has no offsets at all, so no offset can be out of its range.
+    if (!isEmpty && input.offset >= units.length) {
+      const scope = named
+        ? `the bins input selects ${units.length} bins`
+        : `this histogram has ${units.length} bins`;
+      throw ctx.fail('offset_out_of_range', `Offset ${input.offset} is past the last bin`, {
+        offset: input.offset,
+        totalBins: units.length,
+        recovery: { hint: `Retry with offset 0–${units.length - 1}; ${scope}.` },
+      });
+    }
+
+    const page = isEmpty
+      ? undefined
+      : pageByOffset(units, (b) => recordCharge(b, renderBin(b)), input.offset, BIN_NOUN);
+    const histogram = page ? units.slice(input.offset, page.end) : [];
+
     ctx.enrich.echo(input.query);
     ctx.enrich.total(totalCount);
     ctx.enrich({
@@ -211,15 +357,31 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
       ...(input.endDatetime && { endDatetime: input.endDatetime }),
     });
 
-    if (bins.length === 0) {
-      ctx.enrich.notice(
-        `No tone data for "${input.query}". Broaden the query or extend the time range to include ` +
+    // Every notice segment for this response accumulates here and is flushed once —
+    // ctx.enrich.notice is last-wins, so a second call would silently drop the first.
+    const notices: string[] = [];
+    if (isEmpty) {
+      notices.push(
+        `No tone data for ${markdownQuote(input.query)}. Broaden the query or extend the time range to include ` +
           'more matching articles.',
       );
+      if (input.bins?.length) {
+        notices.push('The bins input was not applied — this histogram has no bins.');
+      }
     }
+    if (page?.notice) notices.push(page.notice);
+    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
-    ctx.log.info('gdelt_get_tone_distribution completed', { bins: bins.length, totalCount });
-    return { histogram: bins, summary };
+    ctx.log.info('gdelt_get_tone_distribution completed', {
+      bins: bins.length,
+      returnedBins: histogram.length,
+      totalCount,
+    });
+    return {
+      histogram,
+      summary,
+      ...(page?.nextOffset != null && { nextOffset: page.nextOffset }),
+    };
   },
 
   format: (result) => {
@@ -228,17 +390,16 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
     if (peakNegativeBin != null) lines.push(`**Peak negative bin:** ${peakNegativeBin}`);
     if (peakPositiveBin != null) lines.push(`**Peak positive bin:** ${peakPositiveBin}`);
     if (neutralPct != null) lines.push(`**Neutral articles (bins -2 to +2):** ${neutralPct}%`);
+    if (result.histogram.some((b) => b.referenceCount > b.articles.length)) {
+      lines.push(
+        `**Article links:** first ${ARTICLES_PER_BIN} per bin, with each bin's true total beside it. ` +
+          "Re-call with bins: [<bin>] to get a bin's full list.",
+      );
+    }
+    if (result.nextOffset != null) lines.push(`**Next offset:** ${result.nextOffset}`);
     lines.push('\n### Histogram');
     if (result.histogram.length === 0) lines.push('No tone bins returned.');
-    for (const b of result.histogram) {
-      const bar = '█'.repeat(Math.min(Math.ceil(b.count / 5), 20));
-      // The blank line ends the previous bin's article list; without it CommonMark lazy
-      // continuation folds this header into that list's last item.
-      lines.push(`\n**Bin ${b.bin > 0 ? '+' : ''}${b.bin}:** ${b.count} articles ${bar}`);
-      for (const a of b.articles) {
-        lines.push(`  - [${escapeMarkdown(a.title)}](${markdownLinkDestination(a.url)})`);
-      }
-    }
+    for (const b of result.histogram) lines.push(renderBin(b));
     return [{ type: 'text', text: lines.join('\n') }];
   },
 });

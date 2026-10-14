@@ -1,16 +1,19 @@
 /**
  * @fileoverview The per-surface byte budget shared by the record-list tools
- * (`gdelt_search_articles`, `gdelt_get_tv_clips`): how records are charged against it, how many
- * fit, and the continuation a page cut to it hands back.
+ * (`gdelt_search_articles`, `gdelt_get_tv_clips`) and the offset-paged DOC analytics tools
+ * (`gdelt_get_coverage_timeline`, `gdelt_get_tone_distribution`, `gdelt_get_coverage_breakdown`):
+ * how records are charged against it, how many fit, and the continuation a page cut to it hands back.
  * @module mcp-server/tools/response-budget
  */
 
 import {
   type DateSort,
   type GdeltWindow,
+  parseGdeltDatetime,
   parseRecordTimestamp,
   resumeBoundary,
   skipPastBoundary,
+  type WindowBoundary,
   type WindowContinuation,
 } from './date-range.js';
 
@@ -36,15 +39,72 @@ export function recordCharge(record: object, rendered: string): number {
 /**
  * How many leading records fit the budget, in upstream order: stops at the first record whose
  * charge would cross it, and never returns fewer than one when any record exists — a single
- * record larger than the whole budget is still emitted, alone.
+ * record larger than the whole budget is still emitted, alone. `reserved` is charged first, for
+ * content that rides on every page ahead of the records.
  */
-export function fitToBudget(charges: readonly number[]): number {
-  let used = 0;
-  for (const [index, charge] of charges.entries()) {
+export function fitToBudget(charges: Iterable<number>, reserved = 0): number {
+  let used = reserved;
+  let index = 0;
+  for (const charge of charges) {
     used += charge;
     if (used > RESPONSE_BYTE_BUDGET) return Math.max(index, 1);
+    index++;
   }
-  return charges.length;
+  return index;
+}
+
+/** One page of positional units cut from `offset` to the budget. */
+export type OffsetPage = {
+  /** Index one past the last emitted unit. */
+  end: number;
+  /** Where the next page starts; absent on the last page. */
+  nextOffset?: number;
+  /** Names the returned range and the unit total; absent when the page is the whole result. */
+  notice?: string;
+};
+
+/**
+ * Fits whole units from `offset` (which must be inside `units`) to the budget, always emitting
+ * one. Units are charged lazily, from `offset` up to the first that crosses the budget, so a page
+ * deep into a long list never renders the units before or after it. A page that is not the whole
+ * result gets a notice naming its range and the unit total, and a cut page also gets the offset
+ * of the next one.
+ */
+export function pageByOffset<T>(
+  units: readonly T[],
+  charge: (unit: T) => number,
+  offset: number,
+  noun: { singular: string; plural: string },
+  reserved = 0,
+): OffsetPage {
+  const total = units.length;
+  function* charges() {
+    for (let index = offset; index < total; index++) yield charge(units[index] as T);
+  }
+  const end = offset + fitToBudget(charges(), reserved);
+  const range =
+    end - offset === 1 ? `${noun.singular} ${offset + 1}` : `${noun.plural} ${offset + 1}–${end}`;
+  if (end < total) {
+    return {
+      end,
+      nextOffset: end,
+      notice:
+        `Returned ${range} of ${total} ${noun.plural}; ${noun.singular} ${end + 1} would push this ` +
+        `response past its ${RESPONSE_BYTE_BUDGET.toLocaleString('en-US')}-byte budget. Continue with ` +
+        `offset ${end} (nextOffset) and otherwise identical inputs.`,
+    };
+  }
+  if (offset > 0)
+    return { end, notice: `Returned ${range} of ${total} ${noun.plural} — the last page.` };
+  return { end };
+}
+
+/** The `continuationWindows` line of the `content[]` trailer. */
+export function renderContinuationWindows(windows: readonly GdeltWindow[] = []): string {
+  return [
+    '**Continuation windows:**',
+    ...windows.map((w) => `- startDatetime: ${w.startDatetime}, endDatetime: ${w.endDatetime}`),
+  ].join('\n');
 }
 
 /** A page `fitToBudget` cut short, described for its continuation notice. */
@@ -185,7 +245,7 @@ function planSkipPast(
   const { noun, window } = page;
   const past = skipPastBoundary(sort, lastMs);
   const beyond = sort === 'dateDesc' ? 'earlier' : 'later';
-  const pastMs = parseGdeltBoundary(past);
+  const pastMs = boundaryMs(past);
   const nothingPast =
     !page.capHit &&
     page.withheldStamps.every((stamp) => {
@@ -218,21 +278,16 @@ function planSkipPast(
 }
 
 /** `endDatetime X paired with a startDatetime` for a one-sided boundary. */
-function pairWith(
-  boundary: Pick<GdeltWindow, 'endDatetime'> | Pick<GdeltWindow, 'startDatetime'>,
-): string {
+function pairWith(boundary: WindowBoundary): string {
   return 'endDatetime' in boundary
     ? `endDatetime ${boundary.endDatetime} paired with a startDatetime`
     : `startDatetime ${boundary.startDatetime} paired with an endDatetime`;
 }
 
-function parseGdeltBoundary(
-  boundary: Pick<GdeltWindow, 'endDatetime'> | Pick<GdeltWindow, 'startDatetime'>,
-): number {
-  const value = 'endDatetime' in boundary ? boundary.endDatetime : boundary.startDatetime;
-  return parseRecordTimestamp(
-    `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}T${value.slice(8, 10)}:${value.slice(10, 12)}:${value.slice(12, 14)}Z`,
-  ) as number;
+function boundaryMs(boundary: WindowBoundary): number {
+  return parseGdeltDatetime(
+    'endDatetime' in boundary ? boundary.endDatetime : boundary.startDatetime,
+  ).getTime();
 }
 
 function isDateSort(sort: string): sort is DateSort {

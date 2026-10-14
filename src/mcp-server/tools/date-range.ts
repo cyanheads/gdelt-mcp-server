@@ -8,6 +8,7 @@
 
 import { z } from '@cyanheads/mcp-ts-core';
 import { formatDateShort, resolveTimespan } from '@/services/gdelt/gdelt-fetch.js';
+import { markdownQuote } from './markdown-escape.js';
 
 /**
  * GDELT's datetime wire format: exactly 14 digits, YYYYMMDDHHMMSS, no separators.
@@ -53,11 +54,14 @@ export type GdeltWindow = {
   endDatetime: string;
 };
 
+/** One boundary of a window, for a continuation that moves only one end. */
+export type WindowBoundary = Pick<GdeltWindow, 'endDatetime'> | Pick<GdeltWindow, 'startDatetime'>;
+
 /** GDELT's datetime resolution — the narrowest window a caller can express. */
 const GDELT_RESOLUTION_MS = 1000;
 
 /** Parse a 14-digit YYYYMMDDHHMMSS string as UTC. Invalid calendar values yield an Invalid Date. */
-function parseGdeltDatetime(value: string): Date {
+export function parseGdeltDatetime(value: string): Date {
   return new Date(
     `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}` +
       `T${value.slice(8, 10)}:${value.slice(10, 12)}:${value.slice(12, 14)}Z`,
@@ -99,7 +103,8 @@ export function resolveEffectiveWindow(args: {
 /**
  * The ` Timespan "…" resolved to <start> – <end>.` sentence an empty-result notice carries when
  * a call ran on a relative timespan, so the caller sees which dates it actually covered; `''`
- * when an explicit window was pinned or the timespan does not parse.
+ * when an explicit window was pinned or the timespan does not parse. The timespan is quoted as
+ * the caller sent it, whitespace around the unit included.
  */
 export function describeResolvedTimespan(args: {
   timespan?: string | undefined;
@@ -109,7 +114,7 @@ export function describeResolvedTimespan(args: {
   if (!args.timespan || args.startDatetime || args.endDatetime) return '';
   const range = resolveTimespan(args.timespan);
   return range
-    ? ` Timespan "${args.timespan}" resolved to ${formatDateShort(range.start)} – ${formatDateShort(range.end)}.`
+    ? ` Timespan ${markdownQuote(args.timespan)} resolved to ${formatDateShort(range.start)} – ${formatDateShort(range.end)}.`
     : '';
 }
 
@@ -335,10 +340,7 @@ export type DateSort = 'dateDesc' | 'dateAsc';
  * returned again rather than skipped. Records from that second the response already emitted
  * come back too, so callers de-duplicate on re-assembly.
  */
-export function resumeBoundary(
-  sort: DateSort,
-  lastEmittedMs: number,
-): Pick<GdeltWindow, 'endDatetime'> | Pick<GdeltWindow, 'startDatetime'> {
+export function resumeBoundary(sort: DateSort, lastEmittedMs: number): WindowBoundary {
   return sort === 'dateDesc'
     ? { endDatetime: toGdeltDatetime(new Date(lastEmittedMs + GDELT_RESOLUTION_MS)) }
     : { startDatetime: toGdeltDatetime(new Date(lastEmittedMs - GDELT_RESOLUTION_MS)) };
@@ -350,10 +352,7 @@ export function resumeBoundary(
  * Offered when resuming at that second cannot make progress; records at the skipped second
  * that the response did not emit are left behind.
  */
-export function skipPastBoundary(
-  sort: DateSort,
-  lastEmittedMs: number,
-): Pick<GdeltWindow, 'endDatetime'> | Pick<GdeltWindow, 'startDatetime'> {
+export function skipPastBoundary(sort: DateSort, lastEmittedMs: number): WindowBoundary {
   return sort === 'dateDesc'
     ? { endDatetime: toGdeltDatetime(new Date(lastEmittedMs - GDELT_RESOLUTION_MS)) }
     : { startDatetime: toGdeltDatetime(new Date(lastEmittedMs + GDELT_RESOLUTION_MS)) };
