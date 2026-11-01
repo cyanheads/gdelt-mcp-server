@@ -4,7 +4,7 @@ description: Investigate recent news spikes and compare historical television co
 license: Apache-2.0
 metadata:
   author: "cyanheads"
-  version: "1.0"
+  version: "1.1"
 ---
 
 ## Scope
@@ -19,14 +19,15 @@ Use DOC analysis for recent global news and TV analysis for monitored television
 
 ## Gates
 
-1. Verify temporal coverage before interpreting an empty result. DOC has a rolling three-month window; TV monitoring ranges differ by station. Intersect station ranges for comparisons and pin explicit historical dates. An empty answer outside coverage says nothing about whether a topic was discussed.
+1. Verify temporal coverage before interpreting an empty result. Article search and relative `timespan` windows cover a rolling three months. Explicit `startDatetime`/`endDatetime` windows reach older coverage in the `volume` and `tone` timeline modes, the language and country breakdowns, and the tone distribution; `volume_raw` and `volume_with_articles` stay within three months. GDELT documents coverage from January 1, 2017, so confirm that a dated answer actually spans the window you asked for. TV monitoring ranges differ by station. Intersect station ranges for comparisons and pin explicit historical dates. An empty answer outside coverage says nothing about whether a topic was discussed, and an empty DOC answer inside it may be GDELT under load: GDELT also returns empty answers when overloaded, so retry the same call later before reporting no coverage.
 2. Keep the query, window, station population, resolution, normalization, and smoothing comparable. Raw TV values count matching 15-second clips; normalized values measure airtime share. DOC raw-volume values count distinct matching articles, or moving averages when smoothed; `norm` remains an unsmoothed monitored denominator. Do not compare those units interchangeably.
 3. Treat a source country as the outlet's origin, not the event's location. DOC country/language breakdown values are shares of each source's output; do not add different sources into a global share or infer absolute article totals from their rank.
 4. Inspect linked articles or TV excerpts before explaining a spike, claiming stance, or inferring causation. `referenceCount` counts links supplied by GDELT, not all matching articles. Expanding references retrieves supplied evidence only.
 5. Treat TV context as vocabulary from a relevance-ranked sample, not exhaustive term prevalence or proof of editorial stance. Compare stations or windows with a separate context call for each, then inspect clips. `totalTerms` is a vocabulary count, never an analyzed-clip count.
-6. Follow `nextOffset` with otherwise identical inputs and read cap/continuation notices before claiming completeness. Article and clip APIs have provider caps rather than record cursors; use returned continuation windows and deduplicate records. Dense TV hours can contain clips that no narrower window retrieves. A failed or rate-limited request is not zero coverage.
+6. Follow `nextOffset` with otherwise identical inputs and read cap/continuation notices before claiming completeness. Article and clip APIs have provider caps rather than record cursors; use returned continuation windows and deduplicate records. Dense TV hours can contain clips that no narrower window retrieves. A failed or rate-limited request is not zero coverage. A `staleResponse` field means GDELT refused, failed, or answered empty on the refetch and the server returned its stored answer from `fetchedAt`: it holds nothing published after that time, and a relative `timespan` answer covers the window ending at `fetchedAt`, not now. Retry later before claiming the latest coverage.
 7. Use unsmoothed timelines when timing matters. A trailing moving average needs a full source window, omits leading steps without one, and can move apparent peaks later.
 8. Read TV ranking units before comparing rows. Station rankings measure airtime percentages or raw matching clips; show rankings always measure percentages of matching clips, even when normalization is disabled. An ellipsized show label may not work as an exact show selector.
+9. Read `source` on DOC results. `source: "gkg_mirror"` means the server answered from its own copy of GDELT's Global Knowledge Graph because the DOC API refused or returned nothing. Keywords matched article titles and entity names (persons, organizations, locations), not article text, and translated articles keep their source-language titles. `theme:` matches the exact theme ID. Source countries come from a 2015 domain list that leaves some outlets without one; a country breakdown's notice counts the matching articles left out. Counts and shares are over mirrored articles. When `coverage` is present, every figure comes from `answeredStart` to `answeredEnd`, not the requested window. Do not compare mirror and DOC figures across calls, and a mirror zero is not evidence of no coverage. A query using `near`, `repeat`, or image operators, a query longer than 1,000 characters, or another form the mirror cannot evaluate, cannot be answered from it; the error or `attempts` detail names the part.
 
 ## Core chain
 

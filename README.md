@@ -29,7 +29,7 @@
 
 ## Overview
 
-News and TV coverage analysis from the GDELT Project: the last 3 months of global news in 65+ languages, and historical TV transcripts across 150+ stations, with coverage dates varying by station. Search articles and clips, track coverage spikes, analyze tone, and compare coverage across languages, countries, stations, and shows.
+News and TV coverage analysis from the GDELT Project: global news in 65+ languages, and historical TV transcripts across 150+ stations, with coverage dates varying by station. Article search and relative `timespan` windows cover the last 3 months; explicit dates reach older windows in the coverage timeline's `volume` and `tone` modes, the language and country breakdowns, and the tone distribution. Search articles and clips, track coverage spikes, analyze tone, and compare coverage across languages, countries, stations, and shows.
 
 ### Tools
 
@@ -64,7 +64,7 @@ News and TV coverage analysis from the GDELT Project: the last 3 months of globa
 - Reference-bearing timesteps carry their first 3 links beside `referenceCount`, the number of references GDELT supplied, not all matching articles. `points: ["<date>"]` selects named timesteps with every supplied link; GDELT's reference list itself is capped at ten
 - Pages whole timesteps with `offset` and `limit` (default 10, cap 400); `nextOffset` retrieves the next page. Each series' `pointCount` and `peak` cover the full series on every page
 - Smoothing accepts 0–30 timesteps. Width N > 1 returns trailing moving averages: the first N−1 source steps cannot produce a value, and peaks can appear later. In `volume_raw`, smoothing changes `value`, not `norm`
-- Time range uses `timespan` or explicit `startDatetime`/`endDatetime`; date resolution (`15min`/`hour`/`day`) is inferred from returned intervals
+- Time range uses `timespan` (up to 3 months) or explicit `startDatetime`/`endDatetime`; date resolution (`15min`/`hour`/`day`) is inferred from returned intervals. In `volume` and `tone` modes an explicit window may predate the last 3 months; `volume_raw` and `volume_with_articles` cover only the last 3 months
 - A `points` date matching no timestep, or an `offset` past the last timestep, is rejected with the valid values
 
 ---
@@ -74,6 +74,7 @@ News and TV coverage analysis from the GDELT Project: the last 3 months of globa
 - Histogram bins from approximately −30 to +30; each bin's `count` counts matching articles, while `referenceCount` counts supplied links. The default preview shows 3 links; `bins: [<bin>]` selects named bins with every supplied link. An unknown bin is rejected with the available bins
 - Summary fields over the whole histogram: `peakNegativeBin`, `peakPositiveBin`, `neutralPct` (% of articles in the −2 to +2 range)
 - Pages whole bins with `offset` and `limit` (default 10, cap 400), returning `nextOffset` when more remain. This is a snapshot across matching articles, unlike the tone timeline
+- Time range uses `timespan` (up to 3 months) or explicit `startDatetime`/`endDatetime`, and an explicit window may predate the last 3 months
 
 ---
 
@@ -83,6 +84,7 @@ News and TV coverage analysis from the GDELT Project: the last 3 months of globa
 - `series: ["<label>"]` returns only those series, complete, under `selectedSeries`; a label matching no series is rejected with the available labels
 - Pages whole series with `offset` and `limit` (default 10, cap 75), returning `nextOffset` when more remain. Copy exact labels from the response for `series` selections
 - Smoothing accepts 0–30 timesteps with the same moving-average disclosure as coverage timelines
+- Time range uses `timespan` (up to 3 months) or explicit `startDatetime`/`endDatetime`, and an explicit window may predate the last 3 months
 - Values are normalized shares of each source's media output, not article counts, so don't sum them across sources
 
 ---
@@ -149,6 +151,8 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 GDELT-specific:
 
 - Shared request pacer across the DOC and TV tools: one request in flight at 1 req/5s, with a backoff (5s, doubling to 60s) after any rate-limit response
+- In-process response cache for DOC and TV requests, bounded to 128 MiB. An identical request is answered from memory for 15 minutes (24 hours once its explicit window ended more than a day earlier), without a pacer slot, and concurrent identical calls share one fetch. When GDELT rate-limits, fails, or answers empty, a stored answer under 24 hours old stands in and the response says so in `staleResponse`; while the pacer is cooling down after a rate limit, that happens at once
+- Optional local GKG mirror that answers the four DOC tools when the DOC API refuses or returns nothing; see [Local GKG mirror](#local-gkg-mirror)
 - Structured `stations` arrays instead of raw TV query syntax
 - GKG theme lookup held in memory after first download
 
@@ -157,7 +161,8 @@ Agent-friendly output:
 - Query echo on every response: the original query and applied timespan, so calls chain without re-deriving parameters
 - Typed series `label` fields (`"Volume Intensity"`, `"Average Tone"`, language/country names) instead of positional arrays
 - Station metadata with an `isActive` boolean and ISO 8601 dates
-- Zero matches return the normal output shape with empty arrays and a `notice` on how to broaden the query
+- Zero matches return the normal output shape with empty arrays and a `notice` on how to broaden the query. On the DOC tools the notice also says GDELT returns empty answers when overloaded, so retry before treating the result as no coverage
+- Provenance fields: `staleResponse` (`fetchedAt`, `ageSeconds`, `reason`) on every DOC and TV tool when a stored answer was served; `source`, `attempts`, and `coverage` on the four DOC tools while a mirror is configured
 
 ## Getting started
 
@@ -281,6 +286,8 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `GDELT_REQUEST_DELAY_MS` | Minimum milliseconds between GDELT requests (enforces 1 req/5s limit). | `5300` |
 | `GDELT_REQUEST_TIMEOUT_MS` | Deadline for a single GDELT request (a call with retries is bounded at twice this). | `60000` |
 | `GDELT_CLAMP_LIMITS` | Clamp oversized positive integer counts to each tool's served cap, with `limitClamp`, a log, and a counter. Set `false` to reject above-cap counts instead. | `true` |
+| `GDELT_MIRROR_PATH` | SQLite database file of the [local GKG mirror](#local-gkg-mirror). Unset leaves the mirror off. | none |
+| `GDELT_MIRROR_WINDOW_DAYS` | Days of 15-minute GKG slots the mirror keeps, 1–90. | `7` |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_PORT` | Port for the HTTP server. | `3010` |
 | `MCP_HTTP_ENDPOINT_PATH` | HTTP endpoint path where the MCP server is mounted. | `/mcp` |
@@ -328,6 +335,41 @@ docker run --rm -p 3010:3010 gdelt-mcp-server
 
 The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `/var/log/gdelt-mcp-server`. OpenTelemetry peer dependencies are installed by default — build with `--build-arg OTEL_ENABLED=false` to omit them.
 
+### Local GKG mirror
+
+The DOC API sometimes refuses requests for long stretches, or answers empty while overloaded. The optional mirror keeps a local SQLite copy of GDELT's Global Knowledge Graph (GKG), the English and translingual feeds GDELT publishes every 15 minutes on `data.gdeltproject.org`, so the four DOC tools (`gdelt_search_articles`, `gdelt_get_coverage_timeline`, `gdelt_get_tone_distribution`, `gdelt_get_coverage_breakdown`) can still answer. It is off unless `GDELT_MIRROR_PATH` is set. TV tools and theme search never use it.
+
+**When it answers.** DOC is asked first (a stored answer to the identical request counts as DOC's, and wins over the mirror), and the mirror answers when DOC is rate-limited, unavailable, or returns nothing. An empty DOC answer is replaced only if the mirror finds at least one match. Invalid queries and cancelled calls never reach it. A mirror answer carries `source: "gkg_mirror"`, `attempts` (what each source did), and `coverage` when the mirror holds less than the requested window, and the `notice` says why it answered. When the mirror cannot answer (no completed init, a query operator it can't evaluate, a window outside what it holds), DOC's error is returned with the mirror's reason in the message and a hint.
+
+**How its answers differ from DOC's.**
+
+- Keywords match titles and entity names (persons, organizations, locations), not article text. Translated articles keep their source-language titles.
+- `theme:` matches the exact theme ID. `sourcecountry:` and country breakdowns use GDELT's 2015 domain-to-country file, which covered 83–92% of sampled rows; matching articles from outlets it doesn't list are left out of country series and counted in the notice.
+- Counts, shares, and the `volume_raw` denominator are over mirrored articles, so they differ from DOC's figures.
+- `nearN:`, `repeatN:`, the image operators (`imagetag:` and the rest), unknown `name:` operators, and comparisons other than `tone`/`toneabs` are not compiled; a `sourcelang:` or `sourcecountry:` value it can't resolve is refused too. It also refuses an unquoted keyword that is one character or contains a hyphen, an OR group that nests or contains an exclusion, an excluded OR group, and a query of more than 100 elements or 1,000 characters. The mirror declines a query that uses any of these, and the error or the `attempts` detail names which.
+
+**Enable it.**
+
+1. Set `GDELT_MIRROR_PATH` to a database file, and optionally `GDELT_MIRROR_WINDOW_DAYS`.
+2. Build it once with `bun run mirror:init` from a checkout. It downloads every 15-minute slot of both feeds in the window, 2 s apart, resumes where it stopped if interrupted, and never runs on server startup.
+3. Start the server. Bun uses its built-in SQLite; on Node, install `better-sqlite3` too, or startup fails when `GDELT_MIRROR_PATH` is set.
+
+With Docker, point the path at a file on a mounted volume (the image creates `/var/lib/gdelt-mirror`, owned by the `bun` user) and run the scripts in the container:
+
+```sh
+docker run -d --name gdelt -p 3010:3010 \
+  -v gdelt-mirror:/var/lib/gdelt-mirror \
+  -e GDELT_MIRROR_PATH=/var/lib/gdelt-mirror/gkg.db \
+  gdelt-mcp-server
+docker exec gdelt bun run mirror:init
+```
+
+`bun run mirror:verify` (or `docker exec gdelt bun run mirror:verify`) reports the SQLite integrity check, sync status, row count, and each feed's covered slots and gaps.
+
+**Disk and bandwidth.** A stored article takes about 1.8 KB, plus about 3 MB for the domain-to-country table. A 7-day window (the default) runs about 3 GB in a typical week and up to about 5.6 GB at weekday peak volume; a busy 15-minute slot holds up to about 4,760 rows across both feeds. The first `mirror:init` for 7 days fetches about 1,344 files, up to about 12.5 GB, and takes 50–60 minutes, most of it the pause between files. Steady-state refresh downloads 0.56–1.71 GB a day. Size scales with `GDELT_MIRROR_WINDOW_DAYS`.
+
+**Refresh.** On HTTP transport the server refreshes the mirror every 15 minutes once a first init has completed. On stdio, run `bun run mirror:refresh` from cron every 15 minutes. Don't run cron refresh against a store an HTTP server is also refreshing: the result stays consistent, but the downloads are duplicated.
+
 ## Project structure
 
 | Directory | Purpose |
@@ -335,7 +377,9 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 | `src/index.ts` | `createApp()` entry point — registers tools and inits services. |
 | `src/config` | Server-specific environment variable parsing and validation with Zod. |
 | `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). Ten tools across the DOC and TV APIs and the GKG theme lookup. |
-| `src/services/gdelt` | `GdeltDocService` and `GdeltTvService` wrapping the DOC and TV APIs, the shared outbound pacer every DOC and TV call queues behind, and `GdeltThemeService` for the GKG theme lookup. |
+| `src/services/gdelt` | `GdeltDocService` and `GdeltTvService` wrapping the DOC and TV APIs, the shared outbound pacer every DOC and TV call queues behind, the response cache that serves repeated and stale answers, the router that falls back to the mirror on DOC calls, and `GdeltThemeService` for the GKG theme lookup. |
+| `src/services/gkg-mirror` | The optional local GKG mirror: feed download and parsing, the SQLite store and its worker thread, the DOC query compiler, and the queries that emulate the four DOC modes. |
+| `scripts` | Repository tooling, including the `mirror:init`, `mirror:refresh`, and `mirror:verify` scripts. |
 | `tests/` | Unit and integration tests mirroring `src/`. |
 
 ## Development guide

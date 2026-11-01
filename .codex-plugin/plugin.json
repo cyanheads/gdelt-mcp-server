@@ -15,7 +15,7 @@
   "interface": {
     "displayName": "gdelt-mcp-server",
     "shortDescription": "Search and analyze global news coverage and US TV transcripts via the GDELT Project APIs.",
-    "longDescription": "Access the GDELT Project's real-time global news and TV transcript APIs. Search 65+ languages of news coverage from the last 3 months, retrieve coverage timelines and tone distributions, analyze geographic/language breakdowns, find GKG theme identifiers for theme: queries, and search historical TV news transcripts with coverage dates varying by station.",
+    "longDescription": "Access the GDELT Project's real-time global news and TV transcript APIs. Search the last 3 months of news coverage in 65+ languages, retrieve coverage timelines and tone distributions, analyze geographic/language breakdowns (most of these modes also answer explicit windows older than 3 months), find GKG theme identifiers for theme: queries, and search historical TV news transcripts with coverage dates varying by station.",
     "developerName": "cyanheads",
     "category": "data",
     "capabilities": ["Read"],

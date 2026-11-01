@@ -349,6 +349,9 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run audit:refresh` | Delete `bun.lock` and reinstall. Last resort after `audit:fix`, `bun update <name>`, and `bun dedupe` — re-resolves every ranged dep (the framework pin included) and rewrites the lockfile as `lockfileVersion: 2` |
 | `bun run lint:mcp` | Run the MCP definition linter standalone (rule catalog: `api-linter` skill) |
 | `bun run lint:packaging` | Packaging surface checks — `server.json`/`manifest.json` env-var parity, `.mcpbignore` coverage, plugin manifests, the published `skills/` tree (run by devcheck) |
+| `bun run mirror:init` | Build the local GKG mirror at `GDELT_MIRROR_PATH` (resumable; never runs on server startup) |
+| `bun run mirror:refresh` | Fetch the GKG slots published since the last run and expire those that left the window |
+| `bun run mirror:verify` | Report the mirror's integrity check, sync status, row count, and covered slots with gaps |
 | `bun run list-skills` | Print the skill registry |
 | `bun run tree` | Generate directory structure doc |
 | `bun run format` | Auto-fix formatting (safe fixes only) |
