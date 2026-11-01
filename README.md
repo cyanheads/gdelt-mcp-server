@@ -151,7 +151,7 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 GDELT-specific:
 
 - Shared request pacer across the DOC and TV tools: one request in flight at 1 req/5s, with a backoff (5s, doubling to 60s) after any rate-limit response
-- In-process response cache for DOC and TV requests, bounded to 128 MiB. An identical request is answered from memory for 15 minutes (24 hours once its explicit window ended more than a day earlier), without a pacer slot, and concurrent identical calls share one fetch. When GDELT rate-limits, fails, or answers empty, a stored answer under 24 hours old stands in and the response says so in `staleResponse`; while the pacer is cooling down after a rate limit, that happens at once
+- In-process response cache for DOC and TV requests, bounded to 128 MiB. An identical request is answered from memory for 15 minutes (24 hours once its explicit window ended more than a day earlier), without a pacer slot, and concurrent identical calls share one fetch. When GDELT rate-limits the refetch, is unavailable (5xx, timeouts), or answers it empty, the stored answer stands in for up to 24 hours after its fetch (a `timespan` answer only while younger than the timespan), and the response says so in `staleResponse`; an invalid query, an unparseable body, or a cancelled call never falls back. A call holding such an answer waits on GDELT at most 45 s, and not at all while the pacer is cooling down after a rate limit
 - Optional local GKG mirror that answers the four DOC tools when the DOC API refuses or returns nothing; see [Local GKG mirror](#local-gkg-mirror)
 - Structured `stations` arrays instead of raw TV query syntax
 - GKG theme lookup held in memory after first download
