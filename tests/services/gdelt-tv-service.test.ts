@@ -17,6 +17,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { GdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
 import * as gdeltFetchModule from '@/services/gdelt/gdelt-fetch.js';
 import { disposeGdeltPacer, initGdeltPacer } from '@/services/gdelt/gdelt-pacer.js';
+import {
+  disposeGdeltResponseCache,
+  initGdeltResponseCache,
+} from '@/services/gdelt/gdelt-response-cache.js';
 import { GdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
 import type { RawTvStation, TvStation } from '@/services/gdelt/types.js';
 
@@ -107,6 +111,37 @@ describe('GdeltTvService.listStations', () => {
     const svc = makeService();
     const stations = await svc.listStations(ctx);
     expect(stations[0]?.isActive).toBe(false);
+  });
+
+  it('reads EndDate as a UTC day, whatever the server time zone', async () => {
+    const originalTz = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles';
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const station = (id: string, endDate: string) => ({
+        StationID: id,
+        Description: id,
+        Market: 'Local',
+        Network: 'ABC',
+        StartDate: '20100101',
+        EndDate: endDate,
+      });
+      // 27 h after 2026-11-02T00:00Z: past the 24 h threshold. A local-midnight parse would
+      // read EndDate as 08:00Z and count 19 h.
+      vi.setSystemTime(new Date('2026-11-03T03:00:00Z'));
+      vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({
+        station_details: [station('ENDED', '20261102'), station('LIVE', '20261103')],
+      });
+      const stations = await makeService().listStations(createMockContext());
+      expect(stations.map((s) => [s.stationId, s.isActive])).toEqual([
+        ['ENDED', false],
+        ['LIVE', true],
+      ]);
+    } finally {
+      vi.useRealTimers();
+      if (originalTz === undefined) delete process.env.TZ;
+      else process.env.TZ = originalTz;
+    }
   });
 
   it('returns empty array when station_details key is absent', async () => {
@@ -1057,7 +1092,8 @@ describe('GdeltTvService station ID resolution', () => {
  * The catalog is a side lookup, so it never stretches a call toward an MCP client's 60-second
  * timeout: its load is one attempt, and a call waits for it at most 45 seconds from the call's
  * start before answering without IDs. These drive the real fetch helper, pacer, and retry ladder
- * — only `fetch` is stubbed — at the default 60-second request timeout.
+ * — only `fetch` is stubbed — at the default 60-second request timeout. A follow-up call asks a
+ * different query, so its main request is never answered from the response cache.
  */
 describe('GdeltTvService station catalog wait, through the real fetch path', () => {
   const MAIN = {
@@ -1107,8 +1143,10 @@ describe('GdeltTvService station catalog wait, through the real fetch path', () 
     vi.restoreAllMocks();
     vi.useFakeTimers();
     initGdeltPacer(0);
+    initGdeltResponseCache();
     return () => {
       disposeGdeltPacer();
+      disposeGdeltResponseCache();
       vi.useRealTimers();
     };
   });
@@ -1144,7 +1182,7 @@ describe('GdeltTvService station catalog wait, through the real fetch path', () 
     expect(state.settledAfterMs).toBe(44_000);
     expect((await call).series[0]?.station).toBe('FOXNEWS');
 
-    const next = svc.searchTv({ query: 'x' }, createMockContext());
+    const next = svc.searchTv({ query: 'y' }, createMockContext());
     await vi.advanceTimersByTimeAsync(0);
     expect((await next).series[0]?.station).toBe('FOXNEWS');
     await vi.advanceTimersByTimeAsync(120_000);
@@ -1182,7 +1220,7 @@ describe('GdeltTvService station catalog wait, through the real fetch path', () 
     expect((await timeline)[0]?.label).toBe('FOX News');
 
     catalogAnswers = true;
-    const next = svc.searchTv({ query: 'x' }, createMockContext());
+    const next = svc.searchTv({ query: 'y' }, createMockContext());
     await vi.advanceTimersByTimeAsync(0);
     expect((await next).series[0]?.station).toBe('FOXNEWS');
     expect(calls).toEqual({ main: 3, catalog: 2 });
@@ -1223,7 +1261,7 @@ describe('GdeltTvService station catalog wait, through the real fetch path', () 
     expect((await call).stationCatalogUnavailable).toBe(true);
 
     await vi.advanceTimersByTimeAsync(5_000);
-    const next = svc.searchTv({ query: 'x' }, createMockContext());
+    const next = svc.searchTv({ query: 'y' }, createMockContext());
     await vi.advanceTimersByTimeAsync(20_000);
     expect((await next).series[0]?.station).toBe('FOXNEWS');
     expect(calls).toEqual({ main: 2, catalog: 2 });

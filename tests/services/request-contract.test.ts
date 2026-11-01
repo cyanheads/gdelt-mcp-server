@@ -10,9 +10,14 @@ import {
   resolveTimespan,
 } from '@/services/gdelt/gdelt-fetch.js';
 import { disposeGdeltPacer, initGdeltPacer } from '@/services/gdelt/gdelt-pacer.js';
+import {
+  disposeGdeltResponseCache,
+  initGdeltResponseCache,
+} from '@/services/gdelt/gdelt-response-cache.js';
 
 afterEach(() => {
   disposeGdeltPacer();
+  disposeGdeltResponseCache();
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -92,6 +97,7 @@ describe('public rate-limit retryability', () => {
     [200, '<!DOCTYPE html><html>rate limited</html>'],
   ])('makes one attempt for status %s and exposes a later retry', async (status, body) => {
     initGdeltPacer(0);
+    initGdeltResponseCache();
     const fetch = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValue(new Response(body, { status, headers: { 'retry-after': '12' } }));

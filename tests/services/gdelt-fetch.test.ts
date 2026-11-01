@@ -5,7 +5,7 @@
  */
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyTimeRange,
   formatDateShort,
@@ -75,53 +75,41 @@ describe('applyTimeRange', () => {
 });
 
 describe('resolveTimespan', () => {
-  it('resolves minute span', () => {
-    const before = Date.now();
-    const result = resolveTimespan('15min');
-    const after = Date.now();
-    expect(result).not.toBeUndefined();
-    // end should be approximately now
-    expect(result!.end.getTime()).toBeGreaterThanOrEqual(before);
-    expect(result!.end.getTime()).toBeLessThanOrEqual(after + 10);
-    // start should be ~15 minutes ago
-    const diffMs = result!.end.getTime() - result!.start.getTime();
-    expect(diffMs).toBeGreaterThanOrEqual(15 * 60 * 1000 - 100);
-    expect(diffMs).toBeLessThanOrEqual(15 * 60 * 1000 + 100);
+  /**
+   * Pinned to noon UTC on the day `America/Los_Angeles` falls back from PDT to PST (09:00 UTC),
+   * so every window below crosses the transition when stepped in local time.
+   */
+  const NOW = '2026-11-01T12:00:00.000Z';
+  let originalTz: string | undefined;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse(NOW));
+    originalTz = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles';
   });
 
-  it('resolves hour span', () => {
-    const result = resolveTimespan('24h');
-    expect(result).not.toBeUndefined();
-    const diffMs = result!.end.getTime() - result!.start.getTime();
-    const expected = 24 * 60 * 60 * 1000;
-    expect(diffMs).toBeGreaterThanOrEqual(expected - 100);
-    expect(diffMs).toBeLessThanOrEqual(expected + 100);
+  afterEach(() => {
+    if (originalTz === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTz;
+    vi.useRealTimers();
   });
 
-  it('resolves day span', () => {
-    const result = resolveTimespan('7d');
-    expect(result).not.toBeUndefined();
-    const diffMs = result!.end.getTime() - result!.start.getTime();
-    const expected = 7 * 24 * 60 * 60 * 1000;
-    expect(diffMs).toBeGreaterThanOrEqual(expected - 100);
-    expect(diffMs).toBeLessThanOrEqual(expected + 100);
+  it('runs in a zone that has just left daylight saving time', () => {
+    // PST is UTC−8 at the pinned instant; a runtime ignoring TZ would leave the host's zone.
+    expect(new Date(NOW).getTimezoneOffset()).toBe(480);
+    expect(new Date('2026-10-31T12:00:00.000Z').getTimezoneOffset()).toBe(420);
   });
 
-  it('resolves month span (approximate)', () => {
-    const result = resolveTimespan('1m');
-    expect(result).not.toBeUndefined();
-    // 1 month is ~28–31 days; just check range is roughly right
-    const diffDays = (result!.end.getTime() - result!.start.getTime()) / (24 * 60 * 60 * 1000);
-    expect(diffDays).toBeGreaterThanOrEqual(27);
-    expect(diffDays).toBeLessThanOrEqual(32);
-  });
-
-  it('resolves year span (approximate)', () => {
-    const result = resolveTimespan('1y');
-    expect(result).not.toBeUndefined();
-    const diffDays = (result!.end.getTime() - result!.start.getTime()) / (24 * 60 * 60 * 1000);
-    expect(diffDays).toBeGreaterThanOrEqual(364);
-    expect(diffDays).toBeLessThanOrEqual(367);
+  it.each([
+    ['15min', '2026-11-01T11:45:00.000Z'],
+    ['24h', '2026-10-31T12:00:00.000Z'],
+    ['7d', '2026-10-25T12:00:00.000Z'],
+    ['2w', '2026-10-18T12:00:00.000Z'],
+    ['1m', '2026-10-01T12:00:00.000Z'],
+    ['1y', '2025-11-01T12:00:00.000Z'],
+  ])('resolves %s back from now in UTC steps, starting at %s', (timespan, start) => {
+    expect(resolveTimespan(timespan)).toEqual({ start: new Date(start), end: new Date(NOW) });
   });
 
   it('returns undefined for unrecognised format', () => {

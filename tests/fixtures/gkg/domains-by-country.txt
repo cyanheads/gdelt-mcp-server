@@ -1,0 +1,25 @@
+SourceCommonName	location	
+00221.info	SG	Senegal
+01net.com	FR	France
+01net.it	IT	Italy
+0223.com.ar	AR	Argentina
+022china.com	CH	China
+02blog.it	IT	Italy
+02elf.net	GM	Germany
+032.ua	UP	Ukraine
+0362.ua	UP	Ukraine
+0372.ua	UP	Ukraine
+048.ua	UP	Ukraine
+0542.ua	UP	Ukraine
+055firenze.it	IT	Italy
+0564.ua	UP	Ukraine
+057.ua	UP	Ukraine
+061.ua	UP	Ukraine
+06880danwoog.com	US	United States
+07kbr.ru	RS	Russia
+0lf.net	EG	Egypt
+berliner-zeitung.de	GM	Germany
+index.hu	HU	Hungary
+insidehalton.com	CA	Canada
+lifo.gr	GR	Greece
+zimbabwestar.com	ZI	Zimbabwe

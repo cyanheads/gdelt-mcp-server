@@ -1,7 +1,10 @@
 /**
- * @fileoverview Shared types for GDELT DOC and TV API responses.
+ * @fileoverview Shared types for GDELT DOC and TV API responses, and for where a DOC tool's
+ * answer came from when the local GKG mirror stands behind the DOC API.
  * @module services/gdelt/types
  */
+
+import type { MirrorCoverage } from '../gkg-mirror/types.js';
 
 // ─── DOC API types ───────────────────────────────────────────────────────────
 
@@ -47,6 +50,49 @@ export type RawTimelineVolInfoPoint = {
   date: string;
   value: number;
   toparts?: Array<{ url: string; title: string }>;
+};
+
+// ─── DOC answer provenance ───────────────────────────────────────────────────
+
+/** Where a DOC tool's answer came from: the GDELT DOC API or the server's local GKG mirror. */
+export const DOC_SOURCES = ['doc_api', 'gkg_mirror'] as const;
+
+export type DocSource = (typeof DOC_SOURCES)[number];
+
+/**
+ * What one source did with a DOC tool call: answered with data, answered with nothing, refused
+ * (`rate_limited`, `unavailable`), or — for the mirror — could not answer (`not_ready`,
+ * `not_compiled`, `outside_coverage`, `store_error`).
+ */
+export const DOC_ATTEMPT_OUTCOMES = [
+  'answered',
+  'empty',
+  'rate_limited',
+  'unavailable',
+  'not_ready',
+  'not_compiled',
+  'outside_coverage',
+  'store_error',
+] as const;
+
+export type DocAttemptOutcome = (typeof DOC_ATTEMPT_OUTCOMES)[number];
+
+/** One source's outcome on a call that tried more than one. `detail` says why, when there is a why. */
+export type DocAttempt = { source: DocSource; outcome: DocAttemptOutcome; detail?: string };
+
+/** How much of the requested window a mirror answer covers, when it covers less. */
+export type DocCoverage = MirrorCoverage;
+
+/** What DOC did with a call the mirror then answered in its place. */
+export type DocStoodInFor = Extract<DocAttemptOutcome, 'empty' | 'rate_limited' | 'unavailable'>;
+
+/** A DOC tool call the local GKG mirror answered in DOC's place: the facts its notice discloses. */
+export type MirrorStandIn = {
+  standsInFor: DocStoodInFor;
+  /** Mirrored articles matching the query in the answered window; zero is an answer. */
+  matched: number;
+  /** Matching articles left out of a source-country breakdown because their outlet has no known country. */
+  excludedWithoutCountry?: number;
 };
 
 // ─── TV API types ─────────────────────────────────────────────────────────────

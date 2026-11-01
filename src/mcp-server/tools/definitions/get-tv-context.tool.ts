@@ -20,6 +20,7 @@ import {
   renderLimitClamp,
 } from '../limit-clamp.js';
 import { escapeMarkdown, markdownQuote, renderQueryEcho } from '../markdown-escape.js';
+import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
 
 /**
  * The population GDELT computes the word cloud from. Its TV API documentation names the 200
@@ -183,11 +184,13 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
           'windows or stations with a separate, narrower call for each. When no clips matched, so ' +
           'there is no vocabulary to report, the resolved timespan window and how to broaden the query or check station monitoring dates.',
       ),
+    staleResponse: staleResponseSchema,
   },
 
   enrichmentTrailer: {
     effectiveQuery: { render: renderQueryEcho },
     limitClamp: { render: renderLimitClamp },
+    staleResponse: { render: renderStaleResponse },
   },
 
   async handler(input, ctx) {

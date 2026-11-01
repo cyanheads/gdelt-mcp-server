@@ -9,6 +9,7 @@ import {
   JsonRpcErrorCode,
   McpError,
   rateLimited,
+  requestCancelled,
   serializationError,
   serviceUnavailable,
   validationError,
@@ -16,12 +17,22 @@ import {
 import { defaultIsTransient, fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
 import { quoteText } from '@/mcp-server/tools/markdown-escape.js';
+import type { StaleResponse } from '@/mcp-server/tools/stale-response.js';
 import {
   GDELT_MAX_QUEUE_WAIT_MS,
   getGdeltPacer,
   holdForGdeltRequestGap,
   recordGdeltRequestSettled,
 } from './gdelt-pacer.js';
+import {
+  type FetchedAnswer,
+  GDELT_CACHE_MAX_ENTRY_BYTES,
+  GDELT_CACHE_RETENTION_MS,
+  type GdeltCacheEntry,
+  type GdeltResponseCache,
+  type GdeltSharedFetch,
+  getGdeltResponseCache,
+} from './gdelt-response-cache.js';
 
 /** Stable public recovery for every GDELT rate-limit response shape. */
 const GDELT_RATE_LIMIT_RECOVERY = {
@@ -55,6 +66,15 @@ export const GDELT_UNAVAILABLE_DATA = {
  */
 export const GDELT_CALL_DEADLINE_MULTIPLIER = 2;
 
+/**
+ * Longest a call waits on GDELT, counted from its start, while it holds something else to answer
+ * with: a stored answer to serve stale, a caller's own fallback (see
+ * {@link GdeltFetchOptions.hasFallback}), or the TV service's answer still missing station labels.
+ * MCP clients commonly give up on a call at 60 seconds, so the wait ends well inside that, leaving
+ * the fallback time to answer, rather than at the call deadline.
+ */
+export const GDELT_FALLBACK_BUDGET_MS = 45_000;
+
 /** Apply timespan or explicit date range to URL params. */
 export function applyTimeRange(
   params: URLSearchParams,
@@ -74,6 +94,10 @@ export function applyTimeRange(
  * Resolve a GDELT timespan string (e.g. "1y", "6m", "7d", "24h", "15min") to an
  * absolute `{ start, end }` date range anchored to now.
  * Returns `undefined` when the string cannot be parsed.
+ *
+ * Steps back in UTC, as GDELT reads `timespan`: hours, days, and weeks are exact multiples of
+ * an hour whatever the server's zone, and months and years step by the UTC calendar. Local-time
+ * setters would stretch or shrink a window that crosses a daylight-saving change by an hour.
  */
 export function resolveTimespan(timespan: string): { start: Date; end: Date } | undefined {
   const parsed = parseGdeltTimespan(timespan);
@@ -83,22 +107,22 @@ export function resolveTimespan(timespan: string): { start: Date; end: Date } | 
   const start = new Date(end);
   switch (unit) {
     case 'min':
-      start.setMinutes(start.getMinutes() - n);
+      start.setUTCMinutes(start.getUTCMinutes() - n);
       break;
     case 'h':
-      start.setHours(start.getHours() - n);
+      start.setUTCHours(start.getUTCHours() - n);
       break;
     case 'd':
-      start.setDate(start.getDate() - n);
+      start.setUTCDate(start.getUTCDate() - n);
       break;
     case 'w':
-      start.setDate(start.getDate() - n * 7);
+      start.setUTCDate(start.getUTCDate() - n * 7);
       break;
     case 'm':
-      start.setMonth(start.getMonth() - n);
+      start.setUTCMonth(start.getUTCMonth() - n);
       break;
     case 'y':
-      start.setFullYear(start.getFullYear() - n);
+      start.setUTCFullYear(start.getUTCFullYear() - n);
       break;
   }
   return { start, end };
@@ -134,8 +158,419 @@ export function formatDateShort(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** Per-call options for {@link gdeltFetch}. */
+export type GdeltFetchOptions = {
+  /**
+   * Overrides the ladder's retry count — 0 for a best-effort side lookup that must not hold its
+   * caller through backoffs.
+   */
+  maxRetries?: number;
+  /**
+   * Take a stored answer only while it is fresh, and never serve one stale. For a lookup that
+   * runs on another call's `ctx`, where a stale serve would mark that call's own answer stale.
+   */
+  freshOnly?: boolean;
+  /**
+   * The caller holds its own answer to fall back on, such as the local GKG mirror. A call made
+   * while the pacer's cooldown gate is closed rejects at once with `gdelt_rate_limited`, spending
+   * no request and no queue slot. Otherwise the call stops waiting on GDELT
+   * {@link GDELT_FALLBACK_BUDGET_MS} after it started and rejects with the classified reason, so
+   * the fallback still answers inside the client's timeout: `gdelt_rate_limited` while no request
+   * has gone upstream (queued, or held behind the request gap), `gdelt_unavailable` once one has.
+   * Code, reason, and recovery hint are those of every other failure with that reason. A stored
+   * answer that can be served stale still wins: the call serves it, at once behind a closed gate
+   * or at the budget, instead of rejecting.
+   */
+  hasFallback?: boolean;
+};
+
 /**
- * Fetch a GDELT endpoint through the shared pacer, with retries and JSON parsing.
+ * When a caller holding something else to answer with stops waiting on a shared fetch: at the
+ * epoch-millisecond instant `at`, if `holds()` still says it holds it then.
+ */
+type FallbackBudget = { readonly at: number; readonly holds: () => boolean };
+
+/** Freshness of an answer whose window may still be filling: GDELT 2.0's update interval. */
+const GDELT_FRESH_MS = 15 * 60 * 1000;
+
+/**
+ * Freshness of an answer whose window ended more than {@link GDELT_SETTLE_LAG_MS} before its
+ * fetch, by which time GDELT has finished indexing it.
+ */
+const GDELT_SETTLED_FRESH_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How long after a window ends GDELT may still add to it: TV's documented processing lag of up
+ * to 24 hours, which also covers DOC's undocumented indexing lag behind each 15-minute batch.
+ */
+const GDELT_SETTLE_LAG_MS = 24 * 60 * 60 * 1000;
+
+const utf8Encoder = new TextEncoder();
+const utf8Decoder = new TextDecoder();
+
+/**
+ * Fetch a GDELT endpoint through the process-wide response cache and the shared pacer, with
+ * retries and JSON parsing.
+ *
+ * **Cache.** The key is the exact URL, no further normalization: a `timespan` goes upstream
+ * verbatim, so its key does not move with the clock, and the freshness window bounds its
+ * drift. A fresh hit is answered before the retry ladder, so it sends no request and takes no
+ * pacer slot, request gap, or cooldown wait. Each hit decodes and parses its own copy of the
+ * stored bytes, so no two callers share objects. Only a parsed answer holding a non-empty
+ * top-level array is stored: refusals, failures, and empty answers (GDELT's `{}` among them)
+ * are returned as before and the next identical call asks again.
+ *
+ * **Shared fetch.** Concurrent calls for the same URL with the same `maxRetries` share one
+ * fetch, run under its own signal and deadline. Each caller waits on its own `ctx.signal`: one
+ * that leaves while others wait fails alone with `RequestCancelled`, and the last to leave
+ * aborts the fetch with its own abort reason, failing exactly as an unshared call would.
+ *
+ * **Stale serve.** When the refetch fails with `gdelt_rate_limited` or `gdelt_unavailable` —
+ * decided on the final classified error — or comes back empty, which GDELT also answers under
+ * load, the stored answer is returned while it is servable (see {@link staleServableMs}), what it
+ * absorbed is logged at warning level, and the call's `staleResponse` enrichment discloses it.
+ * With nothing servable, an empty answer is returned as it came. Neither `invalid_query`, a
+ * serialization failure, nor the caller's own cancellation ever falls back, and neither does a
+ * `freshOnly` call.
+ *
+ * **Under the client timeout.** A call holding a servable answer never waits past what a client
+ * will: while the pacer's cooldown gate is closed, GDELT is rate-limiting this server, so the
+ * answer is served at once as `gdelt_rate_limited`, spending no request and no queue slot.
+ * Otherwise the call waits at most {@link GDELT_FALLBACK_BUDGET_MS} from its start, then serves it
+ * as `gdelt_rate_limited` if its request never went upstream or `gdelt_unavailable` if it did. A
+ * caller passing {@link GdeltFetchOptions.hasFallback} is held to the same gate and budget,
+ * rejecting where a stored answer would be served. Leaving at the budget aborts the shared fetch
+ * only when no other caller still waits on it. A call with neither waits exactly as long as the
+ * fetch takes.
+ */
+export async function gdeltFetch<T>(
+  baseUrl: string,
+  params: URLSearchParams,
+  ctx: Context,
+  operation: string,
+  apiLabel: string,
+  { maxRetries, freshOnly = false, hasFallback = false }: GdeltFetchOptions = {},
+): Promise<T> {
+  const startedAt = Date.now();
+  const url = `${baseUrl}?${params.toString()}`;
+  const cache = getGdeltResponseCache();
+  const stored = cache.get(url);
+  if (stored && startedAt < stored.freshUntil) {
+    ctx.log.debug(`${apiLabel} API answered from cache`, { url, ageSeconds: ageSeconds(stored) });
+    return parseStored<T>(stored);
+  }
+
+  const servable = servableEntry(cache, url, ctx, freshOnly);
+  if (servable || hasFallback) {
+    const cooldownRemainingMs = getGdeltPacer().cooldown.remainingMs;
+    if (cooldownRemainingMs > 0) {
+      if (servable) {
+        return serveStale<T>(servable, 'gdelt_rate_limited', ctx, apiLabel, {
+          cooldownRemainingMs,
+        });
+      }
+      throw rateLimited(
+        `${apiLabel} API is rate-limiting this server; its cooldown ends in ${Math.ceil(cooldownRemainingMs / 1000)}s.`,
+        { ...GDELT_RATE_LIMIT_DATA, retryable: true },
+      );
+    }
+  }
+  const budget: FallbackBudget | undefined =
+    servable || hasFallback
+      ? {
+          at: startedAt + GDELT_FALLBACK_BUDGET_MS,
+          holds: () => hasFallback || servableEntry(cache, url, ctx, freshOnly) !== undefined,
+        }
+      : undefined;
+
+  let answer: T;
+  try {
+    answer = await joinSharedFetch<T>(
+      cache,
+      url,
+      params,
+      ctx,
+      operation,
+      apiLabel,
+      maxRetries,
+      budget,
+    );
+  } catch (error) {
+    if (!(error instanceof McpError)) throw error;
+    const reason = gdeltRefusalReason(error);
+    const standIn = reason && servableEntry(cache, url, ctx, freshOnly);
+    if (!reason || !standIn) throw error;
+    return serveStale<T>(standIn, reason, ctx, apiLabel, {
+      code: error.code,
+      error: error.message,
+    });
+  }
+  if (hasNonEmptyArray(answer)) return answer;
+  const standIn = servableEntry(cache, url, ctx, freshOnly);
+  return standIn ? serveStale<T>(standIn, 'gdelt_empty', ctx, apiLabel, {}) : answer;
+}
+
+/**
+ * The stored answer that may stand in for a refetch that gave this caller no data, if one is
+ * still servable. Never for a `freshOnly` call or a caller that has cancelled.
+ */
+function servableEntry(
+  cache: GdeltResponseCache,
+  url: string,
+  ctx: Context,
+  freshOnly: boolean,
+): GdeltCacheEntry | undefined {
+  if (freshOnly || ctx.signal.aborted) return;
+  const entry = cache.get(url);
+  return entry && Date.now() < entry.staleUntil ? entry : undefined;
+}
+
+/** Serve a stored answer in place of the refetch: log what it absorbed and disclose it. */
+function serveStale<T>(
+  entry: GdeltCacheEntry,
+  reason: StaleResponse['reason'],
+  ctx: Context,
+  apiLabel: string,
+  absorbed: Record<string, unknown>,
+): T {
+  const staleResponse = {
+    fetchedAt: new Date(entry.fetchedAt).toISOString(),
+    ageSeconds: ageSeconds(entry),
+    reason,
+  } satisfies StaleResponse;
+  ctx.log.warning(`${apiLabel} API refetch gave no data; serving the stored answer`, {
+    ...staleResponse,
+    ...absorbed,
+  });
+  ctx.enrich({ staleResponse });
+  return parseStored<T>(entry);
+}
+
+/**
+ * The declared refusal `error` is, if it is one: GDELT rate-limited the call or did not answer it
+ * with data. A stored answer or the caller's own fallback may stand in for exactly these.
+ */
+export function gdeltRefusalReason(
+  error: McpError,
+): 'gdelt_rate_limited' | 'gdelt_unavailable' | undefined {
+  const reason = error.data?.reason;
+  if (error.code === JsonRpcErrorCode.RateLimited && reason === 'gdelt_rate_limited') {
+    return reason;
+  }
+  if (error.code === JsonRpcErrorCode.ServiceUnavailable && reason === 'gdelt_unavailable') {
+    return reason;
+  }
+  return;
+}
+
+/** A stored answer's age, in whole seconds. */
+function ageSeconds(entry: GdeltCacheEntry): number {
+  return Math.floor((Date.now() - entry.fetchedAt) / 1000);
+}
+
+/** Decode and parse a caller's own copy of a stored answer. */
+function parseStored<T>(entry: GdeltCacheEntry): T {
+  return JSON.parse(utf8Decoder.decode(entry.body)) as T;
+}
+
+/**
+ * Wait on the fetch in flight for `url` and `maxRetries`, starting it if there is none, and
+ * return this caller's own copy of its answer: the first waiter takes the parse the fetch made,
+ * every other one parses the body again.
+ */
+async function joinSharedFetch<T>(
+  cache: GdeltResponseCache,
+  url: string,
+  params: URLSearchParams,
+  ctx: Context,
+  operation: string,
+  apiLabel: string,
+  maxRetries: number | undefined,
+  budget: FallbackBudget | undefined,
+): Promise<T> {
+  const key = `${maxRetries ?? 'ladder'} ${url}`;
+  let shared = cache.inFlight.get(key);
+  if (!shared) {
+    const controller = new AbortController();
+    const fetchCtx: Context = { ...ctx, signal: controller.signal };
+    let sent = false;
+    shared = {
+      result: fetchFromGdelt(url, fetchCtx, operation, apiLabel, maxRetries, () => {
+        sent = true;
+      }).then((answer) => {
+        storeAnswer(cache, url, params, answer);
+        return answer;
+      }),
+      controller,
+      sent: () => sent,
+      waiters: 0,
+      valueTaken: false,
+    };
+    cache.inFlight.set(key, shared);
+  }
+  shared.waiters += 1;
+  const answer = await waitForSharedFetch(cache, key, shared, ctx.signal, apiLabel, budget);
+  if (shared.valueTaken) return JSON.parse(answer.text) as T;
+  shared.valueTaken = true;
+  return answer.value as T;
+}
+
+/**
+ * One caller's wait on a shared fetch. While other callers still wait, an abort rejects this
+ * one alone with `RequestCancelled`. The last caller to leave aborts the fetch with its own
+ * abort reason and takes the fetch's classified abort — `RequestCancelled` mid-fetch, `Timeout`
+ * for a `TimeoutError` reason, the reason itself mid-backoff — so an unshared call cancels
+ * exactly as it did before fetches were shared. A fetch leaves `inFlight` as it settles, or
+ * the moment its last caller leaves, so a later call never joins an abandoned one.
+ *
+ * A caller with a `budget` that still holds its fallback at `budget.at` leaves the same way,
+ * rejecting with {@link fallbackBudgetElapsed}'s classified error instead of the fetch's.
+ */
+function waitForSharedFetch(
+  cache: GdeltResponseCache,
+  key: string,
+  shared: GdeltSharedFetch,
+  signal: AbortSignal,
+  apiLabel: string,
+  budget: FallbackBudget | undefined,
+): Promise<FetchedAnswer> {
+  const release = () => {
+    if (cache.inFlight.get(key) === shared) cache.inFlight.delete(key);
+  };
+  return new Promise((resolve, reject) => {
+    let budgetTimer: ReturnType<typeof setTimeout> | undefined;
+    const stopWaiting = () => {
+      signal.removeEventListener('abort', onAbort);
+      clearTimeout(budgetTimer);
+    };
+    /** Leave the fetch, aborting it with `reason` if no caller is left; true when none is. */
+    const leave = (reason: unknown): boolean => {
+      stopWaiting();
+      shared.waiters -= 1;
+      if (shared.waiters > 0) return false;
+      release();
+      shared.controller.abort(reason);
+      return true;
+    };
+    const onAbort = () => {
+      if (!leave(signal.reason)) {
+        reject(requestCancelled('Request cancelled while waiting on a shared GDELT request.'));
+        return;
+      }
+      shared.result.then(resolve, reject);
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (budget) {
+      budgetTimer = setTimeout(() => {
+        if (!budget.holds()) return;
+        const error = fallbackBudgetElapsed(apiLabel, shared.sent());
+        /**
+         * Not `error` itself: a fetch held behind the request gap rejects from inside its paced
+         * task with the abort reason, and a `RateLimited` one would close the cooldown gate.
+         */
+        leave(new Error('No caller is still waiting on this GDELT request.'));
+        reject(error);
+      }, budget.at - Date.now());
+    }
+    shared.result.then(
+      (answer) => {
+        stopWaiting();
+        release();
+        resolve(answer);
+      },
+      (error: unknown) => {
+        stopWaiting();
+        release();
+        reject(error);
+      },
+    );
+  });
+}
+
+/**
+ * The failure a caller leaving at {@link GDELT_FALLBACK_BUDGET_MS} takes, classified as the
+ * declared contract entry it stands for: `gdelt_unavailable` once a request went upstream and
+ * GDELT has not answered it with data, `gdelt_rate_limited` while the request is still waiting
+ * its turn under the pacer. Each carries the same public `data` as every other failure with
+ * that reason.
+ */
+function fallbackBudgetElapsed(apiLabel: string, sent: boolean): McpError {
+  const seconds = GDELT_FALLBACK_BUDGET_MS / 1000;
+  return sent
+    ? serviceUnavailable(`${apiLabel} API did not answer within ${seconds}s.`, {
+        ...GDELT_UNAVAILABLE_DATA,
+      })
+    : rateLimited(
+        `${apiLabel} API request was still waiting for a request slot after ${seconds}s.`,
+        { ...GDELT_RATE_LIMIT_DATA, retryable: true },
+      );
+}
+
+/**
+ * Store an answer worth keeping: one whose parse holds a non-empty top-level array and whose
+ * body fits {@link GDELT_CACHE_MAX_ENTRY_BYTES}. A body's UTF-8 length is never below its
+ * UTF-16 length, so an oversized one is skipped before it is encoded.
+ */
+function storeAnswer(
+  cache: GdeltResponseCache,
+  url: string,
+  params: URLSearchParams,
+  { text, value }: FetchedAnswer,
+): void {
+  if (!hasNonEmptyArray(value) || text.length > GDELT_CACHE_MAX_ENTRY_BYTES) return;
+  const fetchedAt = Date.now();
+  cache.set(url, {
+    body: utf8Encoder.encode(text),
+    fetchedAt,
+    freshUntil: fetchedAt + freshnessMs(params, fetchedAt),
+    staleUntil: fetchedAt + staleServableMs(params),
+  });
+}
+
+/** True when a parsed answer carries data: some top-level field is a non-empty array. */
+function hasNonEmptyArray(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    Object.values(value).some((field) => Array.isArray(field) && field.length > 0)
+  );
+}
+
+/**
+ * How long an answer stays fresh: a day when the URL's `enddatetime` fell more than
+ * {@link GDELT_SETTLE_LAG_MS} before the fetch, 15 minutes otherwise — a `timespan`, no window,
+ * or a window ending within the last day or later. A malformed `enddatetime` parses to `NaN`,
+ * which compares false and takes the short window.
+ */
+function freshnessMs(params: URLSearchParams, fetchedAt: number): number {
+  const end = params.get('enddatetime') ?? '';
+  const endMs = Date.parse(
+    `${end.slice(0, 4)}-${end.slice(4, 6)}-${end.slice(6, 8)}T${end.slice(8, 10)}:${end.slice(10, 12)}:${end.slice(12, 14)}Z`,
+  );
+  return endMs < fetchedAt - GDELT_SETTLE_LAG_MS ? GDELT_SETTLED_FRESH_MS : GDELT_FRESH_MS;
+}
+
+/**
+ * How long after its fetch an answer may stand in for a refused, failed, or empty refetch: its
+ * retention, and for a `timespan` URL no longer than the timespan itself — an older answer covers
+ * none of the window a new call asks for. A timespan this server cannot parse is never served
+ * stale.
+ */
+function staleServableMs(params: URLSearchParams): number {
+  const timespan = params.get('timespan');
+  if (timespan === null) return GDELT_CACHE_RETENTION_MS;
+  const window = resolveTimespan(timespan);
+  if (!window) return 0;
+  return Math.min(GDELT_CACHE_RETENTION_MS, window.end.getTime() - window.start.getTime());
+}
+
+/**
+ * One upstream fetch through the shared pacer, with retries and JSON parsing, under `ctx` —
+ * whose signal is the shared fetch's own, not any single caller's.
  *
  * Retry outside, pacer inside: each attempt re-queues and is re-paced, and the pacer's
  * cooldown gate is an absolute instant rather than a duration counted from dequeue, so a
@@ -149,17 +584,16 @@ export function formatDateShort(d: Date): string {
  * `GDELT_CALL_DEADLINE_MULTIPLIER` times that, threaded through `withRetry`'s `deadlineMs` so
  * the caller gets this server's classified error rather than their own transport timeout.
  *
- * `maxRetries` overrides the ladder's retry count — 0 for a best-effort side lookup that must
- * not hold its caller through backoffs.
+ * `onSent` runs as each attempt's request goes upstream, past the queue and the request gap.
  */
-export function gdeltFetch<T>(
-  baseUrl: string,
-  params: URLSearchParams,
+function fetchFromGdelt(
+  url: string,
   ctx: Context,
   operation: string,
   apiLabel: string,
-  { maxRetries }: { maxRetries?: number } = {},
-): Promise<T> {
+  maxRetries: number | undefined,
+  onSent: () => void,
+): Promise<FetchedAnswer> {
   const { requestTimeoutMs } = getServerConfig();
   return withRetry(
     ({ signal, remainingMs }) => {
@@ -168,7 +602,7 @@ export function gdeltFetch<T>(
         .run(
           async (runSignal) => {
             await holdForGdeltRequestGap(runSignal);
-            const url = `${baseUrl}?${params.toString()}`;
+            onSent();
             ctx.log.debug(`${apiLabel} API request`, { url });
             let text: string;
             try {
@@ -182,7 +616,7 @@ export function gdeltFetch<T>(
             } finally {
               recordGdeltRequestSettled();
             }
-            return parseGdeltJson<T>(text, apiLabel);
+            return { text, value: parseGdeltJson<unknown>(text, apiLabel) };
           },
           { signal, maxWaitMs: GDELT_MAX_QUEUE_WAIT_MS },
         )
@@ -200,8 +634,7 @@ export function gdeltFetch<T>(
     if (
       !ctx.signal.aborted &&
       error instanceof McpError &&
-      error.code === JsonRpcErrorCode.RateLimited &&
-      error.data?.reason === 'gdelt_rate_limited'
+      gdeltRefusalReason(error) === 'gdelt_rate_limited'
     ) {
       throw new McpError(
         error.code,

@@ -18,6 +18,7 @@ import {
   renderLimitClamp,
 } from '../limit-clamp.js';
 import { escapeMarkdown, markdownQuote, renderQueryEcho } from '../markdown-escape.js';
+import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
 
 /** TV rankings expose percentages with different denominators, or raw station clip counts. */
 export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
@@ -163,10 +164,12 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
       .describe(
         'Empty-result guidance, show percentage and selector limitations, or station catalog resolution limitations.',
       ),
+    staleResponse: staleResponseSchema,
   },
   enrichmentTrailer: {
     effectiveQuery: { render: renderQueryEcho },
     limitClamp: { render: renderLimitClamp },
+    staleResponse: { render: renderStaleResponse },
   },
   async handler(input, ctx) {
     const dateRangeFault = describeDateRangeFault(input.startDatetime, input.endDatetime);

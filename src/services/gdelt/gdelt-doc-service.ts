@@ -9,10 +9,13 @@ import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import type { ServerConfig } from '@/config/server-config.js';
 import { normalizeGdeltDate } from './date-resolution.js';
-import { applyTimeRange, gdeltFetch } from './gdelt-fetch.js';
+import { applyTimeRange, type GdeltFetchOptions, gdeltFetch } from './gdelt-fetch.js';
 import type { Article, RawArticle, RawTimelineSeries, RawTimelineVolInfoPoint } from './types.js';
 
 const DOC_ENDPOINT = '/doc/doc';
+
+/** Per-call fetch options a DOC method passes through to {@link gdeltFetch}. */
+export type DocFetchOptions = Pick<GdeltFetchOptions, 'hasFallback'>;
 
 export type DocTimelineMode = 'timelinevol' | 'timelinevolraw' | 'timelinevolinfo' | 'timelinetone';
 export type DocBreakdownMode = 'timelinelang' | 'timelinesourcecountry';
@@ -87,7 +90,11 @@ export class GdeltDocService {
   }
 
   /** Search articles (artlist mode). */
-  async searchArticles(params: DocSearchParams, ctx: Context): Promise<ArticleSearchResult> {
+  async searchArticles(
+    params: DocSearchParams,
+    ctx: Context,
+    options?: DocFetchOptions,
+  ): Promise<ArticleSearchResult> {
     const urlParams = this.buildBaseParams(params.query);
     urlParams.set('mode', 'artlist');
     if (params.maxRecords) urlParams.set('maxrecords', String(params.maxRecords));
@@ -103,13 +110,17 @@ export class GdeltDocService {
     }
     applyTimeRange(urlParams, params.timespan, params.startDatetime, params.endDatetime);
 
-    const raw = await this.fetch<{ articles?: RawArticle[] }>(urlParams, ctx);
+    const raw = await this.fetch<{ articles?: RawArticle[] }>(urlParams, ctx, options);
     const articles = (raw.articles ?? []).map(normalizeArticle);
     return { articles, totalReturned: articles.length };
   }
 
   /** Fetch a coverage or tone timeline. */
-  async getTimeline(params: DocTimelineParams, ctx: Context): Promise<TimelineSeries[]> {
+  async getTimeline(
+    params: DocTimelineParams,
+    ctx: Context,
+    options?: DocFetchOptions,
+  ): Promise<TimelineSeries[]> {
     const urlParams = this.buildBaseParams(params.query);
     urlParams.set('mode', params.mode);
     if (params.smoothing != null) urlParams.set('timelinesmooth', String(params.smoothing));
@@ -118,16 +129,20 @@ export class GdeltDocService {
     if (params.mode === 'timelinevolinfo') {
       const raw = await this.fetch<{
         timeline?: Array<{ series?: string; data?: RawTimelineVolInfoPoint[] }>;
-      }>(urlParams, ctx);
+      }>(urlParams, ctx, options);
       return parseVolInfoTimeline(raw);
     }
 
-    const raw = await this.fetch<{ timeline?: RawTimelineSeries[] }>(urlParams, ctx);
+    const raw = await this.fetch<{ timeline?: RawTimelineSeries[] }>(urlParams, ctx, options);
     return parseTimeline(raw, params.mode === 'timelinevolraw');
   }
 
   /** Fetch tone distribution histogram (tonechart mode). */
-  async getToneDistribution(params: DocToneParams, ctx: Context): Promise<ToneHistogramBin[]> {
+  async getToneDistribution(
+    params: DocToneParams,
+    ctx: Context,
+    options?: DocFetchOptions,
+  ): Promise<ToneHistogramBin[]> {
     const urlParams = this.buildBaseParams(params.query);
     urlParams.set('mode', 'tonechart');
     applyTimeRange(urlParams, params.timespan, params.startDatetime, params.endDatetime);
@@ -138,7 +153,7 @@ export class GdeltDocService {
         count: number;
         toparts?: Array<{ url: string; title: string }>;
       }>;
-    }>(urlParams, ctx);
+    }>(urlParams, ctx, options);
     return (raw.tonechart ?? []).map((b) => ({
       bin: b.bin,
       count: b.count,
@@ -147,13 +162,17 @@ export class GdeltDocService {
   }
 
   /** Fetch language or source-country breakdown time series. */
-  async getBreakdown(params: DocBreakdownParams, ctx: Context): Promise<BreakdownSeries[]> {
+  async getBreakdown(
+    params: DocBreakdownParams,
+    ctx: Context,
+    options?: DocFetchOptions,
+  ): Promise<BreakdownSeries[]> {
     const urlParams = this.buildBaseParams(params.query);
     urlParams.set('mode', params.mode);
     if (params.smoothing != null) urlParams.set('timelinesmooth', String(params.smoothing));
     applyTimeRange(urlParams, params.timespan, params.startDatetime, params.endDatetime);
 
-    const raw = await this.fetch<{ timeline?: RawTimelineSeries[] }>(urlParams, ctx);
+    const raw = await this.fetch<{ timeline?: RawTimelineSeries[] }>(urlParams, ctx, options);
     return parseTimeline(raw).map((s) => ({
       label: s.label,
       data: s.data.map((d) => ({ date: d.date, value: d.value })),
@@ -169,8 +188,8 @@ export class GdeltDocService {
     return p;
   }
 
-  private fetch<T>(params: URLSearchParams, ctx: Context): Promise<T> {
-    return gdeltFetch<T>(this.baseUrl, params, ctx, 'GdeltDocService.fetch', 'GDELT DOC');
+  private fetch<T>(params: URLSearchParams, ctx: Context, options?: DocFetchOptions): Promise<T> {
+    return gdeltFetch<T>(this.baseUrl, params, ctx, 'GdeltDocService.fetch', 'GDELT DOC', options);
   }
 }
 

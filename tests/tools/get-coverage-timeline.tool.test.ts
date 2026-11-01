@@ -8,6 +8,22 @@ import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mc
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetCoverageTimeline } from '@/mcp-server/tools/definitions/get-coverage-timeline.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
+import type { MirrorResult } from '@/services/gkg-mirror/types.js';
+import {
+  attachMirror,
+  DOC_429_DETAIL,
+  MIRROR_DIVERGENCE_SENTENCE,
+  MIRROR_NO_MATCH_SENTENCE,
+  MIRROR_STANDS_IN_FOR,
+  mirrorAnswers,
+  OVERLOAD_RETRY_SENTENCE,
+  PARTIAL_COVERAGE,
+  PARTIAL_COVERAGE_LINE,
+  ROUTED_WINDOW,
+  refusedAttemptsLines,
+  SOURCE_LINE,
+  useRoutedDoc,
+} from '../helpers/doc-source-fakes.js';
 import { contentText, hrefFor, literalHtml, renderMarkdown } from './markdown-render.js';
 
 const VOLUME_SERIES = [
@@ -1009,6 +1025,149 @@ describe('gdeltGetCoverageTimeline', () => {
         isError: true,
         structuredContent: { error: { data: { reason: 'unknown_point' } } },
       });
+    });
+  });
+});
+
+/**
+ * The tool's wiring to the DOC source router: the real DOC service and router with only `fetch`
+ * stubbed, and a fake mirror. The router's outcome table lives in doc-source-router.test.ts.
+ */
+describe('gdelt_get_coverage_timeline DOC source routing', () => {
+  const doc = useRoutedDoc();
+  const INPUT = { query: 'climate', ...ROUTED_WINDOW };
+  const POINT = { date: '2026-10-31T12:00:00Z', value: 2.5 };
+  const MIRROR_TIMELINE = {
+    kind: 'timeline',
+    result: [{ label: 'Volume Intensity', data: [POINT] }],
+  } satisfies MirrorResult;
+  const EMPTY_NOTICE =
+    'No coverage data found for "climate". Broaden the query, extend the time window, or verify the query operators are correct.';
+  const notice = (result: { structuredContent?: unknown }) =>
+    (result.structuredContent as { notice?: string }).notice;
+
+  it('with no mirror, adds no source field and renders as before', async () => {
+    doc.answerDoc({
+      body: {
+        timeline: [
+          { series: 'Volume Intensity', data: [{ date: '20261031T000000Z', value: 1.5 }] },
+        ],
+      },
+    });
+
+    const result = await runToolContract(gdeltGetCoverageTimeline, INPUT);
+
+    const point = { date: '2026-10-31T00:00:00Z', value: 1.5 };
+    expect(result.structuredContent).toEqual({
+      series: [{ label: 'Volume Intensity', data: [point], pointCount: 1, peak: point }],
+      effectiveQuery: 'climate',
+      totalCount: 1,
+      mode: 'volume',
+      ...ROUTED_WINDOW,
+    });
+    expect(contentText(result)).toBe(
+      [
+        '## GDELT Coverage Timeline',
+        '',
+        '### Volume Intensity',
+        '**Data points:** 1',
+        '**Peak:** 1.5 at 2026-10-31T00:00:00Z',
+        '- 2026-10-31T00:00:00Z: 1.5',
+        '',
+        'Query: "climate"',
+        '**1 total**',
+        '**mode:** `volume`',
+        '**startDatetime:** `20261031000000`',
+        '**endDatetime:** `20261101000000`',
+      ].join('\n'),
+    );
+  });
+
+  it('with no mirror, adds the overload sentence to an empty answer on both surfaces (#77)', async () => {
+    doc.answerDoc({ body: {} });
+
+    const result = await runToolContract(gdeltGetCoverageTimeline, INPUT);
+
+    expect(notice(result)).toBe(`${EMPTY_NOTICE} ${OVERLOAD_RETRY_SENTENCE}`);
+    expect(contentText(result)).toContain(`> ${EMPTY_NOTICE} ${OVERLOAD_RETRY_SENTENCE}`);
+  });
+
+  it('marks a DOC answer doc_api on both surfaces while a mirror stands behind it', async () => {
+    attachMirror(mirrorAnswers(MIRROR_TIMELINE, 3));
+    doc.answerDoc({
+      body: {
+        timeline: [
+          { series: 'Volume Intensity', data: [{ date: '20261031T000000Z', value: 1.5 }] },
+        ],
+      },
+    });
+
+    const result = await runToolContract(gdeltGetCoverageTimeline, INPUT);
+
+    expect(result.structuredContent).toMatchObject({ source: 'doc_api' });
+    expect(result.structuredContent).not.toHaveProperty('attempts');
+    expect(contentText(result)).toContain(SOURCE_LINE.doc_api);
+  });
+
+  it('answers from the mirror when DOC refuses: source, attempts, coverage, and notice on both surfaces', async () => {
+    attachMirror(mirrorAnswers(MIRROR_TIMELINE, 3));
+    doc.answerDoc('refuse');
+
+    const result = await runToolContract(gdeltGetCoverageTimeline, INPUT);
+
+    const mirrorNotice = `${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE}`;
+    expect(result.structuredContent).toEqual({
+      series: [{ label: 'Volume Intensity', data: [POINT], pointCount: 1, peak: POINT }],
+      effectiveQuery: 'climate',
+      totalCount: 1,
+      mode: 'volume',
+      ...ROUTED_WINDOW,
+      source: 'gkg_mirror',
+      attempts: [
+        { source: 'doc_api', outcome: 'rate_limited', detail: DOC_429_DETAIL },
+        { source: 'gkg_mirror', outcome: 'answered' },
+      ],
+      coverage: PARTIAL_COVERAGE,
+      notice: mirrorNotice,
+    });
+    const text = contentText(result);
+    expect(text).toContain('- 2026-10-31T12:00:00Z: 2.5');
+    expect(text).toContain(SOURCE_LINE.gkg_mirror);
+    expect(text).toContain(refusedAttemptsLines('answered'));
+    expect(text).toContain(PARTIAL_COVERAGE_LINE);
+    expect(text).toContain(`> ${mirrorNotice}`);
+  });
+
+  it("keeps the mirror's own sentence, not the overload one, on a mirror tone timeline with no match", async () => {
+    attachMirror(
+      mirrorAnswers({ kind: 'timeline', result: [{ label: 'Average Tone', data: [] }] }, 0),
+    );
+    doc.answerDoc('refuse');
+
+    const result = await runToolContract(gdeltGetCoverageTimeline, { ...INPUT, mode: 'tone' });
+
+    expect(notice(result)).toBe(
+      `${EMPTY_NOTICE} ${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_NO_MATCH_SENTENCE}`,
+    );
+    expect(contentText(result)).toContain(refusedAttemptsLines('empty'));
+  });
+
+  it("keeps DOC's empty answer with the overload sentence when the mirror has no match either", async () => {
+    attachMirror(
+      mirrorAnswers({ kind: 'timeline', result: [{ label: 'Average Tone', data: [] }] }, 0),
+    );
+    doc.answerDoc({ body: {} });
+
+    const result = await runToolContract(gdeltGetCoverageTimeline, { ...INPUT, mode: 'tone' });
+
+    expect(result.structuredContent).toMatchObject({
+      series: [],
+      source: 'doc_api',
+      attempts: [
+        { source: 'doc_api', outcome: 'empty' },
+        { source: 'gkg_mirror', outcome: 'empty' },
+      ],
+      notice: `${EMPTY_NOTICE} ${OVERLOAD_RETRY_SENTENCE}`,
     });
   });
 });

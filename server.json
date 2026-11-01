@@ -50,6 +50,19 @@
           "default": "60000"
         },
         {
+          "name": "GDELT_MIRROR_PATH",
+          "description": "SQLite file of the optional local GKG mirror the DOC tools fall back to when the DOC API refuses requests. Unset leaves it off. Built with `bun run mirror:init` from a checkout or the Docker image; on Node it needs better-sqlite3 installed.",
+          "format": "string",
+          "isRequired": false
+        },
+        {
+          "name": "GDELT_MIRROR_WINDOW_DAYS",
+          "description": "Days of GKG slots the local mirror keeps (1-90).",
+          "format": "string",
+          "isRequired": false,
+          "default": "7"
+        },
+        {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
           "format": "string",
@@ -101,6 +114,19 @@
           "format": "string",
           "isRequired": false,
           "default": "60000"
+        },
+        {
+          "name": "GDELT_MIRROR_PATH",
+          "description": "SQLite file of the optional local GKG mirror the DOC tools fall back to when the DOC API refuses requests. Unset leaves it off. Built with `bun run mirror:init` from a checkout or the Docker image; on Node it needs better-sqlite3 installed.",
+          "format": "string",
+          "isRequired": false
+        },
+        {
+          "name": "GDELT_MIRROR_WINDOW_DAYS",
+          "description": "Days of GKG slots the local mirror keeps (1-90).",
+          "format": "string",
+          "isRequired": false,
+          "default": "7"
         },
         {
           "name": "MCP_HTTP_HOST",

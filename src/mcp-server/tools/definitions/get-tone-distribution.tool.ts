@@ -6,7 +6,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { getGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
+import { routeToneDistribution } from '@/services/gdelt/doc-source-router.js';
 import {
   describeDateRangeFault,
   GDELT_DATETIME_PATTERN,
@@ -24,6 +24,12 @@ import {
   markdownQuote,
   renderQueryEcho,
 } from '../markdown-escape.js';
+import {
+  DOC_EMPTY_RETRY_NOTE,
+  docProvenanceEnrichment,
+  docProvenanceTrailer,
+  mirrorAnswerNotice,
+} from '../source-provenance.js';
 
 /**
  * Representative article links carried per bin, on both surfaces, for bins the caller did not
@@ -153,7 +159,8 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
         .optional()
         .describe(
           'Start datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-            '(e.g. 20240101000000). Must pair with endDatetime; supplying only one of the two is rejected.',
+            '(e.g. 20240101000000). Must pair with endDatetime; supplying only one of the two is rejected. ' +
+            'The window may predate the last 3 months.',
         ),
       endDatetime: z
         .string()
@@ -161,7 +168,8 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
         .optional()
         .describe(
           'End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-            '(e.g. 20240131235959). Must pair with startDatetime; supplying only one of the two is rejected.',
+            '(e.g. 20240131235959). Must pair with startDatetime; supplying only one of the two is rejected. ' +
+            'The window may predate the last 3 months.',
         ),
       bins: z
         .array(z.number().int())
@@ -274,13 +282,17 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
       .describe(
         'Guidance when no articles matched in the window — how to broaden the query or extend the ' +
           'window — or, when this response is one page of several, which bins it returned out of how ' +
-          'many. Absent when the whole histogram fit in one response.',
+          "many. When the server's local GKG mirror answered (source: gkg_mirror), why, and how its " +
+          "figures differ from the DOC API's. Absent when the DOC API answered and the whole " +
+          'histogram fit in one response.',
       ),
+    ...docProvenanceEnrichment,
   },
 
   enrichmentTrailer: {
     limitClamp: { render: renderLimitClamp },
     effectiveQuery: { render: renderQueryEcho },
+    ...docProvenanceTrailer,
   },
 
   async handler(input, ctx) {
@@ -290,10 +302,9 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
     }
 
     ctx.log.info('gdelt_get_tone_distribution', { query: input.query });
-    const svc = getGdeltDocService();
     const limit = clampToCap(ctx, 'limit', input.limit, 400);
 
-    const bins = await svc.getToneDistribution(
+    const { result: bins, standIn } = await routeToneDistribution(
       {
         query: input.query,
         ...(input.timespan && { timespan: input.timespan }),
@@ -378,6 +389,7 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
         `No tone data for ${markdownQuote(input.query)}. Broaden the query or extend the time range to include ` +
           'more matching articles.',
       );
+      if (!standIn) notices.push(DOC_EMPTY_RETRY_NOTE);
       if (input.bins?.length) {
         notices.push('The bins input was not applied — this histogram has no bins.');
       }
@@ -387,6 +399,7 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
         `Returned bins ${input.offset + 1}–${end} of ${units.length} bins${nextOffset != null ? `; continue with offset ${nextOffset} (nextOffset) and otherwise identical inputs.` : ' — the last page.'}`,
       );
     }
+    if (standIn) notices.push(mirrorAnswerNotice(standIn));
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
     ctx.log.info('gdelt_get_tone_distribution completed', {

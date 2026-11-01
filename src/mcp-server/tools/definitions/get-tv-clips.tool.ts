@@ -26,6 +26,7 @@ import {
   renderLimitClamp,
 } from '../limit-clamp.js';
 import { escapeMarkdown, markdownQuote, markdownUrl, renderQueryEcho } from '../markdown-escape.js';
+import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
 import { describeUnresolvedStations, stationLabel } from '../station-ids.js';
 
 /**
@@ -217,12 +218,14 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
       .describe(
         'Windows to re-run this query against when maxRecords reaches its 3000 ceiling: the queried window split in two on a clock hour, with no shared second. Absent when no window is known or narrowing cannot reach further clips.',
       ),
+    staleResponse: staleResponseSchema,
   },
 
   enrichmentTrailer: {
     effectiveQuery: { render: renderQueryEcho },
     limitClamp: { render: renderLimitClamp },
     continuationWindows: { render: renderContinuationWindows },
+    staleResponse: { render: renderStaleResponse },
   },
 
   async handler(input, ctx) {

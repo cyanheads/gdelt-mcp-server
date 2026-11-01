@@ -7,7 +7,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { inferDateResolution } from '@/services/gdelt/date-resolution.js';
-import { getGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
+import { routeTimeline } from '@/services/gdelt/doc-source-router.js';
 import {
   describeDateRangeFault,
   GDELT_DATETIME_PATTERN,
@@ -26,6 +26,12 @@ import {
   quoteText,
   renderQueryEcho,
 } from '../markdown-escape.js';
+import {
+  DOC_EMPTY_RETRY_NOTE,
+  docProvenanceEnrichment,
+  docProvenanceTrailer,
+  mirrorAnswerNotice,
+} from '../source-provenance.js';
 
 /**
  * Article links carried per timestep in volume_with_articles mode, on both surfaces, for
@@ -94,7 +100,7 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
     "name timesteps' dates in points to get only those timesteps, each with its full supplied list. " +
     'A response carries limit timesteps (default 10, cap 400); when more remain it returns nextOffset — ' +
     'pass it back as offset with otherwise identical inputs for the next page. ' +
-    'Note: DOC API covers only the last 3 months.',
+    'Explicit startDatetime/endDatetime windows may predate the last 3 months in "volume" and "tone" modes; "volume_raw" and "volume_with_articles" cover only the last 3 months.',
   annotations: { readOnlyHint: true, openWorldHint: true },
 
   errors: [
@@ -178,7 +184,8 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
         .optional()
         .describe(
           'Start datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-            '(e.g. 20240101000000). Must pair with endDatetime; supplying only one of the two is rejected.',
+            '(e.g. 20240101000000). Must pair with endDatetime; supplying only one of the two is rejected. ' +
+            'In "volume" and "tone" modes the window may predate the last 3 months; "volume_raw" and "volume_with_articles" cover only the last 3 months.',
         ),
       endDatetime: z
         .string()
@@ -186,7 +193,8 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
         .optional()
         .describe(
           'End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-            '(e.g. 20240131235959). Must pair with startDatetime; supplying only one of the two is rejected.',
+            '(e.g. 20240131235959). Must pair with startDatetime; supplying only one of the two is rejected. ' +
+            'In "volume" and "tone" modes the window may predate the last 3 months; "volume_raw" and "volume_with_articles" cover only the last 3 months.',
         ),
       smoothing: z
         .number()
@@ -351,13 +359,17 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
       .describe(
         'Guidance when the query matched no coverage in the window — how to broaden the query or ' +
           'extend the window — or, when this response is one page of several, which timesteps it ' +
-          'returned out of how many. Absent when the whole timeline fit in one response.',
+          "returned out of how many. When the server's local GKG mirror answered (source: gkg_mirror), " +
+          "why, and how its figures differ from the DOC API's. Absent when the DOC API answered and " +
+          'the whole timeline fit in one response.',
       ),
+    ...docProvenanceEnrichment,
   },
 
   enrichmentTrailer: {
     limitClamp: { render: renderLimitClamp },
     effectiveQuery: { render: renderQueryEcho },
+    ...docProvenanceTrailer,
   },
 
   async handler(input, ctx) {
@@ -367,7 +379,6 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
     }
 
     ctx.log.info('gdelt_get_coverage_timeline', { query: input.query, mode: input.mode });
-    const svc = getGdeltDocService();
     const limit = clampToCap(ctx, 'limit', input.limit, 400);
 
     const modeMap = {
@@ -377,7 +388,7 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
       tone: 'timelinetone',
     } as const;
 
-    const series = await svc.getTimeline(
+    const { result: series, standIn } = await routeTimeline(
       {
         query: input.query,
         mode: modeMap[input.mode],
@@ -489,6 +500,7 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
         `No coverage data found for ${markdownQuote(input.query)}. Broaden the query, extend the time window, ` +
           'or verify the query operators are correct.',
       );
+      if (!standIn) notices.push(DOC_EMPTY_RETRY_NOTE);
       if (input.points?.length) {
         notices.push('The points input was not applied — this timeline has no timesteps.');
       }
@@ -503,6 +515,7 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
         `A trailing moving average of width ${input.smoothing} needs that many source steps; leading steps without a full window are omitted and peaks may appear later.${input.mode === 'volume_raw' ? ' Raw-volume norm remains unsmoothed.' : ''}`,
       );
     }
+    if (standIn) notices.push(mirrorAnswerNotice(standIn));
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
     ctx.log.info('gdelt_get_coverage_timeline completed', {

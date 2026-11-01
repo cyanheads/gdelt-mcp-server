@@ -20,6 +20,7 @@ import {
   renderLimitClamp,
 } from '../limit-clamp.js';
 import { escapeMarkdown, markdownQuote, renderQueryEcho } from '../markdown-escape.js';
+import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
 import { describeUnresolvedStations, stationLabel } from '../station-ids.js';
 
 /** Point pages bound the response without altering the selected station population. */
@@ -252,11 +253,13 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
           'not load or has no entry for the named label — with how to look the ID up. Absent when coverage was returned and every series ' +
           'carries its station ID.',
       ),
+    staleResponse: staleResponseSchema,
   },
 
   enrichmentTrailer: {
     effectiveQuery: { render: renderQueryEcho },
     limitClamp: { render: renderLimitClamp },
+    staleResponse: { render: renderStaleResponse },
   },
 
   async handler(input, ctx) {

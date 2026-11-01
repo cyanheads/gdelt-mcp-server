@@ -6,7 +6,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { getGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
+import { routeArticleSearch } from '@/services/gdelt/doc-source-router.js';
 import {
   describeDateRangeFault,
   describeResolvedTimespan,
@@ -25,6 +25,12 @@ import {
   renderLimitClamp,
 } from '../limit-clamp.js';
 import { escapeMarkdown, markdownQuote, markdownUrl, renderQueryEcho } from '../markdown-escape.js';
+import {
+  DOC_EMPTY_RETRY_NOTE,
+  docProvenanceEnrichment,
+  docProvenanceTrailer,
+  mirrorAnswerNotice,
+} from '../source-provenance.js';
 
 /**
  * Hard ceiling GDELT's DOC API serves in one article request. Past it there is no offset or
@@ -176,7 +182,7 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
       .string()
       .optional()
       .describe(
-        'Guidance on an incomplete or empty result. When no articles matched, how to broaden the query or window. When GDELT returned articles dated outside an explicit startDatetime/endDatetime window, how many were dropped. When the maxRecords cap was reached, raise maxRecords below the 250 ceiling or narrow the date window at it. Absent when a non-empty result set is below the cap and no article was dropped as out of window.',
+        "Guidance on an incomplete or empty result. When no articles matched, how to broaden the query or window. When GDELT returned articles dated outside an explicit startDatetime/endDatetime window, how many were dropped. When the maxRecords cap was reached, raise maxRecords below the 250 ceiling or narrow the date window at it. When the server's local GKG mirror answered (source: gkg_mirror), why, and how its answer differs from the DOC API's. Absent when a non-empty result set from the DOC API is below the cap and no article was dropped as out of window.",
       ),
     continuationWindows: z
       .array(
@@ -193,6 +199,7 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
       .describe(
         'Windows to re-run this query against when maxRecords reaches its 250 ceiling: the queried window halved, overlapping by one second so no article falls through the seam. De-duplicate by url. Absent when no window is known or narrowing cannot reach further articles.',
       ),
+    ...docProvenanceEnrichment,
   },
 
   enrichmentTrailer: {
@@ -200,6 +207,7 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
     timespan: { render: (timespan = '') => `**timespan:** ${markdownQuote(timespan)}` },
     limitClamp: { render: renderLimitClamp },
     continuationWindows: { render: renderContinuationWindows },
+    ...docProvenanceTrailer,
   },
 
   async handler(input, ctx) {
@@ -210,8 +218,7 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
 
     const maxRecords = clampToCap(ctx, 'maxRecords', input.maxRecords, MAX_RECORDS_CEILING);
     ctx.log.info('gdelt_search_articles', { query: input.query, maxRecords });
-    const svc = getGdeltDocService();
-    const result = await svc.searchArticles(
+    const { result, standIn } = await routeArticleSearch(
       {
         query: input.query,
         ...(input.timespan && { timespan: input.timespan }),
@@ -255,6 +262,7 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
       notices.push(
         `No articles matched ${markdownQuote(input.query)}.${describeResolvedTimespan(input)} ${broaden}`,
       );
+      if (!standIn) notices.push(DOC_EMPTY_RETRY_NOTE);
     } else if (capHit) {
       if (maxRecords < MAX_RECORDS_CEILING) {
         notices.push(
@@ -280,6 +288,7 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
       if (fetched.length === 0)
         notices.push(`No article was published inside the window. ${broaden}`);
     }
+    if (standIn) notices.push(mirrorAnswerNotice(standIn));
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
     ctx.log.info('gdelt_search_articles completed', {

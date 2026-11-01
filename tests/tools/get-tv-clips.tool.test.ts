@@ -8,6 +8,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetTvClips } from '@/mcp-server/tools/definitions/get-tv-clips.tool.js';
 import { parseGdeltJson } from '@/services/gdelt/gdelt-fetch.js';
 import { disposeGdeltPacer, initGdeltPacer } from '@/services/gdelt/gdelt-pacer.js';
+import {
+  disposeGdeltResponseCache,
+  initGdeltResponseCache,
+} from '@/services/gdelt/gdelt-response-cache.js';
 import * as tvServiceModule from '@/services/gdelt/gdelt-tv-service.js';
 import { initGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
 import { contentText, hrefFor, literalHtml, renderMarkdown } from './markdown-render.js';
@@ -741,6 +745,7 @@ describe('gdelt_get_tv_clips maxRecords clamp', () => {
   it('sends maxrecords=3000 to GDELT for a clamped call', async () => {
     vi.restoreAllMocks();
     initGdeltPacer(0);
+    initGdeltResponseCache();
     initGdeltTvService(
       {} as never,
       {} as never,
@@ -769,6 +774,7 @@ describe('gdelt_get_tv_clips maxRecords clamp', () => {
     } finally {
       vi.unstubAllGlobals();
       disposeGdeltPacer();
+      disposeGdeltResponseCache();
     }
   });
 });
@@ -882,6 +888,7 @@ describe('gdelt_get_tv_clips station IDs', () => {
   it('resolves a clip label through the real service, requesting the catalog after the clips', async () => {
     vi.restoreAllMocks();
     initGdeltPacer(0);
+    initGdeltResponseCache();
     initGdeltTvService(
       {} as never,
       {} as never,
@@ -946,7 +953,32 @@ describe('gdelt_get_tv_clips station IDs', () => {
     } finally {
       vi.unstubAllGlobals();
       disposeGdeltPacer();
+      disposeGdeltResponseCache();
     }
+  });
+});
+
+/** The fetch layer writes `staleResponse` on the call's ctx; the tool carries it to both surfaces. */
+describe('gdelt_get_tv_clips stale response', () => {
+  it('discloses a stored answer in structuredContent and as a trailer line', async () => {
+    const staleResponse = {
+      fetchedAt: '2026-10-15T12:00:00.000Z',
+      ageSeconds: 900,
+      reason: 'gdelt_empty',
+    };
+    vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+      getTvClips: vi.fn(async (_params, ctx: { enrich: (fields: object) => void }) => {
+        ctx.enrich({ staleResponse });
+        return { clips: [CLIP] };
+      }),
+    } as unknown as tvServiceModule.GdeltTvService);
+
+    const result = await runToolContract(gdeltGetTvClips, { query: 'climate', stations: ['CNN'] });
+
+    expect(result.structuredContent).toMatchObject({ clips: [CLIP], staleResponse });
+    expect(contentText(result)).toContain(
+      "**Stale response:** the refetch came back empty (`gdelt_empty`), which GDELT also does under load, so this is GDELT's stored answer from 2026-10-15T12:00:00.000Z (900s old) — nothing published after that time is included.",
+    );
   });
 });
 

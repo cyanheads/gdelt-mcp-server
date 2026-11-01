@@ -32,6 +32,19 @@ const ServerConfigSchema = z.object({
     .describe(
       'Deadline in milliseconds for a single GDELT request. GDELT is a bulk analytical API over a global news corpus, not a low-latency service — a broad article or timeline query legitimately runs for tens of seconds. The whole call, retries included, is bounded at twice this value',
     ),
+  mirrorPath: z
+    .string()
+    .optional()
+    .describe(
+      'Path of the SQLite database file holding the local GKG mirror. Unset leaves the mirror off.',
+    ),
+  mirrorWindowDays: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(90)
+    .default(7)
+    .describe('Days of GKG slots the mirror keeps, ending at the newest published slot'),
 });
 
 export type ServerConfig = z.infer<typeof ServerConfigSchema>;
@@ -44,6 +57,8 @@ export function getServerConfig(): ServerConfig {
     baseUrl: 'GDELT_BASE_URL',
     requestDelayMs: 'GDELT_REQUEST_DELAY_MS',
     requestTimeoutMs: 'GDELT_REQUEST_TIMEOUT_MS',
+    mirrorPath: 'GDELT_MIRROR_PATH',
+    mirrorWindowDays: 'GDELT_MIRROR_WINDOW_DAYS',
   });
   return _config;
 }

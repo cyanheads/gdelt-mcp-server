@@ -8,6 +8,22 @@ import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mc
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetCoverageBreakdown } from '@/mcp-server/tools/definitions/get-coverage-breakdown.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
+import type { MirrorResult } from '@/services/gkg-mirror/types.js';
+import {
+  attachMirror,
+  DOC_429_DETAIL,
+  MIRROR_DIVERGENCE_SENTENCE,
+  MIRROR_NO_MATCH_SENTENCE,
+  MIRROR_STANDS_IN_FOR,
+  mirrorAnswers,
+  OVERLOAD_RETRY_SENTENCE,
+  PARTIAL_COVERAGE,
+  PARTIAL_COVERAGE_LINE,
+  ROUTED_WINDOW,
+  refusedAttemptsLines,
+  SOURCE_LINE,
+  useRoutedDoc,
+} from '../helpers/doc-source-fakes.js';
 import { contentText, literalHtml, renderMarkdown } from './markdown-render.js';
 
 const SERIES = [
@@ -750,6 +766,149 @@ describe('gdeltGetCoverageBreakdown', () => {
         isError: true,
         structuredContent: { error: { data: { reason: 'unknown_series' } } },
       });
+    });
+  });
+});
+
+/**
+ * The tool's wiring to the DOC source router: the real DOC service and router with only `fetch`
+ * stubbed, and a fake mirror. The router's outcome table lives in doc-source-router.test.ts.
+ */
+describe('gdelt_get_coverage_breakdown DOC source routing', () => {
+  const doc = useRoutedDoc();
+  const INPUT = { query: 'climate', breakdownBy: 'country', ...ROUTED_WINDOW } as const;
+  const DOC_BREAKDOWN = {
+    timeline: [
+      { series: 'Germany Volume Intensity', data: [{ date: '20261031T000000Z', value: 83.33 }] },
+    ],
+  };
+  const MIRROR_SERIES = {
+    label: 'France Volume Intensity',
+    data: [{ date: '2026-10-31T12:00:00Z', value: 4.5 }],
+  };
+  const MIRROR_BREAKDOWN = {
+    kind: 'breakdown',
+    result: [MIRROR_SERIES],
+    excludedWithoutCountry: 12,
+  } satisfies MirrorResult;
+  const EMPTY_NOTICE =
+    'No breakdown data for "climate". Broaden the query, extend the time window, or verify the query operators are correct.';
+  const EXCLUDED_SENTENCE =
+    '12 matching articles from outlets with no known source country were left out of the country series.';
+  const notice = (result: { structuredContent?: unknown }) =>
+    (result.structuredContent as { notice?: string }).notice;
+
+  it('with no mirror, adds no source field and renders as before', async () => {
+    doc.answerDoc({ body: DOC_BREAKDOWN });
+
+    const result = await runToolContract(gdeltGetCoverageBreakdown, INPUT);
+
+    expect(result.structuredContent).toEqual({
+      topSeries: [
+        {
+          label: 'Germany Volume Intensity',
+          data: [{ date: '2026-10-31T00:00:00Z', value: 83.33 }],
+        },
+      ],
+      effectiveQuery: 'climate',
+      totalCount: 1,
+      breakdownBy: 'country',
+      ...ROUTED_WINDOW,
+    });
+    expect(contentText(result)).toBe(
+      [
+        '## GDELT Coverage Breakdown',
+        "**Values:** normalized — each value is the topic's share of that source's media output, not an article count. Small media markets with concentrated coverage rank above large markets with diverse output.",
+        '',
+        '### Germany Volume Intensity (sum of values: 83.33)',
+        'Data points: 1',
+        'Peak: 83.33 at 2026-10-31T00:00:00Z',
+        '- 2026-10-31T00:00:00Z: 83.33',
+        '',
+        'Query: "climate"',
+        '**1 total**',
+        '**breakdownBy:** `country`',
+        '**startDatetime:** `20261031000000`',
+        '**endDatetime:** `20261101000000`',
+      ].join('\n'),
+    );
+  });
+
+  it('with no mirror, adds the overload sentence to an empty answer on both surfaces (#77)', async () => {
+    doc.answerDoc({ body: {} });
+
+    const result = await runToolContract(gdeltGetCoverageBreakdown, INPUT);
+
+    expect(notice(result)).toBe(`${EMPTY_NOTICE} ${OVERLOAD_RETRY_SENTENCE}`);
+    expect(contentText(result)).toContain(`> ${EMPTY_NOTICE} ${OVERLOAD_RETRY_SENTENCE}`);
+  });
+
+  it('marks a DOC answer doc_api on both surfaces while a mirror stands behind it', async () => {
+    attachMirror(mirrorAnswers(MIRROR_BREAKDOWN, 30));
+    doc.answerDoc({ body: DOC_BREAKDOWN });
+
+    const result = await runToolContract(gdeltGetCoverageBreakdown, INPUT);
+
+    expect(result.structuredContent).toMatchObject({ source: 'doc_api' });
+    expect(result.structuredContent).not.toHaveProperty('attempts');
+    expect(contentText(result)).toContain(SOURCE_LINE.doc_api);
+  });
+
+  it('answers from the mirror when DOC refuses, naming the articles left out for no known country', async () => {
+    attachMirror(mirrorAnswers(MIRROR_BREAKDOWN, 30));
+    doc.answerDoc('refuse');
+
+    const result = await runToolContract(gdeltGetCoverageBreakdown, INPUT);
+
+    const mirrorNotice = `${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${EXCLUDED_SENTENCE}`;
+    expect(result.structuredContent).toEqual({
+      topSeries: [MIRROR_SERIES],
+      effectiveQuery: 'climate',
+      totalCount: 1,
+      breakdownBy: 'country',
+      ...ROUTED_WINDOW,
+      source: 'gkg_mirror',
+      attempts: [
+        { source: 'doc_api', outcome: 'rate_limited', detail: DOC_429_DETAIL },
+        { source: 'gkg_mirror', outcome: 'answered' },
+      ],
+      coverage: PARTIAL_COVERAGE,
+      notice: mirrorNotice,
+    });
+    const text = contentText(result);
+    expect(text).toContain('### France Volume Intensity (sum of values: 4.5)');
+    expect(text).toContain(SOURCE_LINE.gkg_mirror);
+    expect(text).toContain(refusedAttemptsLines('answered'));
+    expect(text).toContain(PARTIAL_COVERAGE_LINE);
+    expect(text).toContain(`> ${mirrorNotice}`);
+  });
+
+  it("keeps the mirror's own sentence, not the overload one, on a mirror answer with no match", async () => {
+    attachMirror(mirrorAnswers({ kind: 'breakdown', result: [] }, 0));
+    doc.answerDoc('refuse');
+
+    const result = await runToolContract(gdeltGetCoverageBreakdown, INPUT);
+
+    expect(notice(result)).toBe(
+      `${EMPTY_NOTICE} ${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_NO_MATCH_SENTENCE}`,
+    );
+    expect(contentText(result)).toContain(refusedAttemptsLines('empty'));
+  });
+
+  it("keeps DOC's empty answer with the overload sentence when the mirror has no match either", async () => {
+    attachMirror(mirrorAnswers({ kind: 'breakdown', result: [] }, 0));
+    doc.answerDoc({ body: {} });
+
+    const result = await runToolContract(gdeltGetCoverageBreakdown, INPUT);
+
+    expect(result.structuredContent).toMatchObject({
+      topSeries: [],
+      source: 'doc_api',
+      attempts: [
+        { source: 'doc_api', outcome: 'empty' },
+        { source: 'gkg_mirror', outcome: 'empty' },
+      ],
+      notice: `${EMPTY_NOTICE} ${OVERLOAD_RETRY_SENTENCE}`,
     });
   });
 });

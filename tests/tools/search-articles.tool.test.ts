@@ -3,12 +3,35 @@
  * @module tests/tools/search-articles.tool.test
  */
 
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltSearchArticles } from '@/mcp-server/tools/definitions/search-articles.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
 import { initGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
 import { disposeGdeltPacer, initGdeltPacer } from '@/services/gdelt/gdelt-pacer.js';
+import {
+  disposeGdeltResponseCache,
+  initGdeltResponseCache,
+} from '@/services/gdelt/gdelt-response-cache.js';
+import type { MirrorResult } from '@/services/gkg-mirror/types.js';
+import {
+  attachMirror,
+  DOC_429_DETAIL,
+  MIRROR_DIVERGENCE_SENTENCE,
+  MIRROR_NO_MATCH_SENTENCE,
+  MIRROR_NOT_READY,
+  MIRROR_STANDS_IN_FOR,
+  mirrorAnswers,
+  OVERLOAD_RETRY_SENTENCE,
+  PARTIAL_COVERAGE,
+  PARTIAL_COVERAGE_LINE,
+  RATE_LIMIT_HINT,
+  ROUTED_WINDOW,
+  refusedAttemptsLines,
+  SOURCE_LINE,
+  useRoutedDoc,
+} from '../helpers/doc-source-fakes.js';
 import { contentText, hrefFor, literalHtml, renderMarkdown } from './markdown-render.js';
 
 const ARTICLE = {
@@ -154,10 +177,13 @@ describe('gdeltSearchArticles', () => {
       expect(gdeltSearchArticles.enrichment?.notice?.description).toMatch(/no articles matched/i);
     });
 
-    /** The drop notice fires on an uncut page too, so the absence condition names the drop. */
-    it('counts an out-of-window drop among the cases the notice is present for', () => {
+    /**
+     * The drop notice fires on an uncut page too, and a mirror answer always carries one, so the
+     * absence condition names both.
+     */
+    it('counts an out-of-window drop and a mirror answer among the cases the notice is present for', () => {
       expect(gdeltSearchArticles.enrichment?.notice?.description).toMatch(
-        /Absent when a non-empty result set is below the cap and no article was dropped as out of window\.$/,
+        /Absent when a non-empty result set from the DOC API is below the cap and no article was dropped as out of window\.$/,
       );
     });
   });
@@ -694,6 +720,7 @@ describe('gdelt_search_articles maxRecords clamp', () => {
   it('sends maxrecords=250 to GDELT for a clamped call', async () => {
     vi.restoreAllMocks();
     initGdeltPacer(0);
+    initGdeltResponseCache();
     initGdeltDocService(
       {} as never,
       {} as never,
@@ -716,7 +743,227 @@ describe('gdelt_search_articles maxRecords clamp', () => {
     } finally {
       vi.unstubAllGlobals();
       disposeGdeltPacer();
+      disposeGdeltResponseCache();
     }
+  });
+});
+
+/** The fetch layer writes `staleResponse` on the call's ctx; the tool carries it to both surfaces. */
+describe('gdelt_search_articles stale response', () => {
+  it('discloses a stored answer in structuredContent and as a trailer line', async () => {
+    const staleResponse = {
+      fetchedAt: '2026-10-15T12:00:00.000Z',
+      ageSeconds: 900,
+      reason: 'gdelt_rate_limited',
+    };
+    vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+      searchArticles: vi.fn(async (_params, ctx: { enrich: (fields: object) => void }) => {
+        ctx.enrich({ staleResponse });
+        return { articles: [ARTICLE], totalReturned: 1 };
+      }),
+    } as unknown as docServiceModule.GdeltDocService);
+
+    const result = await runToolContract(gdeltSearchArticles, { query: 'climate' });
+
+    expect(result.structuredContent).toMatchObject({ articles: [ARTICLE], staleResponse });
+    expect(contentText(result)).toContain(
+      "**Stale response:** the refetch failed with `gdelt_rate_limited`, so this is GDELT's stored answer from 2026-10-15T12:00:00.000Z (900s old) — nothing published after that time is included.",
+    );
+  });
+});
+
+/**
+ * The tool's wiring to the DOC source router: the real DOC service and router with only `fetch`
+ * stubbed, and a fake mirror. The router's outcome table lives in doc-source-router.test.ts;
+ * these prove the tool declares and renders what the router writes, and adds its own notice
+ * sentences.
+ */
+describe('gdelt_search_articles DOC source routing', () => {
+  const doc = useRoutedDoc();
+  const INPUT = { query: 'climate', ...ROUTED_WINDOW };
+  const DOC_ARTICLE = { ...ARTICLE, seendate: '20261031T120000Z' };
+  const MIRROR_ARTICLE = {
+    url: 'https://example.org/mirror',
+    title: 'From the mirror',
+    seendate: '20261031T113000Z',
+    domain: 'example.org',
+    language: 'English',
+    sourcecountry: '',
+  };
+  const MIRROR_ARTLIST = {
+    kind: 'artlist',
+    result: { articles: [MIRROR_ARTICLE], totalReturned: 1 },
+  } satisfies MirrorResult;
+  const MIRROR_NO_ARTICLES = {
+    kind: 'artlist',
+    result: { articles: [], totalReturned: 0 },
+  } satisfies MirrorResult;
+  const EMPTY_NOTICE =
+    'No articles matched "climate". Broaden the query, remove operators, widen the 20261031000000–20261101000000 window, or try synonym terms.';
+  const notice = (result: { structuredContent?: unknown }) =>
+    (result.structuredContent as { notice?: string }).notice;
+
+  it('with no mirror, adds no source field and renders as before', async () => {
+    doc.answerDoc({ body: { articles: [DOC_ARTICLE] } });
+
+    const result = await runToolContract(gdeltSearchArticles, INPUT);
+
+    expect(result.structuredContent).toEqual({
+      articles: [DOC_ARTICLE],
+      effectiveQuery: 'climate',
+      totalCount: 1,
+    });
+    expect(contentText(result)).toBe(
+      [
+        '## GDELT Article Search',
+        '',
+        '### Test Article',
+        '**URL:** https://example.com/article',
+        '**Source:** example.com | **Country:** United States | **Language:** English',
+        '**Date:** 20261031T120000Z',
+        '',
+        'Query: "climate"',
+        '**1 total**',
+      ].join('\n'),
+    );
+  });
+
+  it('with no mirror, adds the overload sentence to an empty answer on both surfaces (#77)', async () => {
+    doc.answerDoc({ body: {} });
+
+    const result = await runToolContract(gdeltSearchArticles, INPUT);
+
+    expect(notice(result)).toBe(`${EMPTY_NOTICE} ${OVERLOAD_RETRY_SENTENCE}`);
+    expect(contentText(result)).toContain(`> ${EMPTY_NOTICE} ${OVERLOAD_RETRY_SENTENCE}`);
+    expect(result.structuredContent).not.toHaveProperty('source');
+  });
+
+  it('marks a DOC answer doc_api on both surfaces while a mirror stands behind it', async () => {
+    const mirror = attachMirror(mirrorAnswers(MIRROR_ARTLIST, 1));
+    doc.answerDoc({ body: { articles: [DOC_ARTICLE] } });
+
+    const result = await runToolContract(gdeltSearchArticles, INPUT);
+
+    expect(result.structuredContent).toEqual({
+      articles: [DOC_ARTICLE],
+      effectiveQuery: 'climate',
+      totalCount: 1,
+      source: 'doc_api',
+    });
+    expect(contentText(result)).toContain(SOURCE_LINE.doc_api);
+    expect(mirror.execute).not.toHaveBeenCalled();
+  });
+
+  it('answers from the mirror when DOC refuses: source, attempts, coverage, and notice on both surfaces', async () => {
+    attachMirror(mirrorAnswers(MIRROR_ARTLIST, 1));
+    doc.answerDoc('refuse');
+
+    const result = await runToolContract(gdeltSearchArticles, INPUT);
+
+    const mirrorNotice = `${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE}`;
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual({
+      articles: [MIRROR_ARTICLE],
+      effectiveQuery: 'climate',
+      totalCount: 1,
+      source: 'gkg_mirror',
+      attempts: [
+        { source: 'doc_api', outcome: 'rate_limited', detail: DOC_429_DETAIL },
+        { source: 'gkg_mirror', outcome: 'answered' },
+      ],
+      coverage: PARTIAL_COVERAGE,
+      notice: mirrorNotice,
+    });
+    const text = contentText(result);
+    expect(text).toContain(`**URL:** ${MIRROR_ARTICLE.url}`);
+    expect(text).toContain(SOURCE_LINE.gkg_mirror);
+    // `**Source:**` labels the one article's domain; the provenance line reads as no article field.
+    expect(text.match(/\*\*Source:\*\*/g)).toHaveLength(1);
+    expect(text).toContain(refusedAttemptsLines('answered'));
+    expect(text).toContain(PARTIAL_COVERAGE_LINE);
+    expect(text).toContain(`> ${mirrorNotice}`);
+  });
+
+  it("keeps the mirror's own sentence, not the overload one, on a mirror answer with no match", async () => {
+    attachMirror(mirrorAnswers(MIRROR_NO_ARTICLES, 0));
+    doc.answerDoc('refuse');
+
+    const result = await runToolContract(gdeltSearchArticles, INPUT);
+
+    expect(notice(result)).toBe(
+      `${EMPTY_NOTICE} ${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_NO_MATCH_SENTENCE}`,
+    );
+    expect(result.structuredContent).toMatchObject({ articles: [], source: 'gkg_mirror' });
+    expect(contentText(result)).toContain(refusedAttemptsLines('empty'));
+  });
+
+  it("keeps DOC's empty answer with the overload sentence when the mirror has no match either", async () => {
+    attachMirror(mirrorAnswers(MIRROR_NO_ARTICLES, 0));
+    doc.answerDoc({ body: {} });
+
+    const result = await runToolContract(gdeltSearchArticles, INPUT);
+
+    expect(result.structuredContent).toEqual({
+      articles: [],
+      effectiveQuery: 'climate',
+      totalCount: 0,
+      source: 'doc_api',
+      attempts: [
+        { source: 'doc_api', outcome: 'empty' },
+        { source: 'gkg_mirror', outcome: 'empty' },
+      ],
+      notice: `${EMPTY_NOTICE} ${OVERLOAD_RETRY_SENTENCE}`,
+    });
+    expect(contentText(result)).toContain('**Attempts:**\n- doc_api: empty\n- gkg_mirror: empty');
+  });
+
+  it("replaces DOC's empty answer with the mirror's match, saying why", async () => {
+    attachMirror(mirrorAnswers(MIRROR_ARTLIST, 1));
+    doc.answerDoc({ body: {} });
+
+    const result = await runToolContract(gdeltSearchArticles, INPUT);
+
+    expect(result.structuredContent).toMatchObject({
+      articles: [MIRROR_ARTICLE],
+      source: 'gkg_mirror',
+      attempts: [
+        { source: 'doc_api', outcome: 'empty' },
+        { source: 'gkg_mirror', outcome: 'answered' },
+      ],
+      notice: `${MIRROR_STANDS_IN_FOR.empty} ${MIRROR_DIVERGENCE_SENTENCE}`,
+    });
+  });
+
+  it("rejects with DOC's code, reason, and both attempts when the mirror cannot answer", async () => {
+    attachMirror(mirrorAnswers(MIRROR_ARTLIST, 1), MIRROR_NOT_READY);
+    doc.answerDoc('refuse');
+
+    const result = await runToolContract(gdeltSearchArticles, INPUT);
+
+    const hint = `${RATE_LIMIT_HINT} The local GKG mirror answers once the server operator's first sync (mirror:init) has completed.`;
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: JsonRpcErrorCode.RateLimited,
+          message: `${DOC_429_DETAIL} The local GKG mirror could not answer instead: The local GKG mirror has not completed an init run.`,
+          data: {
+            reason: 'gdelt_rate_limited',
+            retryable: true,
+            attempts: [
+              { source: 'doc_api', outcome: 'rate_limited', detail: DOC_429_DETAIL },
+              {
+                source: 'gkg_mirror',
+                outcome: 'not_ready',
+                detail: 'The local GKG mirror has not completed an init run.',
+              },
+            ],
+            recovery: { hint },
+          },
+        },
+      },
+    });
+    expect(contentText(result)).toContain(`Recovery: ${hint}`);
   });
 });
 

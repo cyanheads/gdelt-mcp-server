@@ -18,6 +18,10 @@ import {
   GDELT_MAX_QUEUE_WAIT_MS,
   initGdeltPacer,
 } from '@/services/gdelt/gdelt-pacer.js';
+import {
+  disposeGdeltResponseCache,
+  initGdeltResponseCache,
+} from '@/services/gdelt/gdelt-response-cache.js';
 
 vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@cyanheads/mcp-ts-core/utils')>();
@@ -47,11 +51,18 @@ function upstream429(): McpError {
   return new McpError(JsonRpcErrorCode.RateLimited, 'GDELT returned 429', { status: 429 });
 }
 
+let callCount = 0;
+
+/**
+ * One call to a URL no other call uses: concurrent identical calls share one fetch, and these
+ * cases pace distinct requests.
+ */
 function callGdeltFetch(signal?: AbortSignal) {
   const ctx = createMockContext(signal ? { signal } : {});
+  callCount += 1;
   return gdeltFetch<{ ok: boolean }>(
     BASE_URL,
-    new URLSearchParams({ query: 'climate' }),
+    new URLSearchParams({ query: `climate ${callCount}` }),
     ctx,
     'searchArticles',
     'GDELT DOC',
@@ -70,10 +81,12 @@ describe('gdeltFetch pacing', () => {
     mockedFetch.mockRejectedValue(new Error('unmocked fetch'));
     vi.useFakeTimers();
     initGdeltPacer(GAP_MS);
+    initGdeltResponseCache();
   });
 
   afterEach(() => {
     disposeGdeltPacer();
+    disposeGdeltResponseCache();
     vi.useRealTimers();
   });
 

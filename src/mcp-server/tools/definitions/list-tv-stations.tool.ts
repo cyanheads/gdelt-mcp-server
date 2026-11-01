@@ -10,6 +10,7 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
 import type { TvStation } from '@/services/gdelt/types.js';
 import { escapeMarkdown, markdownQuote } from '../markdown-escape.js';
+import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
 
 /** Non-US markets in the catalog. Every other market not starting with `National` is a US city. */
 const INTERNATIONAL_MARKETS = new Set(['International', 'Japan']);
@@ -121,8 +122,11 @@ export const gdeltListTvStations = tool('gdelt_list_tv_stations', {
       .describe('Number of stations returned — the whole catalog when no filter is given.'),
   }),
 
-  // Agent-facing context — the filter outcome. Reaches structuredContent and content[]
-  // automatically; never in the domain return, so the unfiltered payload is unchanged.
+  /**
+   * Agent-facing context — the filter outcome, and a stored catalog served in place of a refused
+   * refetch. Reaches structuredContent and content[] automatically; never in the domain return,
+   * so the unfiltered payload is unchanged.
+   */
   enrichment: {
     notice: z
       .string()
@@ -132,6 +136,11 @@ export const gdeltListTvStations = tool('gdelt_list_tv_stations', {
           'that are not in the catalog or that another filter excluded. Absent when every requested ID ' +
           'was returned and the result is not empty.',
       ),
+    staleResponse: staleResponseSchema,
+  },
+
+  enrichmentTrailer: {
+    staleResponse: { render: renderStaleResponse },
   },
 
   async handler(input, ctx) {

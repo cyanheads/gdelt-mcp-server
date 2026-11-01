@@ -7,7 +7,9 @@
       "tsc-alias",
       "depcheck",
       "@cyanheads/mcp-ts-core",
-      "@socketsecurity/bun-security-scanner"
+      "@socketsecurity/bun-security-scanner",
+      "better-sqlite3",
+      "node-cron"
     ],
     "ignorePatterns": []
   },

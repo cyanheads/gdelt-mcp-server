@@ -15,7 +15,13 @@ import {
   normalizeGdeltDate,
   type TvDateResolution,
 } from './date-resolution.js';
-import { applyTimeRange, GDELT_CALL_DEADLINE_MULTIPLIER, gdeltFetch } from './gdelt-fetch.js';
+import {
+  applyTimeRange,
+  GDELT_CALL_DEADLINE_MULTIPLIER,
+  GDELT_FALLBACK_BUDGET_MS,
+  type GdeltFetchOptions,
+  gdeltFetch,
+} from './gdelt-fetch.js';
 import type {
   RawTvClip,
   RawTvShowChartRow,
@@ -32,13 +38,6 @@ const TV_ENDPOINT = '/tv/tv';
 
 /** Threshold for "active" station: endDate within this many milliseconds of now. */
 const ACTIVE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-/**
- * Longest a call waits for the station catalog, counted from the call's start. MCP clients
- * commonly give up on a call at 60 seconds, and the catalog only labels an answer the call
- * already has, so the wait ends well inside that rather than at the call deadline.
- */
-const CATALOG_WAIT_BUDGET_MS = 45_000;
 
 export type TvSearchParams = {
   query: string;
@@ -102,8 +101,9 @@ type CatalogLoad = {
 export class GdeltTvService {
   private readonly baseUrl: string;
   /**
-   * How long a call waits for the station catalog, from its start: the catalog wait budget,
-   * or the whole call's deadline when that is shorter.
+   * How long a call waits for the station catalog, from its start: {@link GDELT_FALLBACK_BUDGET_MS},
+   * since the catalog only labels an answer the call already has, or the whole call's deadline
+   * when that is shorter.
    */
   private readonly catalogWaitMs: number;
   /** The station catalog, once a load has landed. Kept for the process. */
@@ -114,7 +114,7 @@ export class GdeltTvService {
   constructor(_config: AppConfig, _storage: StorageService, serverConfig: ServerConfig) {
     this.baseUrl = serverConfig.baseUrl + TV_ENDPOINT;
     this.catalogWaitMs = Math.min(
-      CATALOG_WAIT_BUDGET_MS,
+      GDELT_FALLBACK_BUDGET_MS,
       serverConfig.requestTimeoutMs * GDELT_CALL_DEADLINE_MULTIPLIER,
     );
   }
@@ -276,13 +276,10 @@ export class GdeltTvService {
   }
 
   /**
-   * List all TV stations with metadata. `maxRetries` overrides the retry ladder — the station-ID
-   * lookup asks for a single attempt.
+   * List all TV stations with metadata. `fetchOptions` reaches {@link gdeltFetch} — the
+   * station-ID lookup asks for a single attempt and a fresh answer only.
    */
-  async listStations(
-    ctx: Context,
-    fetchOptions: { maxRetries?: number } = {},
-  ): Promise<TvStation[]> {
+  async listStations(ctx: Context, fetchOptions: GdeltFetchOptions = {}): Promise<TvStation[]> {
     const urlParams = new URLSearchParams();
     urlParams.set('mode', 'stationdetails');
     urlParams.set('format', 'json');
@@ -322,7 +319,7 @@ export class GdeltTvService {
    * The catalog is a side lookup and never fails the call: a failed or empty load, or one still
    * running at `waitUntil`, leaves the labels unresolved. Only the caller's own cancellation
    * fails the call — as cancelled. `waitUntil` is counted from the start of the call (see
-   * {@link CATALOG_WAIT_BUDGET_MS}), so the lookup cannot hold an answer past it.
+   * {@link GDELT_FALLBACK_BUDGET_MS}), so the lookup cannot hold an answer past it.
    */
   private async stationIdsFor(
     labels: readonly string[],
@@ -417,10 +414,15 @@ export class GdeltTvService {
    * Fetch the catalog under the load's own signal rather than the caller's, so the call that
    * happens to start the shared load can be cancelled without failing the others awaiting it.
    * One attempt, never the retry ladder: a failure costs this call its IDs, not its answer, and
-   * the next call loads again. An empty catalog is GDELT failing, not an answer.
+   * the next call loads again. Fresh stored answers only: the load runs on the first caller's
+   * `ctx`, where a stale serve would mark that caller's own fresh answer as stale. An empty
+   * catalog is GDELT failing, not an answer.
    */
   private async fetchStationIds(ctx: Context, signal: AbortSignal): Promise<StationIdsByLabel> {
-    const stations = await this.listStations({ ...ctx, signal }, { maxRetries: 0 });
+    const stations = await this.listStations(
+      { ...ctx, signal },
+      { maxRetries: 0, freshOnly: true },
+    );
     if (stations.length === 0) {
       throw serviceUnavailable('GDELT TV station catalog came back empty.');
     }
@@ -446,7 +448,7 @@ export class GdeltTvService {
   private fetch<T>(
     params: URLSearchParams,
     ctx: Context,
-    options: { maxRetries?: number } = {},
+    options: GdeltFetchOptions = {},
   ): Promise<T> {
     return gdeltFetch<T>(this.baseUrl, params, ctx, 'GdeltTvService.fetch', 'GDELT TV', options);
   }
@@ -468,7 +470,7 @@ function isTvDateResolution(value: string | undefined): value is TvDateResolutio
   );
 }
 
-/** Parse GDELT date string (YYYYMMDDHHMMSS or YYYYMMDD) to ms epoch. Returns undefined on failure. */
+/** Parse a GDELT date string (YYYYMMDDHHMMSS or YYYYMMDD) to the ms epoch of its UTC day. Returns undefined on failure. */
 function parseGdeltDate(s: string): number | undefined {
   if (!s) return;
   const clean = s.replace(/\D/g, '');
@@ -476,8 +478,8 @@ function parseGdeltDate(s: string): number | undefined {
   const year = parseInt(clean.slice(0, 4), 10);
   const month = parseInt(clean.slice(4, 6), 10) - 1;
   const day = parseInt(clean.slice(6, 8), 10);
-  const d = new Date(year, month, day);
-  return Number.isNaN(d.getTime()) ? undefined : d.getTime();
+  const ms = Date.UTC(year, month, day);
+  return Number.isNaN(ms) ? undefined : ms;
 }
 
 /** Convert GDELT date string to ISO 8601. Returns original on failure. */

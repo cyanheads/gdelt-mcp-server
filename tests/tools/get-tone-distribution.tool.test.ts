@@ -8,6 +8,22 @@ import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mc
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetToneDistribution } from '@/mcp-server/tools/definitions/get-tone-distribution.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
+import type { MirrorResult } from '@/services/gkg-mirror/types.js';
+import {
+  attachMirror,
+  DOC_429_DETAIL,
+  MIRROR_DIVERGENCE_SENTENCE,
+  MIRROR_NO_MATCH_SENTENCE,
+  MIRROR_STANDS_IN_FOR,
+  mirrorAnswers,
+  OVERLOAD_RETRY_SENTENCE,
+  PARTIAL_COVERAGE,
+  PARTIAL_COVERAGE_LINE,
+  ROUTED_WINDOW,
+  refusedAttemptsLines,
+  SOURCE_LINE,
+  useRoutedDoc,
+} from '../helpers/doc-source-fakes.js';
 import { contentText, hrefFor, literalHtml, renderMarkdown } from './markdown-render.js';
 
 const BINS = [
@@ -521,6 +537,143 @@ describe('gdeltGetToneDistribution', () => {
       expect(result.isError).toBeFalsy();
       expect(out(result)).toMatchObject({ histogram: [], totalCount: 0 });
       expect(out(result).notice).toMatch(/No tone data for "drought".*bins input was not applied/);
+    });
+  });
+});
+
+/**
+ * The tool's wiring to the DOC source router: the real DOC service and router with only `fetch`
+ * stubbed, and a fake mirror. The router's outcome table lives in doc-source-router.test.ts.
+ */
+describe('gdelt_get_tone_distribution DOC source routing', () => {
+  const doc = useRoutedDoc();
+  const INPUT = { query: 'climate', ...ROUTED_WINDOW };
+  const DOC_TONECHART = {
+    tonechart: [{ bin: 0, count: 4, toparts: [{ url: 'https://a.com/n', title: 'Neutral' }] }],
+  };
+  const MIRROR_BIN = {
+    bin: -3,
+    count: 7,
+    articles: [{ url: 'https://example.org/m', title: 'Mirrored' }],
+  };
+  const MIRROR_TONECHART = { kind: 'tonechart', result: [MIRROR_BIN] } satisfies MirrorResult;
+  const EMPTY_NOTICE =
+    'No tone data for "climate". Broaden the query or extend the time range to include more matching articles.';
+  const notice = (result: { structuredContent?: unknown }) =>
+    (result.structuredContent as { notice?: string }).notice;
+
+  it('with no mirror, adds no source field and renders as before', async () => {
+    doc.answerDoc({ body: DOC_TONECHART });
+
+    const result = await runToolContract(gdeltGetToneDistribution, INPUT);
+
+    expect(result.structuredContent).toEqual({
+      histogram: [
+        {
+          bin: 0,
+          count: 4,
+          articles: [{ url: 'https://a.com/n', title: 'Neutral' }],
+          referenceCount: 1,
+        },
+      ],
+      summary: { neutralPct: 100 },
+      effectiveQuery: 'climate',
+      totalCount: 4,
+      ...ROUTED_WINDOW,
+    });
+    expect(contentText(result)).toBe(
+      [
+        '## GDELT Tone Distribution',
+        '**Neutral articles (bins -2 to +2):** 100%',
+        '',
+        '### Histogram',
+        '',
+        '**Bin 0:** 4 articles █',
+        '  - [Neutral](https://a.com/n)',
+        '',
+        'Query: "climate"',
+        '**4 total**',
+        '**startDatetime:** `20261031000000`',
+        '**endDatetime:** `20261101000000`',
+      ].join('\n'),
+    );
+  });
+
+  it('with no mirror, adds the overload sentence to an empty answer on both surfaces (#77)', async () => {
+    doc.answerDoc({ body: {} });
+
+    const result = await runToolContract(gdeltGetToneDistribution, INPUT);
+
+    expect(notice(result)).toBe(`${EMPTY_NOTICE} ${OVERLOAD_RETRY_SENTENCE}`);
+    expect(contentText(result)).toContain(`> ${EMPTY_NOTICE} ${OVERLOAD_RETRY_SENTENCE}`);
+  });
+
+  it('marks a DOC answer doc_api on both surfaces while a mirror stands behind it', async () => {
+    attachMirror(mirrorAnswers(MIRROR_TONECHART, 7));
+    doc.answerDoc({ body: DOC_TONECHART });
+
+    const result = await runToolContract(gdeltGetToneDistribution, INPUT);
+
+    expect(result.structuredContent).toMatchObject({ source: 'doc_api' });
+    expect(result.structuredContent).not.toHaveProperty('attempts');
+    expect(contentText(result)).toContain(SOURCE_LINE.doc_api);
+  });
+
+  it('answers from the mirror when DOC refuses: source, attempts, coverage, and notice on both surfaces', async () => {
+    attachMirror(mirrorAnswers(MIRROR_TONECHART, 7));
+    doc.answerDoc('refuse');
+
+    const result = await runToolContract(gdeltGetToneDistribution, INPUT);
+
+    const mirrorNotice = `${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE}`;
+    expect(result.structuredContent).toEqual({
+      histogram: [{ ...MIRROR_BIN, referenceCount: 1 }],
+      summary: { peakNegativeBin: -3, neutralPct: 0 },
+      effectiveQuery: 'climate',
+      totalCount: 7,
+      ...ROUTED_WINDOW,
+      source: 'gkg_mirror',
+      attempts: [
+        { source: 'doc_api', outcome: 'rate_limited', detail: DOC_429_DETAIL },
+        { source: 'gkg_mirror', outcome: 'answered' },
+      ],
+      coverage: PARTIAL_COVERAGE,
+      notice: mirrorNotice,
+    });
+    const text = contentText(result);
+    expect(text).toContain('**Bin -3:** 7 articles');
+    expect(text).toContain(SOURCE_LINE.gkg_mirror);
+    expect(text).toContain(refusedAttemptsLines('answered'));
+    expect(text).toContain(PARTIAL_COVERAGE_LINE);
+    expect(text).toContain(`> ${mirrorNotice}`);
+  });
+
+  it("keeps the mirror's own sentence, not the overload one, on a mirror answer with no match", async () => {
+    attachMirror(mirrorAnswers({ kind: 'tonechart', result: [] }, 0));
+    doc.answerDoc('refuse');
+
+    const result = await runToolContract(gdeltGetToneDistribution, INPUT);
+
+    expect(notice(result)).toBe(
+      `${EMPTY_NOTICE} ${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_NO_MATCH_SENTENCE}`,
+    );
+    expect(contentText(result)).toContain(refusedAttemptsLines('empty'));
+  });
+
+  it("keeps DOC's empty answer with the overload sentence when the mirror has no match either", async () => {
+    attachMirror(mirrorAnswers({ kind: 'tonechart', result: [] }, 0));
+    doc.answerDoc({ body: {} });
+
+    const result = await runToolContract(gdeltGetToneDistribution, INPUT);
+
+    expect(result.structuredContent).toMatchObject({
+      histogram: [],
+      source: 'doc_api',
+      attempts: [
+        { source: 'doc_api', outcome: 'empty' },
+        { source: 'gkg_mirror', outcome: 'empty' },
+      ],
+      notice: `${EMPTY_NOTICE} ${OVERLOAD_RETRY_SENTENCE}`,
     });
   });
 });

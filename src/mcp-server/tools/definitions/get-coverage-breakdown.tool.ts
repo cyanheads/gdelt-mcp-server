@@ -7,7 +7,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { inferDateResolution } from '@/services/gdelt/date-resolution.js';
-import { getGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
+import { routeBreakdown } from '@/services/gdelt/doc-source-router.js';
 import {
   describeDateRangeFault,
   GDELT_DATETIME_PATTERN,
@@ -20,6 +20,12 @@ import {
   renderLimitClamp,
 } from '../limit-clamp.js';
 import { escapeMarkdown, markdownQuote, quoteText, renderQueryEcho } from '../markdown-escape.js';
+import {
+  DOC_EMPTY_RETRY_NOTE,
+  docProvenanceEnrichment,
+  docProvenanceTrailer,
+  mirrorAnswerNotice,
+} from '../source-provenance.js';
 
 /** Series ranked into the topSeries overview; the rest are named in otherSeriesLabels. */
 const MAX_SERIES = 10;
@@ -180,7 +186,8 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
         .optional()
         .describe(
           'Start datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-            '(e.g. 20240101000000). Must pair with endDatetime; supplying only one of the two is rejected.',
+            '(e.g. 20240101000000). Must pair with endDatetime; supplying only one of the two is rejected. ' +
+            'The window may predate the last 3 months.',
         ),
       endDatetime: z
         .string()
@@ -188,7 +195,8 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
         .optional()
         .describe(
           'End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-            '(e.g. 20240131235959). Must pair with startDatetime; supplying only one of the two is rejected.',
+            '(e.g. 20240131235959). Must pair with startDatetime; supplying only one of the two is rejected. ' +
+            'The window may predate the last 3 months.',
         ),
       smoothing: z
         .number()
@@ -290,13 +298,18 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       .describe(
         'Guidance when the query matched no coverage in the window — how to broaden the query or ' +
           'extend the window — or, when this response is one page of several, which series it ' +
-          'returned out of how many. Absent when every series fit in one response.',
+          "returned out of how many. When the server's local GKG mirror answered (source: gkg_mirror), " +
+          "why, how its figures differ from the DOC API's, and how many matching articles a country " +
+          'breakdown left out for having no known source country. Absent when the DOC API answered ' +
+          'and every series fit in one response.',
       ),
+    ...docProvenanceEnrichment,
   },
 
   enrichmentTrailer: {
     limitClamp: { render: renderLimitClamp },
     effectiveQuery: { render: renderQueryEcho },
+    ...docProvenanceTrailer,
   },
 
   async handler(input, ctx) {
@@ -309,7 +322,6 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       query: input.query,
       breakdownBy: input.breakdownBy,
     });
-    const svc = getGdeltDocService();
     const limit = clampToCap(ctx, 'limit', input.limit, 75);
 
     const modeMap = {
@@ -317,7 +329,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       country: 'timelinesourcecountry',
     } as const;
 
-    const allSeries = await svc.getBreakdown(
+    const { result: allSeries, standIn } = await routeBreakdown(
       {
         query: input.query,
         mode: modeMap[input.breakdownBy],
@@ -406,6 +418,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
         `No breakdown data for ${markdownQuote(input.query)}. Broaden the query, extend the time window, or ` +
           'verify the query operators are correct.',
       );
+      if (!standIn) notices.push(DOC_EMPTY_RETRY_NOTE);
       if (input.series?.length) {
         notices.push('The series input was not applied — this breakdown has no series.');
       }
@@ -420,6 +433,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
         `A trailing moving average of width ${input.smoothing} needs that many source steps; leading steps without a full window are omitted and peaks may appear later.`,
       );
     }
+    if (standIn) notices.push(mirrorAnswerNotice(standIn));
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
     ctx.log.info('gdelt_get_coverage_breakdown completed', {

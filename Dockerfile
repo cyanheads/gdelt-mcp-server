@@ -132,7 +132,8 @@ LABEL org.opencontainers.image.version="${APP_VERSION}"
 LABEL org.opencontainers.image.source="https://github.com/cyanheads/gdelt-mcp-server"
 
 # The manifest comes from the build context: the deps stage's copy was rewritten
-# by the OTel install, and the runtime reads only its name, version, and type.
+# by the OTel install, and the runtime reads only its name, version, type, and
+# the `mirror:*` scripts.
 COPY package.json ./
 COPY --from=deps /usr/src/app/node_modules ./node_modules
 
@@ -140,11 +141,31 @@ COPY --from=deps /usr/src/app/node_modules ./node_modules
 COPY --from=build /usr/src/app/dist ./dist
 COPY --from=build /usr/src/app/skills ./skills
 
+# GKG mirror lifecycle scripts (`docker exec <container> bun run mirror:init`). The
+# shared context shim (_mirror-context.ts) is imported by the three named scripts,
+# so it travels with them.
+COPY --from=build /usr/src/app/scripts/gkg-mirror-init.ts \
+                  /usr/src/app/scripts/gkg-mirror-refresh.ts \
+                  /usr/src/app/scripts/gkg-mirror-verify.ts \
+                  /usr/src/app/scripts/_mirror-context.ts \
+                  ./scripts/
+
+# Bun honors tsconfig `paths` at runtime: map `@/` to the compiled `./dist/` so the
+# .ts scripts resolve their alias imports against the build output. A checkout's
+# tsconfig.json maps @/* → ./src/*; this one maps @/* → ./dist/*, so `bun run
+# mirror:*` is the same command in both.
+RUN echo '{"compilerOptions":{"baseUrl":".","paths":{"@/*":["./dist/*"]}}}' > tsconfig.json
+
 # The 'oven/bun' image already provides a non-root user named 'bun'.
 # We will use this existing user for enhanced security.
 
 # Create and set permissions for the log directory, assigning ownership to the 'bun' user.
 RUN mkdir -p /var/log/gdelt-mcp-server && chown -R bun:bun /var/log/gdelt-mcp-server
+
+# Mount point for the GKG mirror's volume, owned by 'bun' so a fresh named volume
+# mounted here is writable. Nothing points the server at it: the mirror stays off
+# until GDELT_MIRROR_PATH is set (e.g. /var/lib/gdelt-mirror/gkg.db).
+RUN mkdir -p /var/lib/gdelt-mirror && chown bun:bun /var/lib/gdelt-mirror
 
 # Switch to the non-root user
 USER bun

@@ -24,6 +24,10 @@ import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
 import { initGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
 import { gdeltFetch, parseGdeltJson } from '@/services/gdelt/gdelt-fetch.js';
 import { disposeGdeltPacer, initGdeltPacer } from '@/services/gdelt/gdelt-pacer.js';
+import {
+  disposeGdeltResponseCache,
+  initGdeltResponseCache,
+} from '@/services/gdelt/gdelt-response-cache.js';
 import * as tvServiceModule from '@/services/gdelt/gdelt-tv-service.js';
 import { initGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
 
@@ -257,6 +261,7 @@ const RATE_LIMIT_BODY = 'Please limit requests to one every 5 seconds.';
 /** Exercise the real retry boundary before a service error enters the tool renderer. */
 async function rateLimitFailure(apiLabel: string): Promise<unknown> {
   initGdeltPacer(0);
+  initGdeltResponseCache();
   mockedFetchWithTimeout.mockResolvedValue(new Response(RATE_LIMIT_BODY));
   try {
     await gdeltFetch(
@@ -270,6 +275,7 @@ async function rateLimitFailure(apiLabel: string): Promise<unknown> {
     return error;
   } finally {
     disposeGdeltPacer();
+    disposeGdeltResponseCache();
   }
   throw new Error('Expected a rate-limit failure');
 }
@@ -543,6 +549,7 @@ describe('a `{}` zero-match answer reaches the wire as a success', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     initGdeltPacer(0);
+    initGdeltResponseCache();
     initGdeltDocService({} as never, {} as never, SERVER_CONFIG as never);
     initGdeltTvService({} as never, {} as never, SERVER_CONFIG as never);
     mockedFetchWithTimeout.mockImplementation(() =>
@@ -552,6 +559,7 @@ describe('a `{}` zero-match answer reaches the wire as a success', () => {
 
   afterEach(() => {
     disposeGdeltPacer();
+    disposeGdeltResponseCache();
   });
 
   it('DOC — gdelt_search_articles returns an empty list with a notice', async () => {
@@ -649,12 +657,14 @@ describe('gdelt_unavailable on an exhausted upstream timeout', () => {
     mockedFetchWithTimeout.mockReset();
     vi.useFakeTimers();
     initGdeltPacer(0);
+    initGdeltResponseCache();
     initGdeltDocService({} as never, {} as never, SERVER_CONFIG as never);
     initGdeltTvService({} as never, {} as never, SERVER_CONFIG as never);
   });
 
   afterEach(() => {
     disposeGdeltPacer();
+    disposeGdeltResponseCache();
     vi.useRealTimers();
   });
 
@@ -785,12 +795,14 @@ describe('gdelt_unavailable on a transient upstream failure', () => {
     mockedFetchWithTimeout.mockImplementation(actual.fetchWithTimeout);
     vi.useFakeTimers();
     initGdeltPacer(0);
+    initGdeltResponseCache();
     initGdeltDocService({} as never, {} as never, SERVER_CONFIG as never);
     initGdeltTvService({} as never, {} as never, SERVER_CONFIG as never);
   });
 
   afterEach(() => {
     disposeGdeltPacer();
+    disposeGdeltResponseCache();
     vi.unstubAllGlobals();
     vi.useRealTimers();
   });

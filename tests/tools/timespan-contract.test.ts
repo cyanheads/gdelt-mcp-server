@@ -12,11 +12,16 @@ import { gdeltSearchTv } from '@/mcp-server/tools/definitions/search-tv.tool.js'
 import * as doc from '@/services/gdelt/gdelt-doc-service.js';
 import { parseGdeltJson } from '@/services/gdelt/gdelt-fetch.js';
 import { disposeGdeltPacer, initGdeltPacer } from '@/services/gdelt/gdelt-pacer.js';
+import {
+  disposeGdeltResponseCache,
+  initGdeltResponseCache,
+} from '@/services/gdelt/gdelt-response-cache.js';
 import * as tv from '@/services/gdelt/gdelt-tv-service.js';
 import { contentText, literalHtml, renderMarkdown } from './markdown-render.js';
 
 afterEach(() => {
   disposeGdeltPacer();
+  disposeGdeltResponseCache();
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -31,11 +36,13 @@ describe('DOC explicit-window precedence', () => {
     describe(tool.name, () => {
       function arrange() {
         initGdeltPacer(0);
+        initGdeltResponseCache();
         doc.initGdeltDocService({} as never, {} as never, {
           baseUrl: 'https://api.gdeltproject.org/api/v2',
           requestDelayMs: 0,
           requestTimeoutMs: 60000,
           clampLimits: true,
+          mirrorWindowDays: 7,
         });
         return vi.spyOn(globalThis, 'fetch').mockImplementation(async () => Response.json({}));
       }

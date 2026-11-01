@@ -1,0 +1,3 @@
+40341 357e80f9e18cd6e4fde1930d0ae5551c http://data.gdeltproject.org/gdeltv2/20261101120000.export.CSV.zip
+53510 8d8f50ee6879ed2d84240f23fd0e79bb http://data.gdeltproject.org/gdeltv2/20261101120000.mentions.CSV.zip
+2728270 dde20037f067506a6614045ead6f164d http://data.gdeltproject.org/gdeltv2/20261101120000.gkg.csv.zip

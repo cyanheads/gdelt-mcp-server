@@ -15,6 +15,10 @@ import { fetchWithTimeout } from '@cyanheads/mcp-ts-core/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltFetch } from '@/services/gdelt/gdelt-fetch.js';
 import { disposeGdeltPacer, initGdeltPacer } from '@/services/gdelt/gdelt-pacer.js';
+import {
+  disposeGdeltResponseCache,
+  initGdeltResponseCache,
+} from '@/services/gdelt/gdelt-response-cache.js';
 
 // Keep the real withRetry (the code under test) and stub only the network call.
 vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => {
@@ -55,10 +59,12 @@ describe('gdeltFetch retry boundary', () => {
     mockedFetch.mockRejectedValue(new Error('unmocked fetch'));
     // No inter-request spacing in unit tests — pacing is not what's under test here.
     initGdeltPacer(0);
+    initGdeltResponseCache();
   });
 
   afterEach(() => {
     disposeGdeltPacer();
+    disposeGdeltResponseCache();
   });
 
   it('fails fast on an HTTP 429 — the underlying fetch runs exactly once, not 4×', async () => {
@@ -196,6 +202,7 @@ describe('gdeltFetch failure classification over the real fetchWithTimeout', () 
     });
     vi.stubGlobal('fetch', upstream);
     initGdeltPacer(0);
+    initGdeltResponseCache();
     vi.useFakeTimers();
   });
 
@@ -203,6 +210,7 @@ describe('gdeltFetch failure classification over the real fetchWithTimeout', () 
     vi.useRealTimers();
     vi.unstubAllGlobals();
     disposeGdeltPacer();
+    disposeGdeltResponseCache();
   });
 
   /** Start one call; resolves with what it rejected with. */
