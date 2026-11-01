@@ -1,6 +1,6 @@
 # gdelt-mcp-server - Directory Structure
 
-Generated on: 2026-11-01 07:30:59
+Generated on: 2026-11-01 16:24:26
 
 ```text
 gdelt-mcp-server/
@@ -127,6 +127,7 @@ gdelt-mcp-server/
 │   │   └── SKILL.md
 │   └── README.md
 ├── scripts/
+│   ├── _mirror-context.ts
 │   ├── build-changelog.ts
 │   ├── build.ts
 │   ├── check-dependency-specifiers.ts
@@ -137,6 +138,9 @@ gdelt-mcp-server/
 │   ├── clean-mcpb.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
+│   ├── gkg-mirror-init.ts
+│   ├── gkg-mirror-refresh.ts
+│   ├── gkg-mirror-verify.ts
 │   ├── install-otel.ts
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
@@ -171,33 +175,71 @@ gdelt-mcp-server/
 │   │       ├── date-range.ts
 │   │       ├── limit-clamp.ts
 │   │       ├── markdown-escape.ts
+│   │       ├── source-provenance.ts
+│   │       ├── stale-response.ts
 │   │       └── station-ids.ts
 │   ├── services/
-│   │   └── gdelt/
-│   │       ├── date-resolution.ts
-│   │       ├── gdelt-doc-service.ts
-│   │       ├── gdelt-fetch.ts
-│   │       ├── gdelt-pacer.ts
-│   │       ├── gdelt-theme-service.ts
-│   │       ├── gdelt-tv-service.ts
+│   │   ├── gdelt/
+│   │   │   ├── date-resolution.ts
+│   │   │   ├── doc-source-router.ts
+│   │   │   ├── gdelt-doc-service.ts
+│   │   │   ├── gdelt-fetch.ts
+│   │   │   ├── gdelt-pacer.ts
+│   │   │   ├── gdelt-response-cache.ts
+│   │   │   ├── gdelt-theme-service.ts
+│   │   │   ├── gdelt-tv-service.ts
+│   │   │   └── types.ts
+│   │   └── gkg-mirror/
+│   │       ├── countries.ts
+│   │       ├── doc-query-compiler.ts
+│   │       ├── gkg-feed.ts
+│   │       ├── gkg-mirror-client.ts
+│   │       ├── gkg-mirror-queries.ts
+│   │       ├── gkg-mirror-schema.ts
+│   │       ├── gkg-mirror-store.ts
+│   │       ├── gkg-mirror-worker-entry.ts
+│   │       ├── gkg-mirror-worker.ts
+│   │       ├── languages.ts
 │   │       └── types.ts
 │   └── index.ts
 ├── tests/
 │   ├── fixtures/
+│   │   ├── gkg/
+│   │   │   ├── domains-by-country.txt
+│   │   │   ├── english-rows.tsv
+│   │   │   ├── lastupdate-translation.txt
+│   │   │   ├── lastupdate.txt
+│   │   │   ├── translation-dup-id-rows.tsv
+│   │   │   └── translation-multiline-record.tsv
 │   │   ├── gkg-themes-excerpt.txt
 │   │   └── tv-station-catalog.json
+│   ├── helpers/
+│   │   ├── doc-source-fakes.ts
+│   │   ├── gkg-feed-fixtures.ts
+│   │   ├── gkg-mirror-fixture.ts
+│   │   └── gkg-mirror-test-worker.ts
 │   ├── prompts/
 │   ├── resources/
 │   ├── scripts/
-│   │   └── bundle-agent-docs.test.ts
+│   │   ├── bundle-agent-docs.test.ts
+│   │   └── mirror-context.test.ts
 │   ├── services/
 │   │   ├── date-resolution.test.ts
+│   │   ├── doc-query-compiler.test.ts
+│   │   ├── doc-source-router-startup.test.ts
+│   │   ├── doc-source-router.test.ts
 │   │   ├── gdelt-doc-service.test.ts
+│   │   ├── gdelt-fetch-cache.test.ts
 │   │   ├── gdelt-fetch-retry.test.ts
 │   │   ├── gdelt-fetch.test.ts
 │   │   ├── gdelt-pacer.test.ts
 │   │   ├── gdelt-theme-service.test.ts
 │   │   ├── gdelt-tv-service.test.ts
+│   │   ├── gkg-feed.test.ts
+│   │   ├── gkg-mirror-client.test.ts
+│   │   ├── gkg-mirror-queries.test.ts
+│   │   ├── gkg-mirror-startup.test.ts
+│   │   ├── gkg-mirror-store.test.ts
 │   │   └── request-contract.test.ts
 │   └── tools/
 │       ├── count-limits.test.ts

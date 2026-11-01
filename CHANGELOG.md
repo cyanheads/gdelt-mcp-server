@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.8.1](changelog/0.8.x/0.8.1.md) — 2026-11-01
+
+Response cache that serves a stored answer when GDELT refuses, an optional local GKG mirror the DOC tools fall back to, UTC timespan math, and mode-qualified analytics date descriptions.
+
 ## [0.8.0](changelog/0.8.x/0.8.0.md) — 2026-11-01 · ⚠️ Breaking
 
 TV station and show rankings, pooled timelines, and complete count-paged coverage.
