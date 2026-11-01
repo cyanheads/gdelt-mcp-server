@@ -14,7 +14,6 @@ import {
   planTvWindowContinuation,
   planWindowContinuation,
   resolveEffectiveWindow,
-  resumeBoundary,
   splitWindow,
   toGdeltDatetime,
   tvRequestWindow,
@@ -233,32 +232,6 @@ describe('parseRecordTimestamp', () => {
   );
 });
 
-describe('resumeBoundary', () => {
-  const at = Date.parse('2024-01-15T12:00:00Z');
-
-  it('resumes dateDesc with an endDatetime one second past the last emitted record', () => {
-    expect(resumeBoundary('dateDesc', at)).toEqual({ endDatetime: '20240115120001' });
-  });
-
-  it('resumes dateAsc with a startDatetime one second before the last emitted record', () => {
-    expect(resumeBoundary('dateAsc', at)).toEqual({ startDatetime: '20240115115959' });
-  });
-
-  /**
-   * Under GDELT's documented exclusive boundaries the resumed window still covers the last
-   * emitted record's second — the records cut from that second are reachable, not skipped.
-   */
-  it('keeps the last emitted second inside the resumed window under exclusive boundaries', () => {
-    const window = { startDatetime: '20240110000000', endDatetime: '20240120000000' };
-    const desc = { ...window, ...resumeBoundary('dateDesc', at) };
-    const asc = { ...window, ...resumeBoundary('dateAsc', at) };
-    expect(coveredSeconds(desc)).toContain(at / 1000);
-    expect(coveredSeconds(asc)).toContain(at / 1000);
-    expect(describeDateRangeFault(desc.startDatetime, desc.endDatetime)).toBeUndefined();
-    expect(describeDateRangeFault(asc.startDatetime, asc.endDatetime)).toBeUndefined();
-  });
-});
-
 describe('isWithinWindow', () => {
   const window = { startDatetime: '20240701000000', endDatetime: '20240701120000' };
 
@@ -298,13 +271,11 @@ describe('tvRequestWindow', () => {
 });
 
 describe('planTvWindowContinuation', () => {
-  const cutAndCapped = { cut: true, cap: 'below-ceiling' } as const;
-
   it('splits on the hour nearest the middle, halves sharing no second', () => {
-    const plan = planTvWindowContinuation(
-      { startDatetime: '20240116011500', endDatetime: '20240116045000' },
-      cutAndCapped,
-    );
+    const plan = planTvWindowContinuation({
+      startDatetime: '20240116011500',
+      endDatetime: '20240116045000',
+    });
     expect(plan.windows).toEqual([
       { startDatetime: '20240116011500', endDatetime: '20240116025959' },
       { startDatetime: '20240116030000', endDatetime: '20240116045000' },
@@ -312,74 +283,38 @@ describe('planTvWindowContinuation', () => {
   });
 
   it('gives disjoint hour sets to the two halves, so a capped hour is never fetched twice', () => {
-    const plan = planTvWindowContinuation(
-      { startDatetime: '20240116000000', endDatetime: '20240116020000' },
-      { cut: false, cap: 'at-ceiling' },
-    );
+    const plan = planTvWindowContinuation({
+      startDatetime: '20240116000000',
+      endDatetime: '20240116020000',
+    });
     const [a, b] = plan.windows!.map((w) => hoursOf(tvRequestWindow(w)));
     expect(a!.filter((h) => b!.includes(h))).toEqual([]);
   });
 
-  /**
-   * Only an uncut page capped at 3000 has nothing a narrower window can add: a cut page's
-   * withheld clips were fetched and sit inside the window, so a sub-hour half reaches them.
-   */
-  it('stops only when a page capped at the ceiling was not cut and no hour lies inside', () => {
-    const plan = planTvWindowContinuation(
-      { startDatetime: '20240116010000', endDatetime: '20240116013800' },
-      { cut: false, cap: 'at-ceiling' },
-    );
+  it('stops when no hour lies inside a window capped at the ceiling', () => {
+    const plan = planTvWindowContinuation({
+      startDatetime: '20240116010000',
+      endDatetime: '20240116013800',
+    });
     expect(plan.windows).toBeUndefined();
     expect(plan.guidance).toMatch(/whole clock hours/);
     expect(plan.guidance).toMatch(/not retrievable/);
   });
 
-  it.each([
-    [{ cut: true, cap: 'none' } as const, undefined],
-    [
-      { cut: true, cap: 'below-ceiling' } as const,
-      /clips past that cap are out of reach of any narrower window/,
-    ],
-    [
-      { cut: true, cap: 'at-ceiling' } as const,
-      /more clips matched upstream than any window inside this hour can fetch/,
-    ],
-  ])('splits a cut window inside one hour at the second (%o)', (options, capNote) => {
-    const plan = planTvWindowContinuation(
-      { startDatetime: '20240116010500', endDatetime: '20240116015000' },
-      options,
-    );
-    expect(plan.windows).toEqual([
-      { startDatetime: '20240116010500', endDatetime: '20240116012730' },
-      { startDatetime: '20240116012731', endDatetime: '20240116015000' },
-    ]);
-    expect(plan.guidance).not.toMatch(/not retrievable/);
-    if (capNote) expect(plan.guidance).toMatch(capNote);
-  });
-
   /** `[00:00, 01:00:00]` is sent as hour 00 alone, so it is a single-hour window. */
   it('treats a window ending exactly on the hour as the hour before it', () => {
-    const plan = planTvWindowContinuation(
-      { startDatetime: '20240116000000', endDatetime: '20240116010000' },
-      { cut: false, cap: 'at-ceiling' },
-    );
+    const plan = planTvWindowContinuation({
+      startDatetime: '20240116000000',
+      endDatetime: '20240116010000',
+    });
     expect(plan.windows).toBeUndefined();
     expect(
       hoursOf(tvRequestWindow({ startDatetime: '20240116000000', endDatetime: '20240116010000' })),
     ).toHaveLength(1);
   });
 
-  it('stops when a cut window is too narrow to divide at one-second resolution', () => {
-    const plan = planTvWindowContinuation(
-      { startDatetime: '20240116010000', endDatetime: '20240116010002' },
-      { cut: true, cap: 'none' },
-    );
-    expect(plan.windows).toBeUndefined();
-    expect(plan.guidance).toMatch(/not retrievable/);
-  });
-
   it('asks for a window when none is known', () => {
-    const plan = planTvWindowContinuation(undefined, { cut: false, cap: 'at-ceiling' });
+    const plan = planTvWindowContinuation(undefined);
     expect(plan.windows).toBeUndefined();
     expect(plan.guidance).toMatch(/startDatetime\/endDatetime/);
   });

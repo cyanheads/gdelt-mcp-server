@@ -70,7 +70,7 @@ beforeEach(() => {
   vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
     getTvClips: vi.fn().mockResolvedValue({ clips: [CLIP] }),
     searchTv: vi.fn().mockResolvedValue(TV_RESULT),
-    getTvContext: vi.fn().mockResolvedValue({ words: [], clipsAnalyzed: 0 }),
+    getTvContext: vi.fn().mockResolvedValue({ words: [] }),
     listStations: vi.fn().mockResolvedValue([]),
   } as unknown as tvServiceModule.GdeltTvService);
 });
@@ -128,21 +128,23 @@ describe('oversized inputs', () => {
     expect(() => gdeltSearchArticles.input.parse({ query: longQuery })).not.toThrow();
   });
 
-  it('search-tv: array above the station ceiling is rejected by the schema', () => {
+  it('search-tv preserves a large station selection without truncation', () => {
     const manyStations = Array.from({ length: 200 }, (_, i) => `STATION${i}`);
-    expect(() => gdeltSearchTv.input.parse({ query: 'test', stations: manyStations })).toThrow(
-      /10/,
+    expect(gdeltSearchTv.input.parse({ query: 'test', stations: manyStations }).stations).toEqual(
+      manyStations,
     );
   });
 
-  // Up to 30000 the schema admits maxRecords and the handler clamps it to the 3000 per-call cap
-  // before any request is built; past 30000 the schema rejects it outright.
-  it('get-tv-clips maxRecords at the hard ceiling 30000 is accepted by the schema', () => {
-    expect(() => gdeltGetTvClips.input.parse({ query: 'test', maxRecords: 30000 })).not.toThrow();
+  it('get-tv-clips accepts counts past the former headroom for clamping', () => {
+    expect(gdeltGetTvClips.input.parse({ query: 'test', maxRecords: 30001 }).maxRecords).toBe(
+      30001,
+    );
   });
 
-  it('get-tv-clips maxRecords above the hard ceiling 30001 is rejected', () => {
-    expect(() => gdeltGetTvClips.input.parse({ query: 'test', maxRecords: 30001 })).toThrow();
+  it('get-tv-clips rejects unsafe maxRecords integers', () => {
+    expect(() =>
+      gdeltGetTvClips.input.parse({ query: 'test', maxRecords: Number.MAX_SAFE_INTEGER + 1 }),
+    ).toThrow();
   });
 });
 
@@ -559,9 +561,10 @@ describe('caller text quoted into notices, hints, and echoes', () => {
     gdelt_get_tone_distribution: 'No tone data for "climate change". Broaden',
     gdelt_get_coverage_breakdown: 'No breakdown data for "climate change". Broaden',
     gdelt_search_themes: 'No GKG theme matched "climate change". Theme identifiers',
-    gdelt_search_tv: 'No TV coverage for "climate change". Most TV data ends',
-    gdelt_get_tv_clips: 'No TV clips matched "climate change". TV data ends',
-    gdelt_get_tv_context: 'No TV context data for "climate change". TV data ends',
+    gdelt_search_tv: 'No TV coverage for "climate change". Archive coverage varies by station',
+    gdelt_get_tv_clips: 'No TV clips matched "climate change". TV coverage varies by station',
+    gdelt_get_tv_context:
+      'No TV context data for "climate change". Archive coverage varies by station',
     gdelt_list_tv_stations:
       'No station matched stations ["climate change"], network "climate change", market "climate change".',
   };
@@ -576,7 +579,13 @@ describe('caller text quoted into notices, hints, and echoes', () => {
       const result = await run(HOSTILE_QUERY);
       expect(result.isError).toBeFalsy();
       const html = renderMarkdown(contentText(result));
-      expect(html).not.toMatch(LIVE_CONSTRUCT);
+      const authoredCode =
+        tool === 'gdelt_get_coverage_timeline'
+          ? '<code>volume</code>'
+          : tool === 'gdelt_get_coverage_breakdown'
+            ? '<code>country</code>'
+            : '';
+      expect(authoredCode ? html.replace(authoredCode, '') : html).not.toMatch(LIVE_CONSTRUCT);
       const lead = (PLAIN_LEADS[tool] as string)
         .split('"climate change"')
         .map(literalHtml)
@@ -692,9 +701,10 @@ describe('caller text quoted into notices, hints, and echoes', () => {
 
   /** A second caller value, distinct from the query, so each quoted value is checked on its own. */
   const HOSTILE_SELECTOR = '<img src=x>\n# SELECTOR [l](javascript:alert(2))';
-  const UPSTREAM_DISPLAYED = literalHtml(
-    '<script>alert(1)</script> # UPSTREAM [l](javascript:alert(3))',
-  );
+  const UPSTREAM_DISPLAYED =
+    literalHtml('<script>alert(1)</script>') +
+    '<br>\n' +
+    literalHtml('# UPSTREAM [l](javascript:alert(3))');
 
   it.each<[string, () => Promise<Result>, string[]]>([
     [
@@ -768,7 +778,7 @@ describe('upstream text quoted into service error messages', () => {
   function expectInertErrorLine(result: { content: unknown[] }) {
     const text = contentText(result);
     const errorLine = text.split('\n').find((line) => line.startsWith('Error: '));
-    expect(errorLine).toContain(String.raw`\\n# HEAD`);
+    expect(errorLine).toContain(String.raw`\n# HEAD`);
     expect(errorLine).toContain(String.raw`\<img src=x>`);
     const html = renderMarkdown(text);
     expect(html).not.toMatch(/<h1|<img/);
@@ -799,20 +809,22 @@ describe('upstream text quoted into service error messages', () => {
         'an unparseable DOC body',
         HOSTILE,
         () => runToolContract(gdeltSearchArticles, { query: 'x' }),
-        String.raw`GDELT DOC API returned unparseable response: "x\\n# HEAD \<img src=x>"`,
+        String.raw`GDELT DOC API returned unparseable response: "x\n# HEAD <img src=x>"`,
       ],
       [
         'a TV rejection',
         'Invalid Station: <img src=x>\n# HEAD',
         () => runToolContract(gdeltGetTvClips, { query: 'x', stations: ['CNN'] }),
-        String.raw`GDELT TV API rejected the query: "Invalid Station: \<img src=x>\\n# HEAD"`,
+        String.raw`GDELT TV API rejected the query: "Invalid Station: <img src=x>\n# HEAD"`,
       ],
     ])('%s renders as one inert Error line', async (_case, body, run, message) => {
       const upstream = vi.fn(async () => new Response(body));
       vi.stubGlobal('fetch', upstream);
       const result = await run();
       expect(result.isError).toBe(true);
-      expect(contentText(result).split('\n')).toContain(`Error: ${message}`);
+      expect((result.structuredContent as { error: { message: string } }).error.message).toBe(
+        message,
+      );
       expectInertErrorLine(result);
       expect(upstream).toHaveBeenCalledTimes(1);
     });
@@ -844,10 +856,10 @@ describe('upstream text quoted into service error messages', () => {
   });
 });
 
-// ─── Response size: an oversized upstream answer is cut, never relayed whole ──
+// ─── Record retention: every fetched in-window clip reaches both surfaces ──
 
 describe('oversized upstream answers', () => {
-  it('get-tv-clips relays at most about 50,000 bytes per surface from a 3,000-clip answer', async () => {
+  it('get-tv-clips retains all 3,000 clips even with long multibyte snippets', async () => {
     const clips = Array.from({ length: 3000 }, (_, i) => ({
       ...CLIP,
       snippet: 'ü'.repeat(400),
@@ -861,8 +873,19 @@ describe('oversized upstream answers', () => {
       stations: ['CNN'],
       maxRecords: 3000,
     });
-    expect(Buffer.byteLength(JSON.stringify(result.structuredContent))).toBeLessThanOrEqual(50_000);
-    expect(Buffer.byteLength(contentText(result))).toBeLessThanOrEqual(50_000);
-    expect(result.structuredContent).toMatchObject({ withheldCount: expect.any(Number) });
+    expect(result.isError).toBeFalsy();
+    const output = result.structuredContent as { clips: typeof clips; totalCount: number };
+    expect(output.clips).toHaveLength(3000);
+    expect(output.totalCount).toBe(3000);
+    expect(output).not.toHaveProperty('withheldCount');
+    const text = contentText(result);
+    for (let index = 0; index < 3000; index++) {
+      expect(output.clips[index]?.archiveUrl).toBe(`https://archive.org/details/TEST_${index}`);
+      expect(output.clips[index]?.snippet).toBe('ü'.repeat(400));
+    }
+    expect(text.match(/https:\/\/archive\.org\/details\/TEST_\d+/g)).toEqual(
+      Array.from({ length: 3000 }, (_, index) => `https://archive.org/details/TEST_${index}`),
+    );
+    expect(text.match(/ü{400}/g)).toHaveLength(3000);
   });
 });

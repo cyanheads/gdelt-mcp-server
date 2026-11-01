@@ -41,7 +41,7 @@ export const gdeltListTvStations = tool('gdelt_list_tv_stations', {
     'stations with earlier end dates are discontinued. ' +
     'Use before querying to verify a station was active during the target time period, ' +
     'or to discover valid station IDs for the stations parameter in other TV tools. ' +
-    'Most station monitoring ended October 2024 when the Internet Archive TV feed stopped updating.',
+    'Archive coverage varies by station; check each station’s monitoring date range. Use the returned network values with network: and market values with quoted market: selectors in TV queries.',
   annotations: { readOnlyHint: true, openWorldHint: true },
 
   errors: [
@@ -49,9 +49,9 @@ export const gdeltListTvStations = tool('gdelt_list_tv_stations', {
       reason: 'gdelt_rate_limited',
       code: JsonRpcErrorCode.RateLimited,
       when: 'GDELT rejected the request for its one-request-per-five-seconds limit, or too many requests were already queued for this one to start in time.',
-      retryable: false,
+      retryable: true,
       recovery:
-        'Wait at least 5 seconds before retrying; GDELT accepts at most one request every 5 seconds.',
+        'Back off before retrying; five seconds is minimum request spacing, not a recovery guarantee, and rate limiting may persist longer. Honor Retry-After when supplied.',
       thrownBy: 'service',
     },
     {
@@ -163,7 +163,7 @@ export const gdeltListTvStations = tool('gdelt_list_tv_stations', {
     const network = input.network?.trim() || undefined;
     const market = input.market?.trim() || undefined;
 
-    const sorted = stations.slice().sort((a, b) => a.stationId.localeCompare(b.stationId));
+    const sorted = stations.toSorted((a, b) => a.stationId.localeCompare(b.stationId));
     const returned = sorted.filter(
       (s) =>
         (requestedIds.size === 0 || requestedIds.has(filterKey(s.stationId))) &&

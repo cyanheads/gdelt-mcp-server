@@ -1,12 +1,13 @@
 /**
  * @fileoverview Pins the registered tool surface: `src/index.ts` hands `createApp()` exactly
- * the nine live tools, the retired TV trending feature leaves no tool or service path behind,
- * and only the byte-budgeted tools advertise withheldCount.
+ * the ten live tools after setup, the retired TV trending feature leaves no service path,
+ * and record-list tools no longer advertise withheldCount.
  * @module tests/tools/tool-surface.test
  */
 
 import { createApp } from '@cyanheads/mcp-ts-core';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { disposeGdeltPacer } from '@/services/gdelt/gdelt-pacer.js';
 import { GdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
 
 vi.mock('@cyanheads/mcp-ts-core', async (importOriginal) => ({
@@ -21,16 +22,22 @@ let registered: Registered[];
 
 beforeAll(async () => {
   await import('@/index.js');
-  const options = vi.mocked(createApp).mock.calls[0]?.[0] as { tools: Registered[] };
-  registered = options.tools;
+  const options = vi.mocked(createApp).mock.calls[0]?.[0];
+  if (!options?.setup) throw new Error('createApp must register setup');
+  // Service constructors only read server configuration; the fake core performs no I/O.
+  await options.setup({ config: {}, storage: {} } as Parameters<typeof options.setup>[0]);
+  registered = options.tools as Registered[];
 });
 
+afterAll(() => disposeGdeltPacer());
+
 describe('registered tool surface', () => {
-  it('registers exactly the nine live tools', () => {
+  it('registers exactly the ten live tools', () => {
     expect(registered.map((definition) => definition.name).sort()).toEqual([
       'gdelt_get_coverage_breakdown',
       'gdelt_get_coverage_timeline',
       'gdelt_get_tone_distribution',
+      'gdelt_get_tv_breakdown',
       'gdelt_get_tv_clips',
       'gdelt_get_tv_context',
       'gdelt_list_tv_stations',
@@ -44,11 +51,11 @@ describe('registered tool surface', () => {
     expect('getTvTrending' in GdeltTvService.prototype).toBe(false);
   });
 
-  it('advertises withheldCount on exactly the two byte-budgeted record-list tools', () => {
-    const budgeted = registered
+  it('never advertises withheldCount', () => {
+    const withholding = registered
       .filter((definition) => 'withheldCount' in (definition.enrichment ?? {}))
       .map((definition) => definition.name)
       .sort();
-    expect(budgeted).toEqual(['gdelt_get_tv_clips', 'gdelt_search_articles']);
+    expect(withholding).toEqual([]);
   });
 });

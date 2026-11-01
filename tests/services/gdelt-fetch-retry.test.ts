@@ -71,8 +71,8 @@ describe('gdeltFetch retry boundary', () => {
       code: JsonRpcErrorCode.RateLimited,
       data: {
         reason: 'gdelt_rate_limited',
-        retryable: false,
-        recovery: { hint: expect.stringMatching(/wait at least 5 seconds/i) },
+        retryable: true,
+        recovery: { hint: expect.stringMatching(/back off/i) },
       },
     });
     expect(mockedFetch).toHaveBeenCalledTimes(1);
@@ -88,8 +88,8 @@ describe('gdeltFetch retry boundary', () => {
       code: JsonRpcErrorCode.RateLimited,
       data: {
         reason: 'gdelt_rate_limited',
-        retryable: false,
-        recovery: { hint: expect.stringMatching(/wait at least 5 seconds/i) },
+        retryable: true,
+        recovery: { hint: expect.stringMatching(/back off/i) },
       },
     });
     expect(mockedFetch).toHaveBeenCalledTimes(1);
@@ -296,7 +296,7 @@ describe('gdeltFetch failure classification over the real fetchWithTimeout', () 
     const error = await settle();
 
     expect(error.code).toBe(JsonRpcErrorCode.RateLimited);
-    expect(error.data).toMatchObject({ reason: 'gdelt_rate_limited', retryable: false });
+    expect(error.data).toMatchObject({ reason: 'gdelt_rate_limited', retryable: true });
     expect(upstream).toHaveBeenCalledTimes(1);
   });
 

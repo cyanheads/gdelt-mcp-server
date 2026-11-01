@@ -10,8 +10,15 @@ import { getGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
 import {
   describeDateRangeFault,
   describeResolvedTimespan,
+  describeTvTimespanFault,
   GDELT_DATETIME_PATTERN,
 } from '../date-range.js';
+import {
+  clampToCap,
+  countInputSchema,
+  limitClampSchema,
+  renderLimitClamp,
+} from '../limit-clamp.js';
 import { escapeMarkdown, markdownQuote, renderQueryEcho } from '../markdown-escape.js';
 
 /**
@@ -37,10 +44,16 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
     `(0–100, where 100 = the query term itself). ${SAMPLING_NOTICE} ` +
     'Use to understand narrative framing, identify related concepts mentioned alongside a topic, ' +
     'or generate follow-up search terms. ' +
-    'TV data spans 2009–October 2024.',
+    'Returns 25 terms by default, with count pages up to 25,000 terms. Archive coverage varies by station; check gdelt_list_tv_stations for each station’s monitoring date range.',
   annotations: { readOnlyHint: true, openWorldHint: true },
 
   errors: [
+    {
+      reason: 'offset_out_of_range',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'The requested term offset is at or beyond the end of a non-empty result.',
+      recovery: 'Retry with an offset between 0 and totalTerms - 1 from the preceding response.',
+    },
     {
       reason: 'invalid_date_range',
       code: JsonRpcErrorCode.ValidationError,
@@ -60,9 +73,9 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       reason: 'gdelt_rate_limited',
       code: JsonRpcErrorCode.RateLimited,
       when: 'GDELT rejected the request for its one-request-per-five-seconds limit, or too many requests were already queued for this one to start in time.',
-      retryable: false,
+      retryable: true,
       recovery:
-        'Wait at least 5 seconds before retrying; GDELT accepts at most one request every 5 seconds.',
+        'Back off before retrying; five seconds is minimum request spacing, not a recovery guarantee, and rate limiting may persist longer. Honor Retry-After when supplied.',
       thrownBy: 'service',
     },
     {
@@ -87,17 +100,27 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       .array(z.string())
       .optional()
       .describe(
-        'Station IDs to filter to (e.g. ["CNN", "FOXNEWS"]). ' +
-          'The GDELT TV API requires at least one station — supply it here, or embed a station: ' +
-          'selector directly in query. Omitting both is rejected; it does not fall back to all stations. ' +
-          'Use gdelt_list_tv_stations to see valid IDs.',
+        'Station IDs to filter to (e.g. ["CNN", "FOXNEWS"]). Alternatively use station:, network:, or quoted market: selectors in query; a selector is required. Obtain IDs, network and market values, and per-station archive ranges from gdelt_list_tv_stations.',
+      ),
+    limit: countInputSchema(
+      25_000,
+      25,
+      'Maximum score-sorted terms returned per page (default 25, cap 25,000). Larger counts clamp with limitClamp; strict deployments reject them.',
+    ),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .default(0)
+      .describe(
+        'Zero-based term offset in descending score order. Use nextOffset with the same query inputs for the next page.',
       ),
     timespan: z
       .string()
       .optional()
       .describe(
         'Time window, e.g. "1m", "6m". Ignored when startDatetime/endDatetime are set. ' +
-          'TV data spans 2009–October 2024.',
+          'Check station monitoring dates with gdelt_list_tv_stations.',
       ),
     startDatetime: z
       .string()
@@ -106,7 +129,7 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       .describe(
         'Start datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
           '(e.g. 20200101000000). Must pair with endDatetime; supplying only one of the two is rejected. ' +
-          'TV data spans 2009–October 2024.',
+          'Check station monitoring dates with gdelt_list_tv_stations.',
       ),
     endDatetime: z
       .string()
@@ -119,6 +142,17 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
   }),
 
   output: z.object({
+    truncated: z
+      .boolean()
+      .describe('True when more terms remain after this page; use nextOffset to retrieve them.'),
+    totalTerms: z
+      .number()
+      .describe('Total co-occurring terms before pagination; never a clip count.'),
+    offset: z.number().describe('Zero-based offset of this term page.'),
+    nextOffset: z
+      .number()
+      .optional()
+      .describe('Offset of the next term page; absent on the final page.'),
     words: z
       .array(
         z
@@ -136,36 +170,36 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       .describe(`Co-occurring terms from ${SAMPLE_SCOPE}, sorted by score descending.`),
   }),
 
-  // Agent-facing context — query echo, clips analyzed, and the sampling or no-data notice.
+  // Agent-facing context — query echo, count clamp, and sampling or no-data notice.
   // Reaches structuredContent and content[] automatically; never in the domain return.
   enrichment: {
     effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
-    totalCount: z
-      .number()
-      .optional()
-      .describe(
-        'Number of clips from which co-occurrences were computed. ' +
-          'Absent when the upstream API does not return a clip count.',
-      ),
+    limitClamp: limitClampSchema,
     notice: z
       .string()
       .optional()
       .describe(
         `On every non-empty result, that terms and scores come from ${SAMPLE_SCOPE} — compare ` +
           'windows or stations with a separate, narrower call for each. When no clips matched, so ' +
-          'there is no vocabulary to report, the resolved timespan window, the October 2024 archive ' +
-          'cutoff, and how to broaden the query or check station coverage.',
+          'there is no vocabulary to report, the resolved timespan window and how to broaden the query or check station monitoring dates.',
       ),
   },
 
   enrichmentTrailer: {
     effectiveQuery: { render: renderQueryEcho },
+    limitClamp: { render: renderLimitClamp },
   },
 
   async handler(input, ctx) {
     const dateRangeFault = describeDateRangeFault(input.startDatetime, input.endDatetime);
     if (dateRangeFault) {
       throw ctx.fail('invalid_date_range', dateRangeFault);
+    }
+    const timespanFault = describeTvTimespanFault(input);
+    if (timespanFault) {
+      throw ctx.fail('invalid_query', 'Invalid TV timespan.', {
+        recovery: { hint: timespanFault },
+      });
     }
 
     ctx.log.info('gdelt_get_tv_context', { query: input.query });
@@ -183,19 +217,36 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
     );
 
     ctx.enrich.echo(input.query);
-    if (result.clipsAnalyzed != null) ctx.enrich.total(result.clipsAnalyzed);
+    const limit = clampToCap(ctx, 'limit', input.limit, 25_000);
+    const totalTerms = result.words.length;
+    if (totalTerms > 0 && input.offset >= totalTerms) {
+      throw ctx.fail('offset_out_of_range', `Offset ${input.offset} is outside these terms.`, {
+        offset: input.offset,
+        totalTerms,
+        recovery: {
+          hint: `Retry with offset 0–${totalTerms - 1}; this result has ${totalTerms} terms.`,
+        },
+      });
+    }
+    const words = result.words
+      .toSorted((a, b) => b.score - a.score)
+      .slice(input.offset, input.offset + limit);
+    const nextOffset =
+      input.offset + words.length < totalTerms ? input.offset + words.length : undefined;
 
     ctx.enrich.notice(
       result.words.length === 0
-        ? `No TV context data for ${markdownQuote(input.query)}.${describeResolvedTimespan(input)} TV data ends ` +
-            'October 2024 — broaden the query, extend the window, or use gdelt_list_tv_stations to ' +
-            'check coverage.'
+        ? `No TV context data for ${markdownQuote(input.query)}.${describeResolvedTimespan(input)} Archive coverage varies by station — verify monitoring dates with gdelt_list_tv_stations and choose a matching window, or broaden the query.`
         : SAMPLING_NOTICE,
     );
 
     ctx.log.info('gdelt_get_tv_context completed', { wordCount: result.words.length });
     return {
-      words: result.words.sort((a, b) => b.score - a.score),
+      words,
+      truncated: nextOffset != null,
+      totalTerms,
+      offset: input.offset,
+      ...(nextOffset != null && { nextOffset }),
     };
   },
 
@@ -203,12 +254,15 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
     const lines: string[] = [
       `## GDELT TV Context`,
       `**Co-occurring terms:** ${result.words.length}`,
+      `**Term page:** offset ${result.offset}, total ${result.totalTerms}`,
+      `**Truncated:** ${result.truncated}`,
     ];
+    if (result.nextOffset != null) lines.push(`**Next offset:** ${result.nextOffset}`);
     lines.push('\n### Terms');
     if (result.words.length === 0) lines.push('No terms returned.');
     for (const w of result.words) {
       const bar = '█'.repeat(Math.round(w.score / 5));
-      lines.push(`- **${escapeMarkdown(w.label)}**: ${w.score.toFixed(1)} ${bar}`);
+      lines.push(`- **${escapeMarkdown(w.label)}**: ${w.score} ${bar}`);
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },

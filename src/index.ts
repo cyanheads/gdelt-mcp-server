@@ -6,59 +6,44 @@
 
 import { createApp } from '@cyanheads/mcp-ts-core';
 import { getServerConfig } from './config/server-config.js';
-import {
-  gdeltGetCoverageBreakdown,
-  gdeltGetCoverageTimeline,
-  gdeltGetToneDistribution,
-  gdeltGetTvClips,
-  gdeltGetTvContext,
-  gdeltListTvStations,
-  gdeltSearchArticles,
-  gdeltSearchThemes,
-  gdeltSearchTv,
-} from './mcp-server/tools/definitions/index.js';
 import { initGdeltDocService } from './services/gdelt/gdelt-doc-service.js';
 import { disposeGdeltPacer, initGdeltPacer } from './services/gdelt/gdelt-pacer.js';
 import { initGdeltThemeService } from './services/gdelt/gdelt-theme-service.js';
 import { initGdeltTvService } from './services/gdelt/gdelt-tv-service.js';
 
+// Definitions depend on validated server configuration; setup runs after framework .env loading.
+const tools: NonNullable<NonNullable<Parameters<typeof createApp>[0]>['tools']> = [];
+
 await createApp({
   name: 'gdelt-mcp-server',
   title: 'gdelt-mcp-server',
-  tools: [
-    gdeltSearchArticles,
-    gdeltGetCoverageTimeline,
-    gdeltGetToneDistribution,
-    gdeltGetCoverageBreakdown,
-    gdeltSearchThemes,
-    gdeltSearchTv,
-    gdeltGetTvClips,
-    gdeltGetTvContext,
-    gdeltListTvStations,
-  ],
+  tools,
   resources: [],
   prompts: [],
+  skills: 'skills',
   // Public catalog — serve full tool/resource/prompt inventory to unauthenticated callers.
   landing: { requireAuth: false },
   // Every tool is a one-shot read of a public API — nothing here asks the caller for input
   // mid-handler, so no session state is worth holding. MCP_SESSION_MODE still wins when set.
   sessionMode: 'stateless',
   instructions:
-    'GDELT MCP Server — global news and TV transcript analysis.\n' +
-    '- gdelt_search_articles: full-text news search (last 3 months, 65+ languages)\n' +
-    '- gdelt_get_coverage_timeline: when did coverage spike? (use mode volume_with_articles for signal detection)\n' +
-    '- gdelt_get_tone_distribution: emotional distribution of coverage (histogram)\n' +
-    '- gdelt_get_coverage_breakdown: which countries/languages drove coverage?\n' +
-    '- gdelt_search_themes: find GKG theme identifiers for the theme: operator in DOC tool queries\n' +
-    '- gdelt_search_tv: US TV transcript search (2009–Oct 2024, 150+ stations)\n' +
-    '- gdelt_get_tv_clips: read actual TV transcript excerpts with archive links\n' +
-    '- gdelt_get_tv_context: vocabulary framing a topic on television\n' +
-    '- gdelt_list_tv_stations: verify station IDs and active date ranges before TV queries (filter by stations, network, or market)\n' +
-    'Rate limit: 1 request per 5 seconds across the DOC and TV tools — multi-step workflows take 15+ seconds. ' +
-    'gdelt_search_themes reads a separate lookup file and does not queue behind that limit.',
+    'Search recent global news with DOC tools and station-specific television archives with TV tools; no API key is required. Resolve theme operators with gdelt_search_themes and station IDs and monitoring dates with gdelt_list_tv_stations before filtering. Investigate recent spikes with gdelt_get_coverage_timeline, then inspect article evidence; investigate historical TV with gdelt_search_tv, then gdelt_get_tv_clips. DOC covers the last three months; TV coverage varies by station, so verify the requested dates before interpreting absence. DOC and TV requests share pacing of at least five seconds; theme lookup uses a separate host. Follow pagination and continuation notices before claiming completeness.',
 
-  setup(core) {
+  async setup(core) {
     const serverConfig = getServerConfig();
+    const definitions = await import('./mcp-server/tools/definitions/index.js');
+    tools.push(
+      definitions.gdeltSearchArticles,
+      definitions.gdeltGetCoverageTimeline,
+      definitions.gdeltGetToneDistribution,
+      definitions.gdeltGetCoverageBreakdown,
+      definitions.gdeltSearchThemes,
+      definitions.gdeltSearchTv,
+      definitions.gdeltGetTvBreakdown,
+      definitions.gdeltGetTvClips,
+      definitions.gdeltGetTvContext,
+      definitions.gdeltListTvStations,
+    );
     initGdeltPacer(serverConfig.requestDelayMs);
     initGdeltDocService(core.config, core.storage, serverConfig);
     initGdeltTvService(core.config, core.storage, serverConfig);

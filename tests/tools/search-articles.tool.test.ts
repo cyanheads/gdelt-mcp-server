@@ -21,6 +21,41 @@ const ARTICLE = {
 };
 
 describe('gdeltSearchArticles', () => {
+  it('preserves the default request count', async () => {
+    mockArticles([]);
+    const result = await runToolContract(gdeltSearchArticles, { query: 'climate' });
+    expect(result.isError).toBeFalsy();
+    expect(gdeltSearchArticles.input.parse({ query: 'climate' }).maxRecords).toBe(75);
+    expect(docServiceModule.getGdeltDocService().searchArticles).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ maxRecords: 75 }),
+      expect.anything(),
+    );
+  });
+
+  it('returns every same-second record on both surfaces', async () => {
+    const fetched = Array.from({ length: 250 }, (_, i) => ({
+      ...ARTICLE,
+      url: `https://example.com/retained-${i}`,
+      title: `record ${i} ${'ü'.repeat(500)}`,
+      seendate: '20240101T120000Z',
+    }));
+    mockArticles(fetched);
+    const result = await runToolContract(gdeltSearchArticles, {
+      query: 'climate',
+      maxRecords: 250,
+      sort: 'dateDesc',
+      startDatetime: '20240101000000',
+      endDatetime: '20240102000000',
+    });
+    expect(result.isError).toBeFalsy();
+    const sc = result.structuredContent as { articles: typeof fetched; totalCount: number };
+    expect(sc.articles).toEqual(fetched);
+    expect(sc.totalCount).toBe(250);
+    expect(sc).not.toHaveProperty('withheldCount');
+    const text = contentText(result);
+    expect(text.match(/^### /gm)).toHaveLength(250);
+    for (let i = 0; i < 250; i++) expect(text).toContain(`retained-${i}`);
+  });
   beforeEach(() => {
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
       searchArticles: vi.fn().mockResolvedValue({ articles: [ARTICLE], totalReturned: 1 }),
@@ -122,7 +157,7 @@ describe('gdeltSearchArticles', () => {
     /** The drop notice fires on an uncut page too, so the absence condition names the drop. */
     it('counts an out-of-window drop among the cases the notice is present for', () => {
       expect(gdeltSearchArticles.enrichment?.notice?.description).toMatch(
-        /Absent when a non-empty result set fit under both the cap and the budget and no article was dropped as out of window\.$/,
+        /Absent when a non-empty result set is below the cap and no article was dropped as out of window\.$/,
       );
     });
   });
@@ -225,7 +260,7 @@ describe('gdeltSearchArticles', () => {
       expect(enrichment.notice).toMatch(/ceiling/);
     });
 
-    it('takes the uncut ceiling branch when a full 250 of compact articles fits the budget', async () => {
+    it('takes the ceiling branch when a full 250 of compact articles are returned', async () => {
       const enrichment = await runAtCeiling({
         startDatetime: '20240101000000',
         endDatetime: '20240131000000',
@@ -292,22 +327,17 @@ describe('gdeltSearchArticles', () => {
       expect(enrichment.continuationWindows).toBeUndefined();
     });
 
-    /**
-     * A full 250 no longer arrives in one response — it is cut to the byte budget and handed
-     * back with a continuation — so the uncut cap-hit notice says so instead of implying that
-     * raising maxRecords returns every article at once.
-     */
-    it('tells callers a larger page is cut to the byte budget rather than returned whole', async () => {
-      const articles = Array.from({ length: 75 }, (_, i) => ({
-        ...ARTICLE,
-        url: `https://example.com/a${i}`,
-      }));
-      mockArticles(articles);
-      const result = await runToolContract(gdeltSearchArticles, { query: 'test', maxRecords: 75 });
-      const notice = (result.structuredContent as { notice?: string }).notice ?? '';
-      expect(notice).toMatch(/48,000-byte/);
-      expect(notice).toMatch(/continuation/);
-      expect(result.structuredContent).not.toHaveProperty('withheldCount');
+    it('offers a larger upstream count without implying local record loss', async () => {
+      mockArticles(Array.from({ length: 75 }, (_, i) => longArticle(i, seenAt(NOON, 0))));
+      const result = await runToolContract(gdeltSearchArticles, {
+        query: 'climate',
+        maxRecords: 75,
+      });
+      const sc = result.structuredContent as ArticlePage;
+      expect(sc.articles).toHaveLength(75);
+      expect(sc.notice).toMatch(/Raise maxRecords/);
+      expect(sc.notice).not.toMatch(/byte|withheld/);
+      expect(sc).not.toHaveProperty('withheldCount');
     });
   });
 
@@ -381,219 +411,49 @@ describe('gdeltSearchArticles', () => {
     );
   });
 
-  describe('48,000-byte response budget', () => {
-    const WINDOW = { startDatetime: '20240110000000', endDatetime: '20240120000000' };
-
-    it('keeps a full 250-article page of long multi-byte records within 50,000 bytes on each surface', async () => {
-      const fetched = Array.from({ length: 250 }, (_, i) => longArticle(i, seenAt(NOON, -i * 60)));
+  describe('complete fetched records', () => {
+    it('returns an oversized record beside all following records', async () => {
+      const fetched = [
+        { ...longArticle(0, seenAt(NOON, 0)), title: 'a'.repeat(60_000) },
+        longArticle(1, seenAt(NOON, 0)),
+        longArticle(2, seenAt(NOON, 0)),
+      ];
       mockArticles(fetched);
       const result = await runToolContract(gdeltSearchArticles, {
         query: 'climate',
         maxRecords: 250,
-        sort: 'dateDesc',
-        ...WINDOW,
       });
+      expect(result.isError).toBeFalsy();
       const sc = result.structuredContent as ArticlePage;
-      const emitted = sc.articles.length;
-      expect(utf8(JSON.stringify(sc))).toBeLessThanOrEqual(50_000);
-      expect(utf8(contentText(result))).toBeLessThanOrEqual(50_000);
-      expect(emitted).toBeGreaterThan(0);
-      expect(sc.articles).toEqual(fetched.slice(0, emitted));
-      expect(sc.totalCount).toBe(emitted);
-      expect(sc.withheldCount).toBe(250 - emitted);
-      const charges = fetched.map(chargeOf);
-      expect(sum(charges.slice(0, emitted))).toBeLessThanOrEqual(BUDGET);
-      expect(sum(charges.slice(0, emitted + 1))).toBeGreaterThan(BUDGET);
-      // Both surfaces carry the same articles: content[] is exactly format() of the emitted set.
-      expect((result.content[0] as { text: string }).text).toBe(
-        (gdeltSearchArticles.format!({ articles: sc.articles })[0] as { text: string }).text,
-      );
-      expect(sc.notice).toMatch(new RegExp(`Emitted ${emitted} of 250 articles`));
-      expect(sc.notice).not.toMatch(/[Rr]aise maxRecords|[Ii]ncrease maxRecords/);
-    });
-
-    it('leaves a page that fits unchanged: no size notice, no withheldCount, no continuation', async () => {
-      const fetched = Array.from({ length: 74 }, (_, i) => ({
-        ...ARTICLE,
-        url: `https://example.com/a${i}`,
-      }));
-      mockArticles(fetched);
-      const result = await runToolContract(gdeltSearchArticles, { query: 'bird flu' });
-      expect(result.structuredContent).toEqual({
-        articles: fetched,
-        effectiveQuery: 'bird flu',
-        totalCount: 74,
-      });
-    });
-
-    it('emits every article of a page whose charges total exactly 48,000 bytes', async () => {
-      const fetched = exactFitArticles(100, 480);
-      mockArticles(fetched);
-      const result = await runToolContract(gdeltSearchArticles, { query: 'x', maxRecords: 250 });
-      expect(sum(fetched.map(chargeOf))).toBe(BUDGET);
-      const sc = result.structuredContent as ArticlePage;
-      expect(sc.articles).toHaveLength(100);
+      expect(sc.articles).toEqual(fetched);
+      expect(sc.totalCount).toBe(3);
       expect(sc).not.toHaveProperty('withheldCount');
+      expect(sc).not.toHaveProperty('continuationWindows');
       expect(sc).not.toHaveProperty('notice');
+      expect(contentText(result)).toContain('a'.repeat(60_000));
+      expect(contentText(result).match(/^### /gm)).toHaveLength(3);
     });
 
-    it('withholds the article that takes the page one byte over the budget', async () => {
-      const fetched = exactFitArticles(100, 480);
-      const last = fetched[99]!;
-      fetched[99] = { ...last, title: `${last.title}!` };
-      mockArticles(fetched);
-      const result = await runToolContract(gdeltSearchArticles, { query: 'x', maxRecords: 250 });
-      const sc = result.structuredContent as ArticlePage;
-      expect(sc.articles).toHaveLength(99);
-      expect(sc.withheldCount).toBe(1);
-    });
-
-    it('emits an article larger than the whole budget alone, with the cut signal', async () => {
-      const giant = { ...longArticle(0, seenAt(NOON, 0)), title: 'a'.repeat(60_000) };
-      mockArticles([giant, longArticle(1, seenAt(NOON, -60)), longArticle(2, seenAt(NOON, -120))]);
-      const dated = await runToolContract(gdeltSearchArticles, {
-        query: 'x',
-        sort: 'dateDesc',
-        ...WINDOW,
-      });
-      const sc = dated.structuredContent as ArticlePage;
-      expect(sc.articles).toEqual([giant]);
-      expect(sc.withheldCount).toBe(2);
-      expect(sc.notice).toMatch(/Emitted 1 of 3 articles/);
-      // The withheld articles are a minute and two earlier: skipping past the giant's second
-      // reaches them.
-      expect(sc.continuationWindows).toEqual([
-        { startDatetime: WINDOW.startDatetime, endDatetime: '20240115115959' },
-      ]);
-      expect(sc.notice).toMatch(/articles from that second not emitted here cannot be reached/);
-
-      const ranked = await runToolContract(gdeltSearchArticles, { query: 'x', ...WINDOW });
-      expect((ranked.structuredContent as ArticlePage).continuationWindows).toHaveLength(2);
-    });
-
-    it.each(['relevance', 'hybridRel', 'toneDesc', 'toneAsc'] as const)(
-      'hands back the #21 halves for a %s cut, naming N of M and the sort',
+    it.each(['dateDesc', 'dateAsc', 'relevance', 'hybridRel', 'toneDesc', 'toneAsc'] as const)(
+      'returns all fetched records below the cap without a continuation under %s',
       async (sort) => {
-        mockArticles(Array.from({ length: 250 }, (_, i) => longArticle(i, seenAt(NOON, -i))));
+        const fetched = Array.from({ length: 200 }, (_, i) => longArticle(i, seenAt(NOON, 0)));
+        mockArticles(fetched);
         const result = await runToolContract(gdeltSearchArticles, {
-          query: 'x',
+          query: 'climate',
           maxRecords: 250,
           sort,
-          ...WINDOW,
         });
         const sc = result.structuredContent as ArticlePage;
-        expect(sc.continuationWindows).toEqual([
-          { startDatetime: '20240110000000', endDatetime: '20240115000000' },
-          { startDatetime: '20240114235959', endDatetime: '20240120000000' },
-        ]);
-        expect(sc.notice).toMatch(new RegExp(`Emitted ${sc.articles.length} of 250 articles`));
-        expect(sc.notice).toContain(`Sort ${sort} has no resume point`);
-        expect(sc.notice).not.toMatch(/[Rr]aise maxRecords|[Ii]ncrease maxRecords/);
+        expect(sc.articles).toEqual(fetched);
+        expect(sc.totalCount).toBe(200);
+        expect(sc).not.toHaveProperty('withheldCount');
+        expect(sc).not.toHaveProperty('notice');
+        expect(sc).not.toHaveProperty('continuationWindows');
+        expect(contentText(result).match(/^### /gm)).toHaveLength(200);
       },
     );
 
-    it.each([
-      ['dateDesc', -60],
-      ['dateAsc', 60],
-    ] as const)('resumes a %s cut from the last emitted article', async (sort, step) => {
-      mockArticles(Array.from({ length: 250 }, (_, i) => longArticle(i, seenAt(NOON, step * i))));
-      const result = await runToolContract(gdeltSearchArticles, {
-        query: 'x',
-        maxRecords: 250,
-        sort,
-        ...WINDOW,
-      });
-      const sc = result.structuredContent as ArticlePage;
-      const lastMs = seendateMs(sc.articles.at(-1)!.seendate);
-      expect(sc.continuationWindows).toEqual([
-        sort === 'dateDesc'
-          ? { startDatetime: WINDOW.startDatetime, endDatetime: gdeltAt(lastMs + 1000) }
-          : { startDatetime: gdeltAt(lastMs - 1000), endDatetime: WINDOW.endDatetime },
-      ]);
-      expect(sc.notice).toMatch(/de-duplicate by url/);
-      expect(sc.notice).toMatch(/maxRecords is already at its 250 ceiling/);
-      expect(sc.notice).not.toMatch(/[Rr]aise maxRecords|[Ii]ncrease maxRecords/);
-    });
-
-    /**
-     * DOC seendates sit on 15-minute boundaries, so the first page of a busy dateDesc query
-     * commonly shares one seendate. Only the withheld articles at that second are out of reach;
-     * every earlier bucket is reachable by skipping past it.
-     */
-    it('skips past a shared seendate to the earlier buckets, and reaches them', async () => {
-      const shared = Array.from({ length: 120 }, (_, i) => longArticle(i, seenAt(NOON, 0)));
-      const earlier = Array.from({ length: 130 }, (_, i) =>
-        longArticle(200 + i, seenAt(NOON, -900 * (1 + Math.floor(i / 10)))),
-      );
-      useDocUpstream([...shared, ...earlier], 'exclusive');
-      const base = { query: 'x', maxRecords: 250, sort: 'dateDesc' as const };
-      const result = await runToolContract(gdeltSearchArticles, { ...base, ...WINDOW });
-      const sc = result.structuredContent as ArticlePage;
-      expect(sc.articles.every((a) => a.seendate === '20240115T120000Z')).toBe(true);
-      expect(sc.continuationWindows).toEqual([
-        { startDatetime: WINDOW.startDatetime, endDatetime: '20240115115959' },
-      ]);
-      expect(sc.notice).toContain(
-        'Every emitted article is timestamped within a second of 20240115T120000Z',
-      );
-      expect(sc.notice).toMatch(/every earlier article/);
-
-      const next = await runToolContract(
-        gdeltSearchArticles,
-        gdeltSearchArticles.input.parse({ ...base, ...sc.continuationWindows![0] }),
-      );
-      const followUp = (next.structuredContent as ArticlePage).articles;
-      expect(followUp.length).toBeGreaterThan(0);
-      expect(followUp.every((a) => earlier.some((e) => e.url === a.url))).toBe(true);
-    });
-
-    it('says the rest is unreachable when every fetched article shares the second and the cap was not hit', async () => {
-      mockArticles(Array.from({ length: 200 }, (_, i) => longArticle(i, seenAt(NOON, 0))));
-      const result = await runToolContract(gdeltSearchArticles, {
-        query: 'x',
-        maxRecords: 250,
-        sort: 'dateDesc',
-        ...WINDOW,
-      });
-      const sc = result.structuredContent as ArticlePage;
-      expect(sc.withheldCount).toBeGreaterThan(0);
-      expect(sc).not.toHaveProperty('continuationWindows');
-      expect(sc.notice).toMatch(/cannot be reached by narrowing the date window/);
-    });
-
-    it('says the rest is unreachable when the window past the shared second would be empty', async () => {
-      mockArticles(Array.from({ length: 250 }, (_, i) => longArticle(i, seenAt(NOON, 0))));
-      const result = await runToolContract(gdeltSearchArticles, {
-        query: 'x',
-        maxRecords: 250,
-        sort: 'dateDesc',
-        startDatetime: '20240115120000',
-        endDatetime: '20240116000000',
-      });
-      const sc = result.structuredContent as ArticlePage;
-      expect(sc).not.toHaveProperty('continuationWindows');
-      expect(sc.notice).toMatch(/cannot be reached by narrowing the date window/);
-    });
-
-    it('gives the resume timestamp to pair with the other boundary when no window is known', async () => {
-      mockArticles(Array.from({ length: 250 }, (_, i) => longArticle(i, seenAt(NOON, i * 60))));
-      const result = await runToolContract(gdeltSearchArticles, {
-        query: 'x',
-        maxRecords: 250,
-        sort: 'dateAsc',
-      });
-      const sc = result.structuredContent as ArticlePage;
-      const lastMs = seendateMs(sc.articles.at(-1)!.seendate);
-      expect(sc).not.toHaveProperty('continuationWindows');
-      expect(sc.notice).toContain(`startDatetime ${gdeltAt(lastMs - 1000)}`);
-      expect(sc.notice).toMatch(/paired with an endDatetime/);
-    });
-
-    /**
-     * Follow the continuation to the end: each resume window goes back through the input
-     * schema and is cut again, DOC timestamps sit on 15-minute boundaries so several articles
-     * share every resume second, and every call must emit articles no earlier call did.
-     */
     it.each([
       ['dateDesc', 'exclusive'],
       ['dateDesc', 'inclusive'],
@@ -601,70 +461,41 @@ describe('gdeltSearchArticles', () => {
       ['dateAsc', 'exclusive'],
       ['dateAsc', 'inclusive'],
       ['dateAsc', 'bucket'],
-    ] as const)(
-      'walks a %s continuation to completion against %s boundaries',
-      async (sort, boundaries) => {
-        // Heavier buckets under `bucket`: a widened boundary re-returns a whole neighboring
-        // bucket, enough to fill the budget before any new article if it were not dropped.
-        const perBucket = boundaries === 'bucket' ? 30 : 5;
-        const all = Array.from({ length: 600 }, (_, i) =>
-          longArticle(i, seenAt('2024-01-15T00:00:00Z', Math.floor(i / perBucket) * 900)),
-        );
-        useDocUpstream(all, boundaries);
-        let input = gdeltSearchArticles.input.parse({
-          query: 'x',
-          maxRecords: 250,
-          sort,
-          ...WINDOW,
-        });
-        const seen = new Set<string>();
-        let calls = 0;
-        for (;;) {
-          const result = await runToolContract(gdeltSearchArticles, input);
-          calls++;
-          const sc = result.structuredContent as ArticlePage;
-          const before = seen.size;
-          for (const a of sc.articles) seen.add(a.url);
-          expect(seen.size).toBeGreaterThan(before);
-          if (!sc.continuationWindows) {
-            expect(sc).not.toHaveProperty('withheldCount');
-            break;
-          }
-          expect(sc.continuationWindows).toHaveLength(1);
-          input = gdeltSearchArticles.input.parse({ ...input, ...sc.continuationWindows[0] });
-          expect(calls).toBeLessThan(100);
-        }
-        expect(calls).toBeGreaterThan(2);
-        expect(seen.size).toBe(600);
-      },
-    );
-
-    it('reaches every article under relevance by splitting cut windows until each fits', async () => {
+      ['relevance', 'exclusive'],
+    ] as const)('walks cap continuations under %s with %s boundaries', async (sort, boundaries) => {
       const all = Array.from({ length: 600 }, (_, i) =>
-        longArticle(i, seenAt('2024-01-15T00:00:00Z', Math.floor(i / 5) * 900)),
+        longArticle(i, seenAt('2024-01-15T00:00:00Z', 1 + Math.floor(i / 5) * 900)),
       );
-      useDocUpstream(all, 'exclusive');
-      const queue = [WINDOW];
+      useDocUpstream(all, boundaries);
+      const search = vi.mocked(docServiceModule.getGdeltDocService().searchArticles);
+      const queue = [{ startDatetime: '20240110000000', endDatetime: '20240120000000' }];
       const seen = new Set<string>();
       let calls = 0;
-      while (queue.length > 0) {
+      while (queue.length) {
         const window = queue.shift()!;
-        const input = gdeltSearchArticles.input.parse({ query: 'x', maxRecords: 250, ...window });
-        const result = await runToolContract(gdeltSearchArticles, input);
+        const result = await runToolContract(gdeltSearchArticles, {
+          query: 'climate',
+          maxRecords: 250,
+          sort,
+          ...window,
+        });
         calls++;
+        expect(result.isError).toBeFalsy();
         const sc = result.structuredContent as ArticlePage;
-        for (const a of sc.articles) seen.add(a.url);
+        expect(contentText(result).match(/^### /gm)?.length ?? 0).toBe(sc.articles.length);
+        for (const article of sc.articles) seen.add(article.url);
         if (sc.continuationWindows) queue.push(...sc.continuationWindows);
-        else expect(sc).not.toHaveProperty('withheldCount');
-        expect(calls).toBeLessThan(500);
+        expect(calls).toBeLessThan(60);
       }
-      expect(seen.size).toBe(600);
+      expect(calls).toBeGreaterThan(3);
+      expect(search).toHaveBeenCalledTimes(calls);
+      expect([...seen].sort()).toEqual(all.map((a) => a.url).sort());
     });
   });
 
   /**
    * DOC boundary behavior is unmeasured, so articles GDELT returns from outside an explicit
-   * window are dropped before the budget — the drop never removes an article inside the
+   * window are dropped — the drop never removes an article inside the
    * caller's window, and it keeps a continuation walk convergent whatever DOC does at the edge.
    */
   describe('articles dated outside an explicit window', () => {
@@ -686,10 +517,28 @@ describe('gdeltSearchArticles', () => {
       const sc = result.structuredContent as ArticlePage;
       expect(sc.articles).toEqual(inside);
       expect(sc.totalCount).toBe(3);
+      for (const article of inside) expect(contentText(result)).toContain(article.url);
+      for (const article of outside) expect(contentText(result)).not.toContain(article.url);
       expect(sc.notice).toMatch(
         /GDELT returned 2 articles dated outside 20240115000000–20240115120000; they were dropped/,
       );
       expect(sc.notice).toMatch(/not a sign of missing results/);
+    });
+
+    it('detects the upstream cap before explicit-window clipping', async () => {
+      const inside = longArticle(1, '20240115T114500Z');
+      const outside = longArticle(2, '20240115T121500Z');
+      mockArticles([inside, outside]);
+      const result = await runToolContract(gdeltSearchArticles, {
+        query: 'climate',
+        maxRecords: 2,
+        ...WINDOW,
+      });
+      expect(result.structuredContent).toMatchObject({ articles: [inside], totalCount: 1 });
+      expect(contentText(result)).toContain('maxRecords cap reached');
+      expect(contentText(result)).toContain('returned 1 article dated outside');
+      expect(contentText(result)).toContain(inside.url);
+      expect(contentText(result)).not.toContain(outside.url);
     });
 
     it('gives the empty-result guidance when every returned article is outside', async () => {
@@ -712,11 +561,46 @@ describe('gdeltSearchArticles', () => {
 });
 
 /**
- * A maxRecords above the 250 ceiling, up to 2500, runs exactly as a call at 250 — the same
- * upstream request, cap-hit detection, byte-budget cut, notice, and continuation — and adds a
+ * A maxRecords above the 250 ceiling, runs exactly as a call at 250 — the same
+ * upstream request, cap-hit detection, notice, and continuation — and adds a
  * `limitClamp` disclosure on both surfaces. At or below 250 nothing is disclosed.
  */
 describe('gdelt_search_articles maxRecords clamp', () => {
+  it('rejects above the served cap before service access when clamping is disabled', async () => {
+    vi.stubEnv('GDELT_CLAMP_LIMITS', 'false');
+    vi.resetModules();
+    try {
+      const { gdeltSearchArticles: strictTool } = await import(
+        '@/mcp-server/tools/definitions/search-articles.tool.js'
+      );
+      const service = await import('@/services/gdelt/gdelt-doc-service.js');
+      const accessor = vi.spyOn(service, 'getGdeltDocService');
+      for (const maxRecords of [251, '251']) {
+        const result = await runToolContract(strictTool, { query: 'climate', maxRecords } as never);
+        expect(result.isError).toBe(true);
+        expect(contentText(result)).toContain('maxRecords');
+      }
+      expect(accessor).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
+  it.each([0, -1, 1.5, true, false])(
+    'rejects invalid count %s before service access',
+    async (maxRecords) => {
+      const accessor = vi.spyOn(docServiceModule, 'getGdeltDocService');
+      const result = await runToolContract(gdeltSearchArticles, {
+        query: 'climate',
+        maxRecords,
+      } as never);
+      expect(result.isError).toBe(true);
+      expect(accessor).not.toHaveBeenCalled();
+      expect(contentText(result)).toContain('maxRecords');
+    },
+  );
+
   const WINDOW = { startDatetime: '20240110000000', endDatetime: '20240120000000' };
 
   type Run = { result: Awaited<ReturnType<typeof runToolContract>>; sent: unknown };
@@ -743,15 +627,11 @@ describe('gdelt_search_articles maxRecords clamp', () => {
   }
 
   it.each([
-    // Heavy articles: GDELT fills 250 and the page is cut to the byte budget.
-    [
-      'a cut, capped dateDesc page',
-      'dateDesc',
-      (i: number) => longArticle(i, seenAt(NOON, -i * 60)),
-    ],
+    // Long records retain the same cap behavior as compact records.
+    ['a capped dateDesc page', 'dateDesc', (i: number) => longArticle(i, seenAt(NOON, -i * 60))],
     // Compact articles: the full 250 fit, so only the at-ceiling cap notice speaks.
     [
-      'an uncut, capped relevance page',
+      'a capped relevance page',
       'relevance',
       (i: number) => ({
         ...ARTICLE,
@@ -769,7 +649,7 @@ describe('gdelt_search_articles maxRecords clamp', () => {
       /maxRecords is already at its 250 ceiling/,
     );
 
-    for (const requested of [251, 2500]) {
+    for (const requested of [251, 2500, 250_000]) {
       const clamped = await run(all, { sort, maxRecords: requested });
       expect(clamped.sent).toBe(250);
       expect(clamped.result.structuredContent).toMatchObject({
@@ -842,32 +722,15 @@ describe('gdelt_search_articles maxRecords clamp', () => {
 
 // ─── Fixtures and fakes ───────────────────────────────────────────────────────
 
-const BUDGET = 48_000;
 const NOON = '2024-01-15T12:00:00Z';
-const HEADING = '## GDELT Article Search';
 
 type Article = typeof ARTICLE & { socialimage?: string };
 type ArticlePage = {
   articles: Article[];
   totalCount: number;
-  withheldCount?: number;
   notice?: string;
   continuationWindows?: Array<{ startDatetime: string; endDatetime: string }>;
 };
-
-function utf8(text: string): number {
-  return Buffer.byteLength(text, 'utf8');
-}
-
-function sum(values: number[]): number {
-  return values.reduce((total, v) => total + v, 0);
-}
-
-/** What one article adds to each surface, measured through the tool's own format(). */
-function chargeOf(article: Article): number {
-  const text = (gdeltSearchArticles.format!({ articles: [article] })[0] as { text: string }).text;
-  return Math.max(utf8(JSON.stringify(article)) + 1, utf8(text) - utf8(HEADING));
-}
 
 /** GDELT DOC seendate (YYYYMMDDTHHMMSSZ) `seconds` after `iso`. */
 function seenAt(iso: string, seconds: number): string {
@@ -885,10 +748,6 @@ function seendateMs(seendate: string): number {
   );
 }
 
-function gdeltAt(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 19).replace(/[-:T]/g, '');
-}
-
 /** An article with a long multi-byte title and long URLs — heavier than any live sample. */
 function longArticle(i: number, seendate: string): Article {
   return {
@@ -900,18 +759,6 @@ function longArticle(i: number, seendate: string): Article {
     sourcecountry: 'Japan',
     socialimage: `https://img.example.org/${'p/'.repeat(40)}${i}.jpg`,
   };
-}
-
-/** `count` articles each charged exactly `charge` bytes, found by padding the title. */
-function exactFitArticles(count: number, charge: number): Article[] {
-  return Array.from({ length: count }, (_, i) => {
-    const base = { ...ARTICLE, url: `https://example.com/a${String(i).padStart(3, '0')}` };
-    for (let pad = 0; pad < charge; pad++) {
-      const article = { ...base, title: `t${'x'.repeat(pad)}` };
-      if (chargeOf(article) === charge) return article;
-    }
-    throw new Error(`no padding gives a ${charge}-byte article`);
-  });
 }
 
 /**

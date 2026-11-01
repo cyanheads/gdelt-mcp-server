@@ -22,7 +22,7 @@ import { gdeltSearchArticles } from '@/mcp-server/tools/definitions/search-artic
 import { gdeltSearchTv } from '@/mcp-server/tools/definitions/search-tv.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
 import { initGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
-import { parseGdeltJson } from '@/services/gdelt/gdelt-fetch.js';
+import { gdeltFetch, parseGdeltJson } from '@/services/gdelt/gdelt-fetch.js';
 import { disposeGdeltPacer, initGdeltPacer } from '@/services/gdelt/gdelt-pacer.js';
 import * as tvServiceModule from '@/services/gdelt/gdelt-tv-service.js';
 import { initGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
@@ -254,10 +254,30 @@ describe('invalid_query propagates from parseGdeltJson to the wire', () => {
 
 const RATE_LIMIT_BODY = 'Please limit requests to one every 5 seconds.';
 
+/** Exercise the real retry boundary before a service error enters the tool renderer. */
+async function rateLimitFailure(apiLabel: string): Promise<unknown> {
+  initGdeltPacer(0);
+  mockedFetchWithTimeout.mockResolvedValue(new Response(RATE_LIMIT_BODY));
+  try {
+    await gdeltFetch(
+      'https://example.com/api',
+      new URLSearchParams(),
+      createMockContext(),
+      'rate-limit',
+      apiLabel,
+    );
+  } catch (error) {
+    return error;
+  } finally {
+    disposeGdeltPacer();
+  }
+  throw new Error('Expected a rate-limit failure');
+}
+
 describe('gdelt_rate_limited propagates through production-shaped tool contracts', () => {
   it('surfaces matching structured and text recovery from a DOC tool', async () => {
     mockDoc({
-      searchArticles: vi.fn().mockRejectedValue(gdeltRejection(RATE_LIMIT_BODY, 'GDELT DOC')),
+      searchArticles: vi.fn().mockRejectedValue(await rateLimitFailure('GDELT DOC')),
     });
 
     const result = await runToolContract(gdeltSearchArticles, { query: 'climate' });
@@ -268,8 +288,8 @@ describe('gdelt_rate_limited propagates through production-shaped tool contracts
           code: JsonRpcErrorCode.RateLimited,
           data: {
             reason: 'gdelt_rate_limited',
-            retryable: false,
-            recovery: { hint: expect.stringMatching(/wait at least 5 seconds/i) },
+            retryable: true,
+            recovery: { hint: expect.stringMatching(/back off/i) },
           },
         },
       },
@@ -277,7 +297,7 @@ describe('gdelt_rate_limited propagates through production-shaped tool contracts
     expect(result.content).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          text: expect.stringMatching(/Recovery:.*wait at least 5 seconds/is),
+          text: expect.stringMatching(/Recovery:.*back off/is),
         }),
       ]),
     );
@@ -285,7 +305,7 @@ describe('gdelt_rate_limited propagates through production-shaped tool contracts
 
   it('surfaces matching structured and text recovery from a TV tool', async () => {
     mockTv({
-      getTvClips: vi.fn().mockRejectedValue(gdeltRejection(RATE_LIMIT_BODY, 'GDELT TV')),
+      getTvClips: vi.fn().mockRejectedValue(await rateLimitFailure('GDELT TV')),
     });
 
     const result = await runToolContract(gdeltGetTvClips, { query: 'climate' });
@@ -296,8 +316,8 @@ describe('gdelt_rate_limited propagates through production-shaped tool contracts
           code: JsonRpcErrorCode.RateLimited,
           data: {
             reason: 'gdelt_rate_limited',
-            retryable: false,
-            recovery: { hint: expect.stringMatching(/wait at least 5 seconds/i) },
+            retryable: true,
+            recovery: { hint: expect.stringMatching(/back off/i) },
           },
         },
       },
@@ -305,7 +325,7 @@ describe('gdelt_rate_limited propagates through production-shaped tool contracts
     expect(result.content).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          text: expect.stringMatching(/Recovery:.*wait at least 5 seconds/is),
+          text: expect.stringMatching(/Recovery:.*back off/is),
         }),
       ]),
     );
@@ -326,7 +346,7 @@ describe('gdelt_rate_limited propagates through production-shaped tool contracts
         expect.objectContaining({
           reason: 'gdelt_rate_limited',
           code: JsonRpcErrorCode.RateLimited,
-          retryable: false,
+          retryable: true,
         }),
         expect.objectContaining({
           reason: 'gdelt_unavailable',
@@ -357,11 +377,11 @@ describe('framework error envelope as a caller receives it', () => {
 
   it('closes a declared failure’s text with its reason and retryable terms', async () => {
     mockDoc({
-      searchArticles: vi.fn().mockRejectedValue(gdeltRejection(RATE_LIMIT_BODY, 'GDELT DOC')),
+      searchArticles: vi.fn().mockRejectedValue(await rateLimitFailure('GDELT DOC')),
     });
 
     const result = await runToolContract(gdeltSearchArticles, { query: 'climate' });
-    expectTextContaining(result.content, '(reason gdelt_rate_limited · not retryable)');
+    expectTextContaining(result.content, '(reason gdelt_rate_limited · retryable)');
   });
 
   it('rejects out-of-schema arguments as InvalidParams with a recovery line', async () => {
@@ -572,6 +592,7 @@ describe('a `{}` zero-match answer reaches the wire as a success', () => {
     expect(result.structuredContent).toEqual({
       series: [],
       normalized: true,
+      combined: false,
       totalPoints: 0,
       offset: 0,
       limit: 500,

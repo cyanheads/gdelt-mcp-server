@@ -15,7 +15,7 @@ import {
 } from '@cyanheads/mcp-ts-core/errors';
 import { defaultIsTransient, fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
-import { markdownQuote } from '@/mcp-server/tools/markdown-escape.js';
+import { quoteText } from '@/mcp-server/tools/markdown-escape.js';
 import {
   GDELT_MAX_QUEUE_WAIT_MS,
   getGdeltPacer,
@@ -25,10 +25,10 @@ import {
 
 /** Stable public recovery for every GDELT rate-limit response shape. */
 const GDELT_RATE_LIMIT_RECOVERY = {
-  hint: 'Wait at least 5 seconds before retrying; GDELT accepts at most one request every 5 seconds.',
+  hint: 'Back off before retrying; five seconds is minimum request spacing, not a recovery guarantee, and rate limiting may persist longer. Honor Retry-After when supplied.',
 } as const;
 
-/** Public data shared by HTTP 429 and HTTP-200 rate-limit responses. */
+/** Internal retry suppression shared by rate-limit shapes; gdeltFetch restores public retryability. */
 const GDELT_RATE_LIMIT_DATA = {
   reason: 'gdelt_rate_limited',
   retryable: false,
@@ -65,7 +65,7 @@ export function applyTimeRange(
   if (startDatetime && endDatetime) {
     params.set('startdatetime', startDatetime);
     params.set('enddatetime', endDatetime);
-  } else if (timespan) {
+  } else if (timespan?.trim()) {
     params.set('timespan', timespan);
   }
 }
@@ -76,10 +76,9 @@ export function applyTimeRange(
  * Returns `undefined` when the string cannot be parsed.
  */
 export function resolveTimespan(timespan: string): { start: Date; end: Date } | undefined {
-  const match = /^(\d+)(min|h|d|m|y)$/i.exec(timespan.trim());
-  if (!match) return;
-  const n = parseInt(match[1] as string, 10);
-  const unit = (match[2] as string).toLowerCase();
+  const parsed = parseGdeltTimespan(timespan);
+  if (!parsed) return;
+  const { amount: n, unit } = parsed;
   const end = new Date();
   const start = new Date(end);
   switch (unit) {
@@ -92,6 +91,9 @@ export function resolveTimespan(timespan: string): { start: Date; end: Date } | 
     case 'd':
       start.setDate(start.getDate() - n);
       break;
+    case 'w':
+      start.setDate(start.getDate() - n * 7);
+      break;
     case 'm':
       start.setMonth(start.getMonth() - n);
       break;
@@ -100,6 +102,31 @@ export function resolveTimespan(timespan: string): { start: Date; end: Date } | 
       break;
   }
   return { start, end };
+}
+
+/** Supported relative units; unknown numeric-plus-unit syntax remains upstream-owned. */
+const TIMESPAN_UNITS = new Map<string, 'min' | 'h' | 'd' | 'w' | 'm' | 'y'>([
+  ['min', 'min'],
+  ['h', 'h'],
+  ['hours', 'h'],
+  ['d', 'd'],
+  ['days', 'd'],
+  ['w', 'w'],
+  ['week', 'w'],
+  ['weeks', 'w'],
+  ['m', 'm'],
+  ['months', 'm'],
+  ['y', 'y'],
+  ['years', 'y'],
+]);
+
+/** Parse supported relative units without rejecting upstream-evolved syntax. */
+export function parseGdeltTimespan(timespan: string) {
+  const match = /^(\d+)([a-z]+)$/i.exec(timespan.trim());
+  if (!match) return;
+  const unit = TIMESPAN_UNITS.get((match[2] as string).toLowerCase());
+  if (unit) return { amount: Number(match[1]), unit };
+  return;
 }
 
 /** Format a Date as YYYY-MM-DD for human-readable display. */
@@ -169,7 +196,22 @@ export function gdeltFetch<T>(
       signal: ctx.signal,
       deadlineMs: requestTimeoutMs * GDELT_CALL_DEADLINE_MULTIPLIER,
     },
-  ).catch((error: unknown) => declareTransientAsUnavailable(error, ctx.signal));
+  ).catch((error: unknown) => {
+    if (
+      !ctx.signal.aborted &&
+      error instanceof McpError &&
+      error.code === JsonRpcErrorCode.RateLimited &&
+      error.data?.reason === 'gdelt_rate_limited'
+    ) {
+      throw new McpError(
+        error.code,
+        error.message,
+        { ...error.data, retryable: true },
+        { cause: error },
+      );
+    }
+    return declareTransientAsUnavailable(error, ctx.signal);
+  });
 }
 
 /**
@@ -253,8 +295,8 @@ function declareShedAsRateLimited(error: unknown, waitedMs: number): never {
  * would otherwise replay up to four times — every replay landing inside GDELT's still-closed
  * rate-limit window, whose cooldown far outlasts the retry budget. Tagging the error
  * `data.retryable: false` opts it out of `withRetry`'s default transient predicate, so the
- * single rejection surfaces immediately, carrying GDELT's "retry after 5 seconds" cue for the
- * client to pace its own backoff. Non-rate-limit errors pass through untouched and retry normally.
+ * single rejection leaves the retry ladder immediately. gdeltFetch then restores public
+ * retryability so the client can back off and retry later. Other failures retry normally.
  */
 function failFastOnRateLimit(error: unknown): never {
   if (error instanceof McpError && error.code === JsonRpcErrorCode.RateLimited) {
@@ -294,6 +336,23 @@ const BODY_EXCERPT_LIMIT = 200;
  */
 const GDELT_REJECTIONS: ReadonlyArray<{ marker: string; hint: string; api?: string }> = [
   {
+    marker: 'hourly dateres not available',
+    api: 'GDELT TV',
+    hint: 'Use dateres "day" or request a window of seven days or fewer for hourly resolution.',
+  },
+  {
+    marker: 'invalid query start date',
+    hint: 'Check the requested date window and timespan syntax. Use dates inside the API archive and a supported relative unit, or supply startDatetime and endDatetime together.',
+  },
+  {
+    marker: 'multiple standalone non-negative',
+    hint: 'Avoid conflicting positive station/show/network/market selectors. Supply the station in stations or in query rather than both, or group alternative selectors as required by GDELT.',
+  },
+  {
+    marker: 'invalid/unsupported country',
+    hint: 'Use a supported two-character FIPS country code or spell the full country name without spaces, such as sourcecountry:unitedarabemirates.',
+  },
+  {
     marker: 'invalid station',
     hint:
       'GDELT does not recognize one of the requested station IDs. Use gdelt_list_tv_stations ' +
@@ -301,9 +360,7 @@ const GDELT_REJECTIONS: ReadonlyArray<{ marker: string; hint: string; api?: stri
   },
   {
     marker: 'must contain at least one station',
-    hint:
-      'The GDELT TV API requires at least one station. Supply the stations parameter, or embed a ' +
-      'station: selector in the query — use gdelt_list_tv_stations to find valid station IDs.',
+    hint: 'Select TV coverage with the stations parameter or a station:, network:, or quoted market: selector in query. Use gdelt_list_tv_stations to find valid station IDs, networks and markets.',
   },
   {
     marker: 'too short or too long',
@@ -429,8 +486,7 @@ function looksLikeGdeltRejection(text: string): boolean {
  * Parse a GDELT response body, classifying the non-JSON bodies GDELT returns for
  * upstream trouble (HTML, empty) and caller-side query rejections (see
  * `GDELT_REJECTIONS`) before falling back to a generic serialization failure. A body
- * excerpt echoed in an error message is quoted, since the message reaches content[] as
- * its `Error:` line.
+ * excerpt is quoted as raw text; the framework escapes its `Error:` line in content[].
  *
  * Exported for direct testing — production callers reach it through `gdeltFetch`.
  */
@@ -440,7 +496,7 @@ export function parseGdeltJson<T>(text: string, apiLabel: string): T {
       // GDELT serves some rate-limit notices as HTML on a 200. Its cooldown outlasts the
       // retry budget, so fail fast rather than replay into a closed window.
       throw rateLimited(
-        `${apiLabel} API returned an HTML rate-limit notice. Retry after 5 seconds.`,
+        `${apiLabel} API returned an HTML rate-limit notice.`,
         GDELT_RATE_LIMIT_DATA,
       );
     }
@@ -459,10 +515,7 @@ export function parseGdeltJson<T>(text: string, apiLabel: string): T {
     // A rate-limit notice is transient infra, not caller error — fail fast (no retry) with
     // GDELT's cooldown cue, and keep it out of the invalid_query path below.
     if (matchesRateLimit(text)) {
-      throw rateLimited(
-        `${apiLabel} API rate-limited the request. Retry after 5 seconds.`,
-        GDELT_RATE_LIMIT_DATA,
-      );
+      throw rateLimited(`${apiLabel} API rate-limited the request.`, GDELT_RATE_LIMIT_DATA);
     }
     // Enumerated wording → tailored hint; otherwise a rejection-sentence shape → generic hint.
     const hint =
@@ -472,14 +525,14 @@ export function parseGdeltJson<T>(text: string, apiLabel: string): T {
       // ValidationError is outside withRetry's transient set, so this fails fast
       // instead of replaying a query GDELT will reject identically every time.
       throw validationError(
-        `${apiLabel} API rejected the query: ${markdownQuote(text.trim().slice(0, BODY_EXCERPT_LIMIT))}`,
+        `${apiLabel} API rejected the query: ${quoteText(text.trim().slice(0, BODY_EXCERPT_LIMIT))}`,
         { reason: 'invalid_query', recovery: { hint } },
       );
     }
     // Truncated JSON, gateway garbage, or any non-sentence body — genuinely unparseable and
     // not the caller's fault; stays on the SerializationError path (settled in #18).
     throw serializationError(
-      `${apiLabel} API returned unparseable response: ${markdownQuote(text.slice(0, BODY_EXCERPT_LIMIT))}`,
+      `${apiLabel} API returned unparseable response: ${quoteText(text.slice(0, BODY_EXCERPT_LIMIT))}`,
     );
   }
 }

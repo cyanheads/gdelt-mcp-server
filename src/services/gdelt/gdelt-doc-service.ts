@@ -14,7 +14,7 @@ import type { Article, RawArticle, RawTimelineSeries, RawTimelineVolInfoPoint } 
 
 const DOC_ENDPOINT = '/doc/doc';
 
-export type DocTimelineMode = 'timelinevol' | 'timelinevolinfo' | 'timelinetone';
+export type DocTimelineMode = 'timelinevol' | 'timelinevolraw' | 'timelinevolinfo' | 'timelinetone';
 export type DocBreakdownMode = 'timelinelang' | 'timelinesourcecountry';
 
 export type DocSearchParams = {
@@ -48,6 +48,7 @@ export type DocBreakdownParams = {
   timespan?: string;
   startDatetime?: string;
   endDatetime?: string;
+  smoothing?: number;
 };
 
 export type ArticleSearchResult = {
@@ -58,6 +59,7 @@ export type ArticleSearchResult = {
 export type TimelineDataPoint = {
   date: string;
   value: number;
+  norm?: number;
   articles?: Array<{ url: string; title: string }>;
 };
 
@@ -121,7 +123,7 @@ export class GdeltDocService {
     }
 
     const raw = await this.fetch<{ timeline?: RawTimelineSeries[] }>(urlParams, ctx);
-    return parseTimeline(raw);
+    return parseTimeline(raw, params.mode === 'timelinevolraw');
   }
 
   /** Fetch tone distribution histogram (tonechart mode). */
@@ -148,6 +150,7 @@ export class GdeltDocService {
   async getBreakdown(params: DocBreakdownParams, ctx: Context): Promise<BreakdownSeries[]> {
     const urlParams = this.buildBaseParams(params.query);
     urlParams.set('mode', params.mode);
+    if (params.smoothing != null) urlParams.set('timelinesmooth', String(params.smoothing));
     applyTimeRange(urlParams, params.timespan, params.startDatetime, params.endDatetime);
 
     const raw = await this.fetch<{ timeline?: RawTimelineSeries[] }>(urlParams, ctx);
@@ -185,10 +188,17 @@ function normalizeArticle(raw: RawArticle): Article {
   };
 }
 
-function parseTimeline(raw: { timeline?: RawTimelineSeries[] }): TimelineSeries[] {
+function parseTimeline(
+  raw: { timeline?: RawTimelineSeries[] },
+  rawVolume = false,
+): TimelineSeries[] {
   return (raw.timeline ?? []).map((s) => ({
     label: s.series ?? 'Series',
-    data: (s.data ?? []).map((d) => ({ date: normalizeGdeltDate(d.date), value: d.value })),
+    data: (s.data ?? []).map((d) => ({
+      date: normalizeGdeltDate(d.date),
+      value: d.value,
+      ...(rawVolume && d.norm != null && { norm: d.norm }),
+    })),
   }));
 }
 

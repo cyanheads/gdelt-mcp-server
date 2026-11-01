@@ -16,7 +16,17 @@ import {
   type TvDateResolution,
 } from './date-resolution.js';
 import { applyTimeRange, GDELT_CALL_DEADLINE_MULTIPLIER, gdeltFetch } from './gdelt-fetch.js';
-import type { RawTvClip, RawTvStation, RawTvWord, TvClip, TvStation } from './types.js';
+import type {
+  RawTvClip,
+  RawTvShowChartRow,
+  RawTvStation,
+  RawTvStationChartRow,
+  RawTvWord,
+  TvBreakdownRow,
+  TvBreakdownValueUnit,
+  TvClip,
+  TvStation,
+} from './types.js';
 
 const TV_ENDPOINT = '/tv/tv';
 
@@ -39,6 +49,7 @@ export type TvSearchParams = {
   smoothing?: number;
   normalize?: boolean;
   dateres?: TvDateResolution;
+  combined?: boolean;
 };
 
 export type TvClipParams = {
@@ -57,6 +68,12 @@ export type TvContextParams = {
   timespan?: string;
   startDatetime?: string;
   endDatetime?: string;
+};
+
+/** Rank matching TV coverage by station or show over one query window. */
+export type TvBreakdownParams = TvContextParams & {
+  breakdownBy: 'station' | 'show';
+  normalize?: boolean;
 };
 
 export type TvSearchSeries = {
@@ -122,21 +139,24 @@ export class GdeltTvService {
     const urlParams = this.buildBaseParams(params.query, params.stations);
     urlParams.set('mode', 'timelinevol');
     urlParams.set('datanorm', params.normalize !== false ? 'perc' : 'raw');
+    if (params.combined) urlParams.set('datacomb', 'combined');
     if (params.smoothing != null) urlParams.set('timelinesmooth', String(params.smoothing));
     if (params.dateres) urlParams.set('dateres', params.dateres);
     applyTimeRange(urlParams, params.timespan, params.startDatetime, params.endDatetime);
 
     const raw = await this.fetch<{
       timeline?: Array<{ series?: string; data?: Array<{ date: string; value: number }> }>;
-      dateresolution?: string;
+      query_details?: { date_resolution?: string };
     }>(urlParams, ctx);
 
     const timeline = (raw.timeline ?? []).map((s) => ({ ...s, label: s.series ?? '' }));
-    const ids = await this.stationIdsFor(
-      timeline.map((s) => s.label),
-      ctx,
-      catalogWaitUntil,
-    );
+    const ids = params.combined
+      ? new Map<string, string>()
+      : await this.stationIdsFor(
+          timeline.map((s) => s.label),
+          ctx,
+          catalogWaitUntil,
+        );
     const series: TvSearchSeries[] = timeline.map((s) => ({
       ...withStationId(s.label, ids),
       data: (s.data ?? []).map((d) => ({ date: normalizeGdeltDate(d.date), value: d.value })),
@@ -144,7 +164,7 @@ export class GdeltTvService {
 
     const allDates = series.flatMap((s) => s.data.map((d) => d.date));
 
-    const observedResolution = raw.dateresolution?.toLowerCase();
+    const observedResolution = raw.query_details?.date_resolution?.toLowerCase();
     const recognizedResolution = isTvDateResolution(observedResolution)
       ? observedResolution
       : undefined;
@@ -202,21 +222,57 @@ export class GdeltTvService {
     ctx: Context,
   ): Promise<{
     words: TvContextWord[];
-    /** Present only when the upstream API returns a clip count. */
-    clipsAnalyzed?: number;
   }> {
     const urlParams = this.buildBaseParams(params.query, params.stations);
     urlParams.set('mode', 'wordcloud');
     applyTimeRange(urlParams, params.timespan, params.startDatetime, params.endDatetime);
 
-    const raw = await this.fetch<{ wordcloud?: RawTvWord[]; numclips?: number }>(urlParams, ctx);
+    const raw = await this.fetch<{ wordcloud?: RawTvWord[] }>(urlParams, ctx);
     const words: TvContextWord[] = (raw.wordcloud ?? []).map((w) => ({
       label: w.label,
       score: w.count,
     }));
-    // Only include clipsAnalyzed when the upstream API provides a value — defaulting
-    // to 0 falsely signals "zero clips analyzed" when the field is simply absent.
-    return { words, ...(raw.numclips != null ? { clipsAnalyzed: raw.numclips } : {}) };
+    return { words };
+  }
+
+  /** Fetch complete provider rankings; show values remain percentages even with normalize=false. */
+  async getTvBreakdown(
+    params: TvBreakdownParams,
+    ctx: Context,
+  ): Promise<{
+    rows: TvBreakdownRow[];
+    valueUnit: TvBreakdownValueUnit;
+    stationCatalogUnavailable?: true;
+  }> {
+    const catalogWaitUntil = Date.now() + this.catalogWaitMs;
+    const urlParams = this.buildBaseParams(params.query, params.stations);
+    urlParams.set('mode', params.breakdownBy === 'station' ? 'stationchart' : 'showchart');
+    urlParams.set('datanorm', params.normalize !== false ? 'perc' : 'raw');
+    applyTimeRange(urlParams, params.timespan, params.startDatetime, params.endDatetime);
+    const raw = await this.fetch<{
+      stationchart?: RawTvStationChartRow[];
+      showchart?: RawTvShowChartRow[];
+    }>(urlParams, ctx);
+    if (params.breakdownBy === 'show') {
+      return {
+        rows: (raw.showchart ?? []).map((row) => ({ label: row.show, value: row.count })),
+        valueUnit: 'percent_matching_clips',
+      };
+    }
+    const chart = raw.stationchart ?? [];
+    const ids = await this.stationIdsFor(
+      chart.map((row) => row.station),
+      ctx,
+      catalogWaitUntil,
+    );
+    return {
+      rows: chart.map((row) => {
+        const station = ids?.get(row.station);
+        return { label: row.station, value: row.count, ...(station !== undefined && { station }) };
+      }),
+      valueUnit: params.normalize !== false ? 'percent_station_airtime' : 'matching_clips',
+      ...(ids === undefined && { stationCatalogUnavailable: true as const }),
+    };
   }
 
   /**

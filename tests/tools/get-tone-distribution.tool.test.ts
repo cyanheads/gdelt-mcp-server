@@ -22,6 +22,58 @@ function counted<T extends { articles: unknown[] }>(bins: T[]) {
 }
 
 describe('gdeltGetToneDistribution', () => {
+  it('pages bins by count and names supplied references separately from matching articles', async () => {
+    const getToneDistribution = vi.fn().mockResolvedValue(
+      Array.from({ length: 12 }, (_, bin) => ({
+        bin,
+        count: 11,
+        articles: Array.from({ length: 10 }, (_, i) => ({
+          url: `https://example.com/${i}`,
+          title: `Title ${i}`,
+        })),
+      })),
+    );
+    vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+      getToneDistribution,
+    } as unknown as docServiceModule.GdeltDocService);
+    const result = await runToolContract(gdeltGetToneDistribution, { query: 'test', limit: 2 });
+    expect(result.structuredContent).toMatchObject({
+      histogram: [{ bin: 0, count: 11, referenceCount: 10 }, { bin: 1 }],
+      nextOffset: 2,
+      totalCount: 132,
+    });
+    expect(contentText(result)).toContain('supplied references');
+    expect(contentText(result)).not.toContain('true total');
+  });
+
+  it('applies the bin cap with one disclosure and retains the next bin', async () => {
+    const getToneDistribution = vi
+      .fn()
+      .mockResolvedValue(
+        Array.from({ length: 401 }, (_, bin) => ({ bin, count: 1, articles: [] })),
+      );
+    vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+      getToneDistribution,
+    } as unknown as docServiceModule.GdeltDocService);
+    const result = await runToolContract(gdeltGetToneDistribution, { query: 'test', limit: 401 });
+    expect(result.structuredContent).toMatchObject({
+      limitClamp: { parameter: 'limit', requested: 401, applied: 400 },
+      nextOffset: 400,
+      totalCount: 401,
+    });
+    expect((result.structuredContent as { histogram: unknown[] }).histogram).toHaveLength(400);
+    expect(contentText(result).match(/Limit clamped:/g)).toHaveLength(1);
+    expect(getToneDistribution).toHaveBeenCalledTimes(1);
+    const last = await runToolContract(gdeltGetToneDistribution, {
+      query: 'test',
+      limit: 400,
+      offset: 400,
+    });
+    expect(last.structuredContent).toMatchObject({ histogram: [{ bin: 400, count: 1 }] });
+    expect(last.structuredContent).not.toHaveProperty('limitClamp');
+    expect(last.structuredContent).not.toHaveProperty('nextOffset');
+    expect(contentText(last)).toContain('**Bin +400:** 1 articles');
+  });
   beforeEach(() => {
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
       getToneDistribution: vi.fn().mockResolvedValue(BINS),
@@ -287,11 +339,9 @@ describe('gdeltGetToneDistribution', () => {
   );
 
   /**
-   * #54: both surfaces are bounded by the shared per-surface byte budget. The fixture sits at
-   * GDELT's documented maximum — 61 bins (-30..+30), 10 representative references per bin — with
-   * 100-character titles and URLs.
+   * Count pages retain every bin and selected reference, independent of rendered size.
    */
-  describe('response budget (#54)', () => {
+  describe('count paging', () => {
     type Bin = {
       bin: number;
       count: number;
@@ -344,16 +394,16 @@ describe('gdeltGetToneDistribution', () => {
 
     beforeEach(() => mock(FULL));
 
-    it('keeps both surfaces of the 61-bin, 10-reference maximum at or under 50,000 bytes', async () => {
+    it('returns ten bins by default with a count continuation on both surfaces', async () => {
       const result = await call({});
       expect(result.isError).toBeFalsy();
-      const bytes = surfaceBytes(result);
-      expect(bytes.structured).toBeLessThanOrEqual(50_000);
-      expect(bytes.text).toBeLessThanOrEqual(50_000);
+      expect(out(result).histogram).toHaveLength(10);
+      expect(out(result).nextOffset).toBe(10);
+      expect(contentText(result)).toContain('Next offset:** 10');
     });
 
     it('carries the same first 3 references and referenceCount for every bin on both surfaces', async () => {
-      const result = await call({});
+      const result = await call({ limit: 400 });
       const sc = out(result);
       const text = contentText(result);
       expect(sc.histogram.map((b) => b.bin)).toEqual(ALL_BINS);
@@ -384,7 +434,7 @@ describe('gdeltGetToneDistribution', () => {
       expect(text).not.toContain('links shown');
     });
 
-    it('pages every named bin exactly once, in order, each page within budget', async () => {
+    it('pages every named bin exactly once in count pages', async () => {
       const walked: number[] = [];
       let offset: number | undefined = 0;
       let pages = 0;
@@ -392,14 +442,12 @@ describe('gdeltGetToneDistribution', () => {
       while (offset !== undefined) {
         const result = await call({ bins: ALL_BINS, offset });
         expect(result.isError).toBeFalsy();
-        const bytes = surfaceBytes(result);
-        expect(bytes.structured).toBeLessThanOrEqual(50_000);
-        expect(bytes.text).toBeLessThanOrEqual(50_000);
         const sc = out(result);
+        expect(sc.histogram.length).toBeLessThanOrEqual(10);
         if (sc.nextOffset !== undefined) {
           expect(sc.notice).toMatch(
             new RegExp(
-              `^Returned bins ${offset + 1}–${sc.nextOffset} of 61 bins; bin ${sc.nextOffset + 1} would push`,
+              `^Returned bins ${offset + 1}–${sc.nextOffset} of 61 bins; continue with offset ${sc.nextOffset}`,
             ),
           );
           expect(contentText(result)).toContain(`**Next offset:** ${sc.nextOffset}`);
@@ -409,7 +457,7 @@ describe('gdeltGetToneDistribution', () => {
         offset = sc.nextOffset;
         pages++;
       }
-      expect(pages).toBeGreaterThan(1);
+      expect(pages).toBe(7);
       expect(walked).toEqual(ALL_BINS);
       expect(lastNotice).toMatch(/of 61 bins — the last page\.$/);
     });
@@ -425,11 +473,14 @@ describe('gdeltGetToneDistribution', () => {
       expect(paged.histogram.map((b) => b.bin)).toEqual([30]);
     });
 
-    it('emits a bin larger than the budget alone, continuing from the next one', async () => {
+    it('returns all requested large bins without a byte cut', async () => {
       mock(toneChart(10, 6_000));
-      const first = out(await call({ bins: [-30, -29, -28] }));
-      expect(first.histogram.map((b) => b.bin)).toEqual([-30]);
-      expect(first.nextOffset).toBe(1);
+      const result = await call({ bins: [-30, -29, -28] });
+      const first = out(result);
+      expect(first.histogram.map((b) => b.bin)).toEqual([-30, -29, -28]);
+      expect(first.nextOffset).toBeUndefined();
+      expect(surfaceBytes(result).structured).toBeGreaterThan(50_000);
+      expect(surfaceBytes(result).text).toBeGreaterThan(50_000);
     });
 
     it('rejects a bins value matching no bin, listing the available bins', async () => {

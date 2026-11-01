@@ -10,24 +10,27 @@ import { getGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
 import {
   describeDateRangeFault,
   GDELT_DATETIME_PATTERN,
-  gdeltDocTimespanSchema,
+  refineDocTimespan,
 } from '../date-range.js';
+import {
+  clampToCap,
+  countInputSchema,
+  limitClampSchema,
+  renderLimitClamp,
+} from '../limit-clamp.js';
 import {
   escapeMarkdown,
   markdownLinkDestination,
   markdownQuote,
   renderQueryEcho,
 } from '../markdown-escape.js';
-import { pageByOffset, recordCharge } from '../response-budget.js';
 
 /**
  * Representative article links carried per bin, on both surfaces, for bins the caller did not
- * name in `bins`. GDELT returns up to 10 per bin across as many as 61 bins, so each bin keeps its
- * first 3 beside `referenceCount`, its true total, and `bins` returns the named bins in full.
+ * name in `bins`. Each bin keeps its first 3 beside `referenceCount`, its supplied-reference
+ * count, and `bins` returns the named bins in full.
  */
 const ARTICLES_PER_BIN = 3;
-
-const BIN_NOUN = { singular: 'bin', plural: 'bins' };
 
 type HistogramBin = {
   bin: number;
@@ -36,7 +39,7 @@ type HistogramBin = {
   referenceCount: number;
 };
 
-/** One bin's header and article links — the block format() renders and the budget charges. */
+/** One bin's header and article links. */
 function renderBin(b: HistogramBin): string {
   const bar = '█'.repeat(Math.min(Math.ceil(b.count / 5), 20));
   const shown =
@@ -71,7 +74,7 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
     'bimodal (some articles extremely positive and some extremely negative), or clustered near neutral. ' +
     'Each bin carries its first 3 representative article links and referenceCount, how many GDELT returned; ' +
     'name bins in the bins input to get only those bins, each with every link. ' +
-    'A response carries as many whole bins as fit its size budget; when more remain it returns nextOffset — ' +
+    'A response carries limit bins (default 10, cap 400); when more remain it returns nextOffset — ' +
     'pass it back as offset with otherwise identical inputs for the next page. ' +
     'Distinct from gdelt_get_coverage_timeline (mode: tone) — this is a snapshot distribution ' +
     'across all matching articles, not a time series. ' +
@@ -112,9 +115,9 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
       reason: 'gdelt_rate_limited',
       code: JsonRpcErrorCode.RateLimited,
       when: 'GDELT rejected the request for its one-request-per-five-seconds limit, or too many requests were already queued for this one to start in time.',
-      retryable: false,
+      retryable: true,
       recovery:
-        'Wait at least 5 seconds before retrying; GDELT accepts at most one request every 5 seconds.',
+        'Back off before retrying; five seconds is minimum request spacing, not a recovery guarantee, and rate limiting may persist longer. Honor Retry-After when supplied.',
       thrownBy: 'service',
     },
     {
@@ -127,56 +130,64 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
     },
   ],
 
-  input: z.object({
-    query: z
-      .string()
-      .min(1)
-      .describe(
-        'Search query using GDELT syntax. Same operators as gdelt_search_articles: ' +
-          'phrases, boolean OR, sourcecountry:, sourcelang:, domain:, theme: (GKG theme identifiers ' +
-          'come from gdelt_search_themes).',
+  input: z
+    .object({
+      query: z
+        .string()
+        .min(1)
+        .describe(
+          'Search query using GDELT syntax. Same operators as gdelt_search_articles: ' +
+            'phrases, boolean OR, sourcecountry:, sourcelang:, domain:, theme: (GKG theme identifiers ' +
+            'come from gdelt_search_themes).',
+        ),
+      timespan: z
+        .string()
+        .optional()
+        .describe(
+          'Time window relative to now, minimum "15min"; other examples: "24h", "7d", "1m". ' +
+            'Ignored when startDatetime/endDatetime are set. Maximum 3 months.',
+        ),
+      startDatetime: z
+        .string()
+        .regex(GDELT_DATETIME_PATTERN, 'startDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
+        .optional()
+        .describe(
+          'Start datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
+            '(e.g. 20240101000000). Must pair with endDatetime; supplying only one of the two is rejected.',
+        ),
+      endDatetime: z
+        .string()
+        .regex(GDELT_DATETIME_PATTERN, 'endDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
+        .optional()
+        .describe(
+          'End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
+            '(e.g. 20240131235959). Must pair with startDatetime; supplying only one of the two is rejected.',
+        ),
+      bins: z
+        .array(z.number().int())
+        .optional()
+        .describe(
+          'Tone bins to return alone, e.g. [-7, 4]. Take them from histogram[].bin in a prior response, or ' +
+            'from the list an unknown_bin error prints. The response then carries only these bins, in ' +
+            'histogram order, each with every representative article link instead of the first 3. A value ' +
+            'matching no bin is rejected rather than silently ignored.',
+        ),
+      limit: countInputSchema(
+        400,
+        10,
+        'Maximum bins per page (default 10, cap 400). Larger counts clamp to 400 unless GDELT_CLAMP_LIMITS=false.',
       ),
-    timespan: gdeltDocTimespanSchema
-      .optional()
-      .describe(
-        'Time window relative to now, minimum "15min"; other examples: "24h", "7d", "1m". ' +
-          'Ignored when startDatetime/endDatetime are set. Maximum 3 months.',
-      ),
-    startDatetime: z
-      .string()
-      .regex(GDELT_DATETIME_PATTERN, 'startDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
-      .optional()
-      .describe(
-        'Start datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-          '(e.g. 20240101000000). Must pair with endDatetime; supplying only one of the two is rejected.',
-      ),
-    endDatetime: z
-      .string()
-      .regex(GDELT_DATETIME_PATTERN, 'endDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
-      .optional()
-      .describe(
-        'End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-          '(e.g. 20240131235959). Must pair with startDatetime; supplying only one of the two is rejected.',
-      ),
-    bins: z
-      .array(z.number().int())
-      .optional()
-      .describe(
-        'Tone bins to return alone, e.g. [-7, 4]. Take them from histogram[].bin in a prior response, or ' +
-          'from the list an unknown_bin error prints. The response then carries only these bins, in ' +
-          'histogram order, each with every representative article link instead of the first 3. A value ' +
-          'matching no bin is rejected rather than silently ignored.',
-      ),
-    offset: z
-      .number()
-      .int()
-      .min(0)
-      .default(0)
-      .describe(
-        'Zero-based bin offset — into the histogram, or into the bins named in bins. Pass nextOffset ' +
-          'from the preceding response, with otherwise identical inputs, to get the next page.',
-      ),
-  }),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .default(0)
+        .describe(
+          'Zero-based bin offset — into the histogram, or into the bins named in bins. Pass nextOffset ' +
+            'from the preceding response, with otherwise identical inputs, to get the next page.',
+        ),
+    })
+    .superRefine(refineDocTimespan),
 
   output: z.object({
     histogram: z
@@ -244,6 +255,7 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
   // Agent-facing context — query echo and the empty-result or paging notice.
   // Reaches structuredContent and content[] automatically; never in the domain return.
   enrichment: {
+    limitClamp: limitClampSchema,
     effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
     totalCount: z
       .number()
@@ -267,6 +279,7 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
   },
 
   enrichmentTrailer: {
+    limitClamp: { render: renderLimitClamp },
     effectiveQuery: { render: renderQueryEcho },
   },
 
@@ -278,6 +291,7 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
 
     ctx.log.info('gdelt_get_tone_distribution', { query: input.query });
     const svc = getGdeltDocService();
+    const limit = clampToCap(ctx, 'limit', input.limit, 400);
 
     const bins = await svc.getToneDistribution(
       {
@@ -345,10 +359,9 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
       });
     }
 
-    const page = isEmpty
-      ? undefined
-      : pageByOffset(units, (b) => recordCharge(b, renderBin(b)), input.offset, BIN_NOUN);
-    const histogram = page ? units.slice(input.offset, page.end) : [];
+    const end = Math.min(input.offset + limit, units.length);
+    const nextOffset = end < units.length ? end : undefined;
+    const histogram = isEmpty ? [] : units.slice(input.offset, end);
 
     ctx.enrich.echo(input.query);
     ctx.enrich.total(totalCount);
@@ -369,7 +382,11 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
         notices.push('The bins input was not applied — this histogram has no bins.');
       }
     }
-    if (page?.notice) notices.push(page.notice);
+    if (!isEmpty && (input.offset > 0 || nextOffset != null)) {
+      notices.push(
+        `Returned bins ${input.offset + 1}–${end} of ${units.length} bins${nextOffset != null ? `; continue with offset ${nextOffset} (nextOffset) and otherwise identical inputs.` : ' — the last page.'}`,
+      );
+    }
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
     ctx.log.info('gdelt_get_tone_distribution completed', {
@@ -380,7 +397,7 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
     return {
       histogram,
       summary,
-      ...(page?.nextOffset != null && { nextOffset: page.nextOffset }),
+      ...(nextOffset != null && { nextOffset }),
     };
   },
 
@@ -392,7 +409,7 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
     if (neutralPct != null) lines.push(`**Neutral articles (bins -2 to +2):** ${neutralPct}%`);
     if (result.histogram.some((b) => b.referenceCount > b.articles.length)) {
       lines.push(
-        `**Article links:** first ${ARTICLES_PER_BIN} per bin, with each bin's true total beside it. ` +
+        `**Article links:** first ${ARTICLES_PER_BIN} per bin, with the number of supplied references beside it; count is the matching-article count. ` +
           "Re-call with bins: [<bin>] to get a bin's full list.",
       );
     }

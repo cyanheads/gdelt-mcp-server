@@ -1,0 +1,32 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "gdelt-mcp-server",
+  "version": "0.7.0",
+  "description": "Search and analyze global news coverage and US television transcripts from the GDELT Project's real-time APIs via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
+  "homepage": "https://github.com/cyanheads/gdelt-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/gdelt-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "typescript",
+    "bun",
+    "stdio",
+    "streamable-http",
+    "gdelt",
+    "global-news",
+    "news-analytics",
+    "media-monitoring",
+    "sentiment-analysis",
+    "tv-news",
+    "event-monitoring",
+    "journalism",
+    "media-analysis"
+  ]
+}

@@ -166,7 +166,7 @@ describe('GdeltThemeService loading', () => {
     expect(error).toMatchObject(UNAVAILABLE);
     expect(error.message).not.toContain('\n');
     expect(error.message).toMatch(
-      /^GDELT's GKG theme lookup could not be downloaded: ".*fetch failed\\\\n# HEAD \\<img src=x>"$/,
+      /^GDELT's GKG theme lookup could not be downloaded: ".*fetch failed\\n# HEAD <img src=x>"$/,
     );
   });
 

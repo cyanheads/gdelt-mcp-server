@@ -126,7 +126,7 @@ describe('resolveTimespan', () => {
 
   it('returns undefined for unrecognised format', () => {
     expect(resolveTimespan('invalid')).toBeUndefined();
-    expect(resolveTimespan('1week')).toBeUndefined();
+    expect(resolveTimespan('1futureunit')).toBeUndefined();
     expect(resolveTimespan('')).toBeUndefined();
   });
 });
@@ -193,7 +193,7 @@ describe('parseGdeltJson', () => {
           data: {
             reason: 'gdelt_rate_limited',
             retryable: false,
-            recovery: { hint: expect.stringMatching(/wait at least 5 seconds/i) },
+            recovery: { hint: expect.stringMatching(/back off/i) },
           },
         });
       }
@@ -368,13 +368,13 @@ describe('parseGdeltJson', () => {
 
     it('quotes an unparseable body excerpt', () => {
       expect(messageOf('x\n# HEAD <img src=x>', 'GDELT DOC')).toBe(
-        String.raw`GDELT DOC API returned unparseable response: "x\\n# HEAD \<img src=x>"`,
+        String.raw`GDELT DOC API returned unparseable response: "x\n# HEAD <img src=x>"`,
       );
     });
 
     it('quotes the excerpt of a rejection GDELT wrote around caller text', () => {
       expect(messageOf('Invalid Station: <img src=x>\n# HEAD\n', 'GDELT TV')).toBe(
-        String.raw`GDELT TV API rejected the query: "Invalid Station: \<img src=x>\\n# HEAD"`,
+        String.raw`GDELT TV API rejected the query: "Invalid Station: <img src=x>\n# HEAD"`,
       );
     });
 

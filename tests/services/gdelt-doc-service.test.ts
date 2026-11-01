@@ -108,6 +108,46 @@ describe('GdeltDocService.searchArticles', () => {
 });
 
 describe('GdeltDocService.getTimeline (standard modes)', () => {
+  it.each(['timelinevol', 'timelinetone'] as const)(
+    'omits raw denominators in %s mode',
+    async (mode) => {
+      vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({
+        timeline: [
+          { series: 'Series', data: [{ date: '20261021T160000Z', value: 1.5, norm: 11825 }] },
+        ],
+      });
+      const series = await makeService().getTimeline(
+        { query: 'bird flu', mode },
+        createMockContext(),
+      );
+      expect(series[0]?.data).toEqual([{ date: '2026-10-21T16:00:00Z', value: 1.5 }]);
+    },
+  );
+  it('preserves captured raw count denominators including zero and smoothed fractional values', async () => {
+    const fetch = vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({
+      timeline: [
+        {
+          series: 'Article Count',
+          data: [
+            { date: '20261021T160000Z', value: 11, norm: 11825 },
+            { date: '20261021T170000Z', value: 0, norm: 0 },
+            { date: '20261021T180000Z', value: 5.5, norm: 12000 },
+          ],
+        },
+      ],
+    });
+    const series = await makeService().getTimeline(
+      { query: 'bird flu', mode: 'timelinevolraw', smoothing: 6 },
+      createMockContext(),
+    );
+    expect(series[0]?.data).toEqual([
+      { date: '2026-10-21T16:00:00Z', value: 11, norm: 11825 },
+      { date: '2026-10-21T17:00:00Z', value: 0, norm: 0 },
+      { date: '2026-10-21T18:00:00Z', value: 5.5, norm: 12000 },
+    ]);
+    expect(fetch.mock.calls[0]?.[1].get('mode')).toBe('timelinevolraw');
+    expect(fetch.mock.calls[0]?.[1].get('timelinesmooth')).toBe('6');
+  });
   it('parses a standard timeline response into labelled series', async () => {
     const raw = {
       timeline: [
@@ -266,6 +306,26 @@ describe('GdeltDocService.getToneDistribution', () => {
 });
 
 describe('GdeltDocService.getBreakdown', () => {
+  it('forwards smoothing while retaining the query and explicit window', async () => {
+    const fetch = vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({ timeline: [] });
+    await makeService().getBreakdown(
+      {
+        query: 'bird flu',
+        mode: 'timelinelang',
+        smoothing: 30,
+        startDatetime: '20261015000000',
+        endDatetime: '20261022000000',
+      },
+      createMockContext(),
+    );
+    expect(Object.fromEntries(fetch.mock.calls[0]![1])).toMatchObject({
+      query: 'bird flu',
+      mode: 'timelinelang',
+      timelinesmooth: '30',
+      startdatetime: '20261015000000',
+      enddatetime: '20261022000000',
+    });
+  });
   it('maps timeline data to BreakdownSeries shape', async () => {
     const raw = {
       timeline: [

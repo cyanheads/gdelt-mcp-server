@@ -31,6 +31,8 @@ export type Article = {
 export type RawTimelinePoint = {
   date: string;
   value: number;
+  /** Unsmoothed monitored-article denominator, supplied by timelinevolraw only. */
+  norm?: number;
 };
 
 /** Raw series from GDELT DOC API timeline response. */
@@ -75,6 +77,21 @@ export type RawTvWord = {
   label: string;
   count: number;
 };
+
+/** Raw TV stationchart row; count is station airtime percentage or matching clip count. */
+export type RawTvStationChartRow = { station: string; count: number };
+
+/** Raw TV showchart row; count is always a percentage of matching clips. */
+export type RawTvShowChartRow = { show: string; count: number };
+
+/** A provider TV ranking label and value, with a catalog ID only for resolved stations. */
+export type TvBreakdownRow = { label: string; value: number; station?: string };
+
+/** Denominator and units of the provider's TV ranking values. */
+export type TvBreakdownValueUnit =
+  | 'percent_station_airtime'
+  | 'percent_matching_clips'
+  | 'matching_clips';
 
 /** Normalized TV station for tool output. */
 export type TvStation = {

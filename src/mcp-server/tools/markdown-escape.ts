@@ -125,7 +125,12 @@ export function escapeMarkdown(value: string, slot: MarkdownSlot = 'inline'): st
  * keeps a block marker off the start of a line, which a notice's first text is.
  */
 export function markdownQuote(value: string): string {
-  return escapeMarkdown(JSON.stringify(value));
+  return escapeMarkdown(quoteText(value));
+}
+
+/** Quote a text value for raw error data; the framework escapes its Markdown rendering. */
+export function quoteText(value: string): string {
+  return JSON.stringify(value);
 }
 
 /** The `effectiveQuery` line of a `content[]` trailer: the echoed query, quoted as text. */

@@ -234,7 +234,7 @@ describe('gdelt_search_themes paging', () => {
 });
 
 /**
- * A limit above the 100-match page ceiling, up to 1000, runs exactly as limit 100 — the same
+ * A safe integer above the 100-match page ceiling runs exactly as limit 100 — the same
  * page, nextOffset, and `limit` output — plus a `limitClamp` disclosure on both surfaces. Served
  * a 150-theme lookup so a 100-match page leaves matches for nextOffset.
  */
@@ -251,14 +251,14 @@ describe('gdelt_search_themes limit clamp', () => {
     });
   });
 
-  it('runs limit 101 and 1000 exactly as limit 100, disclosing the clamp', async () => {
+  it('runs oversized limits exactly as limit 100, disclosing the clamp', async () => {
     const atCap = await callWire({ query: 'clampzz', limit: 100 });
     expect(structured(atCap)).toMatchObject({ totalMatches: 150, limit: 100, nextOffset: 100 });
     expect(structured(atCap).matches).toHaveLength(100);
     expect(atCap.structuredContent).not.toHaveProperty('limitClamp');
     expect(textOf(atCap)).not.toContain('Limit clamped');
 
-    for (const requested of [101, 1000]) {
+    for (const requested of [101, 1001, Number.MAX_SAFE_INTEGER]) {
       const clamped = await callWire({ query: 'clampzz', limit: requested });
       const { limitClamp, ...rest } = clamped.structuredContent as Record<string, unknown>;
       expect(limitClamp).toEqual({ parameter: 'limit', requested, applied: 100 });
@@ -271,11 +271,11 @@ describe('gdelt_search_themes limit clamp', () => {
   });
 
   it('clamps a numeric string past the ceiling like the number', async () => {
-    const clamped = await callWire({ query: 'clampzz', limit: '101' });
+    const clamped = await callWire({ query: 'clampzz', limit: '1001' });
     expect(clamped.isError).toBeFalsy();
     expect(structured(clamped)).toMatchObject({
       limit: 100,
-      limitClamp: { parameter: 'limit', requested: 101, applied: 100 },
+      limitClamp: { parameter: 'limit', requested: 1001, applied: 100 },
     });
   });
 

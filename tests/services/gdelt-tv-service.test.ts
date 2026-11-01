@@ -6,7 +6,12 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { JsonRpcErrorCode, rateLimited, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
+import {
+  JsonRpcErrorCode,
+  rateLimited,
+  requestCancelled,
+  serviceUnavailable,
+} from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { GdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
@@ -253,7 +258,7 @@ describe('GdeltTvService.getTvContext', () => {
     const result = await svc.getTvContext({ query: 'test' }, ctx);
     expect(result.words[0]?.label).toBe('vaccine');
     expect(result.words[0]?.score).toBe(120);
-    expect(result.clipsAnalyzed).toBe(42);
+    expect(result).not.toHaveProperty('clipsAnalyzed');
   });
 
   it('omits clipsAnalyzed when numclips is absent from the upstream response', async () => {
@@ -261,7 +266,7 @@ describe('GdeltTvService.getTvContext', () => {
     const ctx = createMockContext();
     const svc = makeService();
     const result = await svc.getTvContext({ query: 'test' }, ctx);
-    expect(result.clipsAnalyzed).toBeUndefined();
+    expect(result).not.toHaveProperty('clipsAnalyzed');
   });
 
   it('returns empty words array when wordcloud key is absent', async () => {
@@ -273,7 +278,162 @@ describe('GdeltTvService.getTvContext', () => {
   });
 });
 
+describe('GdeltTvService.getTvBreakdown', () => {
+  it.each([true, false])(
+    'maps stationchart values with normalize=%s and catalog IDs',
+    async (normalize) => {
+      const request = vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({
+        query_details: { date_resolution: 'day' },
+        stationchart: [
+          { station: 'Bloomberg', count: 0.6842 },
+          { station: 'FOX News', count: 0.1402 },
+        ],
+      });
+      const result = await makeService().getTvBreakdown(
+        {
+          query: '"climate change"',
+          stations: ['CNN', 'FOXNEWS'],
+          breakdownBy: 'station',
+          normalize,
+          startDatetime: '20200101000000',
+          endDatetime: '20200201000000',
+        },
+        createMockContext(),
+      );
+      expect(result).toMatchObject({
+        rows: [
+          { label: 'Bloomberg', value: 0.6842, station: 'BLOOMBERG' },
+          { label: 'FOX News', value: 0.1402, station: 'FOXNEWS' },
+        ],
+        valueUnit: normalize ? 'percent_station_airtime' : 'matching_clips',
+      });
+      const params = request.mock.calls[0]?.[1];
+      expect(params?.get('mode')).toBe('stationchart');
+      expect(params?.get('datanorm')).toBe(normalize ? 'perc' : 'raw');
+      expect(params?.get('query')).toBe('"climate change" (station:CNN OR station:FOXNEWS)');
+      expect(params?.get('startdatetime')).toBe('20200101000000');
+      expect(params?.get('enddatetime')).toBe('20200201000000');
+      expect(request).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([true, false])(
+    'maps showchart without catalog I/O and keeps percentage units normalize=%s',
+    async (normalize) => {
+      const request = vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({
+        showchart: [
+          { show: 'Hearing on the Impact of Wildfires', count: 5.5101 },
+          {
+            show: 'Campaign 2020 Rep. Katie Porter Campaigns for Sen. Elizabeth Warren D-MA in...',
+            count: 0.3149,
+          },
+        ],
+      });
+      const result = await makeService().getTvBreakdown(
+        { query: '"climate change" market:"National"', breakdownBy: 'show', normalize },
+        createMockContext(),
+      );
+      expect(result).toEqual({
+        rows: [
+          { label: 'Hearing on the Impact of Wildfires', value: 5.5101 },
+          {
+            label: 'Campaign 2020 Rep. Katie Porter Campaigns for Sen. Elizabeth Warren D-MA in...',
+            value: 0.3149,
+          },
+        ],
+        valueUnit: 'percent_matching_clips',
+      });
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(request.mock.calls[0]?.[1].get('mode')).toBe('showchart');
+    },
+  );
+
+  it.each(['station', 'show'] as const)(
+    'treats sparse %s response as empty without catalog I/O',
+    async (breakdownBy) => {
+      const request = vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({});
+      const result = await makeService().getTvBreakdown(
+        { query: 'x', breakdownBy },
+        createMockContext(),
+      );
+      expect(result.rows).toEqual([]);
+      expect(result).not.toHaveProperty('stationCatalogUnavailable');
+      expect(request).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('preserves ranking labels when the catalog fails and retries that lookup next call', async () => {
+    const request = vi
+      .spyOn(gdeltFetchModule, 'gdeltFetch')
+      .mockImplementation((_url, params) =>
+        params.get('mode') === 'stationdetails'
+          ? Promise.reject(serviceUnavailable('Catalog unavailable.'))
+          : Promise.resolve({ stationchart: [{ station: 'FOX News', count: 0.1402 }] }),
+      );
+    const svc = makeService();
+    for (let i = 0; i < 2; i++) {
+      const result = await svc.getTvBreakdown(
+        { query: 'x', breakdownBy: 'station' },
+        createMockContext(),
+      );
+      expect(result).toEqual({
+        rows: [{ label: 'FOX News', value: 0.1402 }],
+        valueUnit: 'percent_station_airtime',
+        stationCatalogUnavailable: true,
+      });
+    }
+    expect(request).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not turn cancelled ranking fetch into a successful empty result', async () => {
+    const controller = new AbortController();
+    const request = vi
+      .spyOn(gdeltFetchModule, 'gdeltFetch')
+      .mockImplementationOnce((_url, _params, ctx) => {
+        controller.abort();
+        expect(ctx.signal.aborted).toBe(true);
+        return Promise.reject(requestCancelled('Ranking cancelled.'));
+      });
+    await expect(
+      makeService().getTvBreakdown(
+        { query: 'x', breakdownBy: 'station' },
+        createMockContext({ signal: controller.signal }),
+      ),
+    ).rejects.toMatchObject({ code: JsonRpcErrorCode.RequestCancelled });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('GdeltTvService.searchTv', () => {
+  it.each([true, false])(
+    'combines coverage with normalize=%s without catalog I/O',
+    async (normalize) => {
+      const request = vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({
+        query_details: { date_resolution: 'day' },
+        timeline: [{ series: 'Combined', data: [{ date: '20200101T120000Z', value: 0.224 }] }],
+      });
+      const result = await makeService().searchTv(
+        { query: '"climate change" market:"National"', combined: true, normalize },
+        createMockContext(),
+      );
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(request.mock.calls[0]?.[1].get('datacomb')).toBe('combined');
+      expect(request.mock.calls[0]?.[1].get('datanorm')).toBe(normalize ? 'perc' : 'raw');
+      expect(result.series).toEqual([
+        { stationName: 'Combined', data: [{ date: '2020-01-01T12:00:00Z', value: 0.224 }] },
+      ]);
+      expect(result).not.toHaveProperty('stationCatalogUnavailable');
+    },
+  );
+
+  it('keeps separate station requests free of datacomb', async () => {
+    const request = vi
+      .spyOn(gdeltFetchModule, 'gdeltFetch')
+      .mockResolvedValueOnce({ timeline: [] });
+    await makeService().searchTv({ query: 'x' }, createMockContext());
+    expect(request.mock.calls[0]?.[1].has('datacomb')).toBe(false);
+  });
+
   it('maps timeline series to TvSearchSeries shape', async () => {
     const raw = {
       timeline: [
@@ -285,7 +445,7 @@ describe('GdeltTvService.searchTv', () => {
           ],
         },
       ],
-      dateresolution: 'day',
+      query_details: { date_resolution: 'day' },
     };
     vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce(raw);
     const ctx = createMockContext();
@@ -371,7 +531,7 @@ describe('GdeltTvService.searchTv', () => {
     let capturedParams: URLSearchParams | undefined;
     vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockImplementationOnce((_url, params) => {
       capturedParams = params;
-      return Promise.resolve({ timeline: [], dateresolution: 'week' });
+      return Promise.resolve({ timeline: [], query_details: { date_resolution: 'week' } });
     });
     const result = await makeService().searchTv(
       { query: 'test', smoothing: 4, dateres: 'week' },
@@ -387,10 +547,13 @@ describe('GdeltTvService.searchTv', () => {
     'preserves recognized upstream %s resolution metadata',
     async (dateresolution) => {
       vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({
-        timeline: [],
-        dateresolution,
+        timeline: [{ series: 'CNN', data: [{ date: '20200101T120000Z', value: 1 }] }],
+        query_details: { date_resolution: dateresolution },
       });
-      const result = await makeService().searchTv({ query: 'test' }, createMockContext());
+      const result = await makeService().searchTv(
+        { query: 'test', dateres: 'year' },
+        createMockContext(),
+      );
       expect(result.dateResolution).toBe(dateresolution);
     },
   );
@@ -414,6 +577,76 @@ describe('GdeltTvService.searchTv', () => {
       '2024-01-01T23:00:00Z',
       '2024-01-02T00:00:00Z',
       '2024-01-02T01:00:00Z',
+    ]);
+  });
+
+  it.each([undefined, 'unknown'])(
+    'retains requested resolution when nested metadata is %s',
+    async (date_resolution) => {
+      vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({
+        query_details: { date_resolution },
+        dateresolution: 'year',
+        timeline: [{ series: 'CNN', data: [{ date: '20200101T120000Z', value: 1 }] }],
+      });
+      const result = await makeService().searchTv(
+        { query: 'test', dateres: 'month' },
+        createMockContext(),
+      );
+      expect(result.dateResolution).toBe('month');
+    },
+  );
+
+  it('ignores unsupported top-level resolution and infers intervals', async () => {
+    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({
+      query_details: { date_resolution: 'unknown' },
+      dateresolution: 'year',
+      timeline: [
+        {
+          series: 'CNN',
+          data: [
+            { date: '20200101T120000Z', value: 1 },
+            { date: '20200102T120000Z', value: 2 },
+          ],
+        },
+      ],
+    });
+    const result = await makeService().searchTv({ query: 'test' }, createMockContext());
+    expect(result.dateResolution).toBe('day');
+  });
+
+  it('preserves the captured smoothing-30 dates and values and complete station selector', async () => {
+    const stations = Array.from({ length: 15 }, (_, i) => `S${i}`);
+    const request = vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({
+      query_details: { date_resolution: 'day' },
+      timeline: [
+        {
+          series: 'CNN',
+          data: [
+            { date: '20200130T120000Z', value: 0.1987 },
+            { date: '20200131T120000Z', value: 0.1929 },
+            { date: '20200201T120000Z', value: 0.1871 },
+          ],
+        },
+      ],
+    });
+    const result = await makeService().searchTv(
+      {
+        query: '"climate change"',
+        stations,
+        smoothing: 30,
+        startDatetime: '20200101000000',
+        endDatetime: '20200201000000',
+      },
+      createMockContext(),
+    );
+    expect(request.mock.calls[0]?.[1].get('query')).toBe(
+      `"climate change" (${stations.map((station) => `station:${station}`).join(' OR ')})`,
+    );
+    expect(request.mock.calls[0]?.[1].get('timelinesmooth')).toBe('30');
+    expect(result.series[0]?.data).toEqual([
+      { date: '2020-01-30T12:00:00Z', value: 0.1987 },
+      { date: '2020-01-31T12:00:00Z', value: 0.1929 },
+      { date: '2020-02-01T12:00:00Z', value: 0.1871 },
     ]);
   });
 });

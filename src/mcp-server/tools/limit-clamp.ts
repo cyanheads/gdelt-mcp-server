@@ -1,18 +1,27 @@
 /**
- * @fileoverview Per-call cap clamping for the count inputs that carry one (`maxRecords`,
- * `limit`): a request above the cap — up to {@link CLAMP_HEADROOM} times it — runs exactly as a
- * request at the cap and discloses the clamp, instead of failing as invalid arguments.
+ * @fileoverview Count validation and observable per-call cap clamping.
  * @module mcp-server/tools/limit-clamp
  */
 
 import { type Context, z } from '@cyanheads/mcp-ts-core';
+import { createCounter } from '@cyanheads/mcp-ts-core/utils';
+import { getServerConfig } from '../../config/server-config.js';
 
-/**
- * How far past its per-call cap a count input is still accepted, as a multiple of the cap.
- * Up to it the value is clamped to the cap; past it the schema rejects the call, which keeps a
- * hard ceiling against absurd input.
- */
-export const CLAMP_HEADROOM = 10;
+/** Resolve after startup configuration and .env loading, without parsing config during imports. */
+export function countInputSchema(cap: number, defaultValue: number, description: string) {
+  return z
+    .lazy(() => {
+      const count = z
+        .number()
+        .min(1)
+        .multipleOf(1)
+        .refine(Number.isSafeInteger, 'Count must be a safe integer.');
+      return (getServerConfig().clampLimits ? count : count.max(cap)).default(defaultValue);
+    })
+    .describe(description);
+}
+
+let clampCounter: ReturnType<typeof createCounter> | undefined;
 
 /** The `limitClamp` enrichment field each clamping tool declares. */
 export const limitClampSchema = z
@@ -48,5 +57,11 @@ export function clampToCap(
 ): number {
   if (requested <= cap) return requested;
   ctx.enrich({ limitClamp: { parameter, requested, applied: cap } satisfies LimitClamp });
+  ctx.log.info('Count clamped to its per-call cap.', { parameter, requested, applied: cap });
+  clampCounter ??= createCounter(
+    'gdelt.limit_clamps',
+    'Count requests clamped to the per-call cap.',
+  );
+  clampCounter.add(1, { parameter });
   return cap;
 }

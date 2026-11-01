@@ -11,15 +11,18 @@ import { getGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
 import {
   describeDateRangeFault,
   GDELT_DATETIME_PATTERN,
-  gdeltDocTimespanSchema,
+  refineDocTimespan,
 } from '../date-range.js';
-import { escapeMarkdown, markdownQuote, renderQueryEcho } from '../markdown-escape.js';
-import { pageByOffset, recordCharge } from '../response-budget.js';
+import {
+  clampToCap,
+  countInputSchema,
+  limitClampSchema,
+  renderLimitClamp,
+} from '../limit-clamp.js';
+import { escapeMarkdown, markdownQuote, quoteText, renderQueryEcho } from '../markdown-escape.js';
 
 /** Series ranked into the topSeries overview; the rest are named in otherSeriesLabels. */
 const MAX_SERIES = 10;
-
-const SERIES_NOUN = { singular: 'series', plural: 'series' };
 
 /**
  * One language or country coverage series. Shared by the ranked `topSeries` overview and
@@ -58,15 +61,15 @@ function renderSeries(series: z.infer<typeof breakdownSeriesSchema>): string[] {
     series.data[0] ?? { date: '', value: 0 },
   );
   const lines = [
-    `\n### ${escapeMarkdown(series.label)} (sum of values: ${sum.toFixed(2)})`,
+    `\n### ${escapeMarkdown(series.label)} (sum of values: ${sum})`,
     `Data points: ${series.data.length}`,
   ];
-  if (peak.date) lines.push(`Peak: ${peak.value.toFixed(3)} at ${escapeMarkdown(peak.date)}`);
+  if (peak.date) lines.push(`Peak: ${peak.value} at ${escapeMarkdown(peak.date)}`);
   for (const d of series.data) lines.push(renderPoint(d));
   return lines;
 }
 
-/** The otherSeriesLabels block — rendered on every overview page, so charged before any series. */
+/** The otherSeriesLabels block, rendered on every overview page. */
 function renderOtherLabels(labels: readonly string[]): string[] {
   return [
     `\n### Series beyond the top ${MAX_SERIES} (${labels.length})`,
@@ -77,7 +80,7 @@ function renderOtherLabels(labels: readonly string[]): string[] {
 
 /** One `- date: value` list line; the upstream date is the list item's first text. */
 function renderPoint(point: { date: string; value: number }): string {
-  return `- ${escapeMarkdown(point.date, 'line-start')}: ${point.value.toFixed(3)}`;
+  return `- ${escapeMarkdown(point.date, 'line-start')}: ${point.value}`;
 }
 
 export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
@@ -89,7 +92,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
     'story propagated geographically or across language communities. ' +
     'Returns the top 10 series ranked by the sum of their values and names every other series under ' +
     'otherSeriesLabels — pass any labels, ranked or not, as the series input to get only those series, complete. ' +
-    'A response carries as many whole series as fit its size budget; when more remain it returns nextOffset — ' +
+    'A response carries limit series (default 10, cap 75); when more remain it returns nextOffset — ' +
     'pass it back as offset with otherwise identical inputs for the next page. ' +
     "Values are normalized: each point is the topic's share of that source's media output, not an absolute " +
     'article count, so values from different sources do not add up to a share. ' +
@@ -133,9 +136,9 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       reason: 'gdelt_rate_limited',
       code: JsonRpcErrorCode.RateLimited,
       when: 'GDELT rejected the request for its one-request-per-five-seconds limit, or too many requests were already queued for this one to start in time.',
-      retryable: false,
+      retryable: true,
       recovery:
-        'Wait at least 5 seconds before retrying; GDELT accepts at most one request every 5 seconds.',
+        'Back off before retrying; five seconds is minimum request spacing, not a recovery guarantee, and rate limiting may persist longer. Honor Retry-After when supplied.',
       thrownBy: 'service',
     },
     {
@@ -148,63 +151,80 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
     },
   ],
 
-  input: z.object({
-    query: z
-      .string()
-      .min(1)
-      .describe(
-        'Search query using GDELT syntax. Same operators as gdelt_search_articles: ' +
-          'phrases, boolean OR, sourcecountry:, sourcelang:, domain:, theme: (GKG theme identifiers ' +
-          'come from gdelt_search_themes).',
+  input: z
+    .object({
+      query: z
+        .string()
+        .min(1)
+        .describe(
+          'Search query using GDELT syntax. Same operators as gdelt_search_articles: ' +
+            'phrases, boolean OR, sourcecountry:, sourcelang:, domain:, theme: (GKG theme identifiers ' +
+            'come from gdelt_search_themes).',
+        ),
+      breakdownBy: z
+        .enum(['language', 'country'])
+        .describe(
+          'Breakdown dimension: "language" for source language time series, ' +
+            '"country" for source country time series.',
+        ),
+      timespan: z
+        .string()
+        .optional()
+        .describe(
+          'Time window relative to now, minimum "15min"; other examples: "24h", "7d", "1m". ' +
+            'Ignored when startDatetime/endDatetime are set. Maximum 3 months.',
+        ),
+      startDatetime: z
+        .string()
+        .regex(GDELT_DATETIME_PATTERN, 'startDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
+        .optional()
+        .describe(
+          'Start datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
+            '(e.g. 20240101000000). Must pair with endDatetime; supplying only one of the two is rejected.',
+        ),
+      endDatetime: z
+        .string()
+        .regex(GDELT_DATETIME_PATTERN, 'endDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
+        .optional()
+        .describe(
+          'End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
+            '(e.g. 20240131235959). Must pair with startDatetime; supplying only one of the two is rejected.',
+        ),
+      smoothing: z
+        .number()
+        .int()
+        .min(0)
+        .max(30)
+        .optional()
+        .describe(
+          'Trailing moving-average width in timesteps (0–30; 0 or 1 leaves values unsmoothed). Width N needs N source steps, omitting leading steps without a full window and potentially shifting peaks later.',
+        ),
+      series: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Exact series labels to return instead of the ranked overview, e.g. ["Portuguese Volume Intensity", "Vietnamese Volume Intensity"]. ' +
+            'Take them verbatim from otherSeriesLabels or topSeries[].label in a response, or from the label ' +
+            'list an unknown_series error prints. Each one comes back complete under selectedSeries, in the ' +
+            'order requested; a label that matches nothing is rejected rather than silently skipped. Omit to ' +
+            'get the ranked overview.',
+        ),
+      limit: countInputSchema(
+        75,
+        10,
+        'Maximum series per page (default 10, cap 75). Larger counts clamp to 75 unless GDELT_CLAMP_LIMITS=false.',
       ),
-    breakdownBy: z
-      .enum(['language', 'country'])
-      .describe(
-        'Breakdown dimension: "language" for source language time series, ' +
-          '"country" for source country time series.',
-      ),
-    timespan: gdeltDocTimespanSchema
-      .optional()
-      .describe(
-        'Time window relative to now, minimum "15min"; other examples: "24h", "7d", "1m". ' +
-          'Ignored when startDatetime/endDatetime are set. Maximum 3 months.',
-      ),
-    startDatetime: z
-      .string()
-      .regex(GDELT_DATETIME_PATTERN, 'startDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
-      .optional()
-      .describe(
-        'Start datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-          '(e.g. 20240101000000). Must pair with endDatetime; supplying only one of the two is rejected.',
-      ),
-    endDatetime: z
-      .string()
-      .regex(GDELT_DATETIME_PATTERN, 'endDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
-      .optional()
-      .describe(
-        'End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-          '(e.g. 20240131235959). Must pair with startDatetime; supplying only one of the two is rejected.',
-      ),
-    series: z
-      .array(z.string())
-      .optional()
-      .describe(
-        'Exact series labels to return instead of the ranked overview, e.g. ["Portuguese", "Vietnamese"]. ' +
-          'Take them verbatim from otherSeriesLabels or topSeries[].label in a response, or from the label ' +
-          'list an unknown_series error prints. Each one comes back complete under selectedSeries, in the ' +
-          'order requested; a label that matches nothing is rejected rather than silently skipped. Omit to ' +
-          'get the ranked overview.',
-      ),
-    offset: z
-      .number()
-      .int()
-      .min(0)
-      .default(0)
-      .describe(
-        'Zero-based series offset — into the ranked top 10, or into the series named in series. Pass ' +
-          'nextOffset from the preceding response, with otherwise identical inputs, to get the next page.',
-      ),
-  }),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .default(0)
+        .describe(
+          'Zero-based series offset — into the ranked top 10, or into the series named in series. Pass ' +
+            'nextOffset from the preceding response, with otherwise identical inputs, to get the next page.',
+        ),
+    })
+    .superRefine(refineDocTimespan),
 
   output: z.object({
     dateResolution: z
@@ -248,6 +268,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
   // empty-result or paging notice. Reaches structuredContent and content[] automatically; never
   // in the domain return.
   enrichment: {
+    limitClamp: limitClampSchema,
     effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
     breakdownBy: z
       .enum(['language', 'country'])
@@ -274,6 +295,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
   },
 
   enrichmentTrailer: {
+    limitClamp: { render: renderLimitClamp },
     effectiveQuery: { render: renderQueryEcho },
   },
 
@@ -288,6 +310,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       breakdownBy: input.breakdownBy,
     });
     const svc = getGdeltDocService();
+    const limit = clampToCap(ctx, 'limit', input.limit, 75);
 
     const modeMap = {
       language: 'timelinelang',
@@ -301,6 +324,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
         ...(input.timespan && { timespan: input.timespan }),
         ...(input.startDatetime && { startDatetime: input.startDatetime }),
         ...(input.endDatetime && { endDatetime: input.endDatetime }),
+        ...(input.smoothing != null && { smoothing: input.smoothing }),
       },
       ctx,
     );
@@ -332,21 +356,21 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
         else unknown.push(label);
       }
       if (unknown.length > 0) {
-        const named = unknown.map(markdownQuote).join(', ');
-        const labels = sorted.map((s) => escapeMarkdown(s.label)).join(', ');
+        const named = unknown.map(quoteText).join(', ');
+        const labels = sorted.map((s) => s.label).join(', ');
         throw ctx.fail('unknown_series', `No ${input.breakdownBy} series named ${named}`, {
           unknownLabels: unknown,
           recovery: {
             hint:
               `This breakdown has no ${input.breakdownBy} series named ${named}. Labels are exact and ` +
-              `case-sensitive. Available for ${markdownQuote(input.query)}: ${labels}.`,
+              `case-sensitive. Available for ${quoteText(input.query)}: ${labels}.`,
           },
         });
       }
     }
 
     // The pageable units: the selected series in requested order, or the ranked top 10, whose
-    // pages each carry otherSeriesLabels — charged before any series.
+    // pages each carry otherSeriesLabels.
     const units = isSelection ? selectedSeries : topSeries;
     if (!isEmpty && input.offset >= units.length) {
       const scope = isSelection
@@ -359,18 +383,9 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       });
     }
     const overviewLabels = isSelection ? undefined : otherSeriesLabels;
-    const page = isEmpty
-      ? undefined
-      : pageByOffset(
-          units,
-          (s) => recordCharge(s, renderSeries(s).join('\n')),
-          input.offset,
-          SERIES_NOUN,
-          overviewLabels
-            ? recordCharge(overviewLabels, renderOtherLabels(overviewLabels).join('\n'))
-            : 0,
-        );
-    const pageSeries = page ? units.slice(input.offset, page.end) : units;
+    const end = Math.min(input.offset + limit, units.length);
+    const nextOffset = !isEmpty && end < units.length ? end : undefined;
+    const pageSeries = isEmpty ? units : units.slice(input.offset, end);
 
     const allDates = allSeries.flatMap((s) => s.data.map((d) => d.date));
     const dateResolution = inferDateResolution(allDates);
@@ -395,7 +410,16 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
         notices.push('The series input was not applied — this breakdown has no series.');
       }
     }
-    if (page?.notice) notices.push(page.notice);
+    if (!isEmpty && (input.offset > 0 || nextOffset != null)) {
+      notices.push(
+        `Returned series ${input.offset + 1}–${end} of ${units.length} series${nextOffset != null ? `; continue with offset ${nextOffset} (nextOffset) and otherwise identical inputs.` : ' — the last page.'}`,
+      );
+    }
+    if ((input.smoothing ?? 0) > 1) {
+      notices.push(
+        `A trailing moving average of width ${input.smoothing} needs that many source steps; leading steps without a full window are omitted and peaks may appear later.`,
+      );
+    }
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
     ctx.log.info('gdelt_get_coverage_breakdown completed', {
@@ -408,7 +432,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       ...(dateResolution && { dateResolution }),
       ...(isSelection ? { selectedSeries: pageSeries } : { topSeries: pageSeries }),
       ...(overviewLabels && { otherSeriesLabels: overviewLabels }),
-      ...(page?.nextOffset != null && { nextOffset: page.nextOffset }),
+      ...(nextOffset != null && { nextOffset }),
     };
   },
 

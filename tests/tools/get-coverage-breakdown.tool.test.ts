@@ -46,6 +46,119 @@ function mockBreakdown(series: unknown) {
 }
 
 describe('gdeltGetCoverageBreakdown', () => {
+  it('renders exact breakdown values and peaks in both the overview and selection', async () => {
+    const supplied = [
+      {
+        label: 'English Volume Intensity',
+        data: [
+          { date: '2026-10-21', value: 0.2837 },
+          { date: '2026-10-22', value: 1.23456789 },
+        ],
+      },
+    ];
+    const getBreakdown = vi.fn().mockResolvedValue(supplied);
+    vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+      getBreakdown,
+    } as unknown as docServiceModule.GdeltDocService);
+    for (const series of [undefined, ['English Volume Intensity']]) {
+      const response = await runToolContract(gdeltGetCoverageBreakdown, {
+        query: 'bird flu',
+        breakdownBy: 'language',
+        ...(series && { series }),
+      });
+      expect(response.isError).toBeFalsy();
+      expect(response.structuredContent).toMatchObject(
+        series ? { selectedSeries: supplied } : { topSeries: supplied },
+      );
+      expect(contentText(response)).toContain('- 2026-10-21: 0.2837');
+      expect(contentText(response)).toContain('- 2026-10-22: 1.23456789');
+      expect(contentText(response)).toContain('Peak: 1.23456789 at 2026-10-22');
+    }
+    expect(getBreakdown).toHaveBeenCalledTimes(2);
+  });
+  it('pages by count and composes a smoothing notice without altering selected labels', async () => {
+    const getBreakdown = vi.fn().mockResolvedValue(MANY_SERIES);
+    vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+      getBreakdown,
+    } as unknown as docServiceModule.GdeltDocService);
+    const result = await runToolContract(gdeltGetCoverageBreakdown, {
+      query: 'test',
+      breakdownBy: 'language',
+      limit: 1,
+      smoothing: 30,
+      series: ['Country11', 'Country0'],
+    });
+    expect(result.structuredContent).toMatchObject({
+      selectedSeries: [MANY_SERIES[11]],
+      nextOffset: 1,
+      notice: expect.stringContaining('moving average'),
+    });
+    expect(contentText(result)).toContain('moving average');
+    expect(contentText(result)).toContain('Next offset:** 1');
+    expect(getBreakdown).toHaveBeenCalledWith(
+      expect.objectContaining({ smoothing: 30 }),
+      expect.anything(),
+    );
+  });
+
+  it.each([undefined, 0, 1, 6, 30])(
+    'composes smoothing %s with an empty breakdown and ignores offset',
+    async (smoothing) => {
+      mockBreakdown([]);
+      const result = await runToolContract(gdeltGetCoverageBreakdown, {
+        query: 'test',
+        breakdownBy: 'language',
+        offset: 42,
+        ...(smoothing != null && { smoothing }),
+      });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({
+        topSeries: [],
+        notice: expect.stringContaining('No breakdown data'),
+      });
+      if ((smoothing ?? 0) > 1)
+        expect(contentText(result)).toContain('leading steps without a full window');
+      else expect(contentText(result)).not.toContain('moving average');
+    },
+  );
+
+  it('caps selected series at 75 and preserves exact provider labels on each page', async () => {
+    const supplied = Array.from({ length: 76 }, (_, i) => ({
+      label: `Language ${i} Volume Intensity`,
+      data: [{ date: '2026-10-21', value: i }],
+    }));
+    const getBreakdown = vi.fn().mockResolvedValue(supplied);
+    vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+      getBreakdown,
+    } as unknown as docServiceModule.GdeltDocService);
+    const series = supplied.map((s) => s.label).reverse();
+    const result = await runToolContract(gdeltGetCoverageBreakdown, {
+      query: 'test',
+      breakdownBy: 'language',
+      series,
+      limit: 76,
+    });
+    expect(result.structuredContent).toMatchObject({
+      limitClamp: { parameter: 'limit', requested: 76, applied: 75 },
+      nextOffset: 75,
+    });
+    expect((result.structuredContent as { selectedSeries: unknown[] }).selectedSeries).toEqual(
+      supplied.toReversed().slice(0, 75),
+    );
+    expect(contentText(result).match(/Limit clamped:/g)).toHaveLength(1);
+    expect(getBreakdown).toHaveBeenCalledTimes(1);
+    const last = await runToolContract(gdeltGetCoverageBreakdown, {
+      query: 'test',
+      breakdownBy: 'language',
+      series,
+      limit: 75,
+      offset: 75,
+    });
+    expect(last.structuredContent).toMatchObject({ selectedSeries: [supplied[0]] });
+    expect(last.structuredContent).not.toHaveProperty('limitClamp');
+    expect(last.structuredContent).not.toHaveProperty('nextOffset');
+    expect(contentText(last)).toContain('Language 0 Volume Intensity');
+  });
   beforeEach(() => {
     mockBreakdown(SERIES);
   });
@@ -203,7 +316,7 @@ describe('gdeltGetCoverageBreakdown', () => {
     expect(text).toContain('United States');
     expect(text).toContain('China');
     // Peak data point for US is 5.0
-    expect(text).toContain('5.000');
+    expect(text).toContain('Peak: 5 at 2024-01-01');
   });
 
   /**
@@ -231,7 +344,7 @@ describe('gdeltGetCoverageBreakdown', () => {
     const blocks = gdeltGetCoverageBreakdown.format!({ dateResolution: 'day', topSeries });
     const text = (blocks[0] as { text: string }).text;
     for (const s of topSeries) {
-      for (const d of s.data) expect(text).toContain(`- ${d.date}: ${d.value.toFixed(3)}`);
+      for (const d of s.data) expect(text).toContain(`- ${d.date}: ${d.value}`);
     }
   });
 
@@ -364,7 +477,7 @@ describe('gdeltGetCoverageBreakdown', () => {
       });
       const text = (blocks[0] as { text: string }).text;
       for (const d of selectedSeries[0]!.data) {
-        expect(text).toContain(`- ${d.date}: ${d.value.toFixed(3)}`);
+        expect(text).toContain(`- ${d.date}: ${d.value}`);
       }
       expect(text).toContain('Country10');
       expect(text).toContain('series:');
@@ -398,11 +511,11 @@ describe('gdeltGetCoverageBreakdown', () => {
         '## GDELT Coverage Breakdown\n**Date Resolution:** day\n**Values:** normalized — each ' +
           "value is the topic's share of that source's media output, not an article count. Small " +
           'media markets with concentrated coverage rank above large markets with diverse output.\n\n' +
-          '### United States (sum of values: 2.00)\nData points: 1\nPeak: 2.000 at 2024-01-15\n' +
-          '- 2024-01-15: 2.000\n\n### Series beyond the top 10 (2)\nRanked by sum of values. ' +
+          '### United States (sum of values: 2)\nData points: 1\nPeak: 2 at 2024-01-15\n' +
+          '- 2024-01-15: 2\n\n### Series beyond the top 10 (2)\nRanked by sum of values. ' +
           'Re-call with series: ["<label>"] to get any of them in full.\n- Portugal\n- Viet Nam\n\n' +
           '## Selected Series (1)\nComplete series for the labels requested via the series input.\n\n' +
-          '### Portugal (sum of values: 0.10)\nData points: 1\nPeak: 0.100 at 2024-01-15\n- 2024-01-15: 0.100',
+          '### Portugal (sum of values: 0.1)\nData points: 1\nPeak: 0.1 at 2024-01-15\n- 2024-01-15: 0.1',
       );
     });
 
@@ -428,16 +541,16 @@ describe('gdeltGetCoverageBreakdown', () => {
       expect(selected.selectedSeries[0]?.label).toBe('[Portugal]');
 
       const text = (overview.content[0] as { text: string }).text;
-      expect(text).toContain(String.raw`### United \*States\* (sum of values: 20.00)`);
+      expect(text).toContain(String.raw`### United \*States\* (sum of values: 20)`);
       expect(text).toContain(
         ['- 1\\. Rank', '- \\> quoted', '- \\- dash', '- \\[Portugal\\]'].join('\n'),
       );
       expect((selection.content[0] as { text: string }).text).toContain(
-        String.raw`### \[Portugal\] (sum of values: 1.00)`,
+        String.raw`### \[Portugal\] (sum of values: 1)`,
       );
 
       const html = renderMarkdown(contentText(overview));
-      expect(html).toContain(`<h3>${literalHtml('United *States*')} (sum of values: 20.00)</h3>`);
+      expect(html).toContain(`<h3>${literalHtml('United *States*')} (sum of values: 20)</h3>`);
       for (const label of sc.otherSeriesLabels) {
         expect(html).toContain(`<li>${literalHtml(label)}</li>`);
       }
@@ -473,7 +586,7 @@ describe('gdeltGetCoverageBreakdown', () => {
       expect(text).not.toMatch(/^### Other$/m);
       expect(text).not.toContain('Total: 120');
       expect(text).not.toMatch(/\(total: /);
-      expect(text).toContain('### Country A (sum of values: 60.00)');
+      expect(text).toContain('### Country A (sum of values: 60)');
     });
 
     it('no longer declares otherAggregated in its output schema', () => {
@@ -493,11 +606,9 @@ describe('gdeltGetCoverageBreakdown', () => {
   });
 
   /**
-   * #54: both surfaces are bounded by the shared per-surface byte budget. The fixture sits at
-   * 200 country series of 288 15-minute points. The overview pages topSeries in rank order with
-   * otherSeriesLabels on every page; a series selection pages selectedSeries alone.
+   * Count pages preserve full series and exact labels, independent of rendered size.
    */
-  describe('response budget (#54)', () => {
+  describe('count paging', () => {
     type Series = { label: string; data: Array<{ date: string; value: number }> };
     type Out = {
       topSeries?: Series[];
@@ -540,10 +651,12 @@ describe('gdeltGetCoverageBreakdown', () => {
       while (offset !== undefined) {
         const result = await call({ ...input, offset });
         expect(result.isError).toBeFalsy();
-        const bytes = surfaceBytes(result);
-        expect(bytes.structured).toBeLessThanOrEqual(50_000);
-        expect(bytes.text).toBeLessThanOrEqual(50_000);
         const sc = out(result);
+        expect(sc[field]!.length).toBeLessThanOrEqual(Number(input.limit ?? 10));
+        for (const series of sc[field]!) {
+          for (const point of series.data)
+            expect(contentText(result)).toContain(`- ${point.date}: ${point.value}`);
+        }
         if (sc.nextOffset !== undefined) {
           expect(contentText(result)).toContain(`**Next offset:** ${sc.nextOffset}`);
         }
@@ -556,8 +669,8 @@ describe('gdeltGetCoverageBreakdown', () => {
     beforeEach(() => mockBreakdown(BIG));
 
     it('pages the overview in rank order, with otherSeriesLabels on every page', async () => {
-      const { pages, labels } = await walk({}, 'topSeries');
-      expect(pages.length).toBeGreaterThan(1);
+      const { pages, labels } = await walk({ limit: 3 }, 'topSeries');
+      expect(pages.length).toBe(4);
       expect(labels).toEqual(RANKED.slice(0, 10));
       for (const page of pages) {
         expect(page.otherSeriesLabels).toEqual(FOLDED);
@@ -565,9 +678,7 @@ describe('gdeltGetCoverageBreakdown', () => {
         expect(page.dateResolution).toBe('15min');
         expect(page).not.toHaveProperty('selectedSeries');
       }
-      expect(pages[0]!.notice).toMatch(
-        /^Returned series 1–\d+ of 10 series; series \d+ would push/,
-      );
+      expect(pages[0]!.notice).toMatch(/^Returned series 1–3 of 10 series; continue with offset 3/);
       expect(pages.at(-1)!.notice).toMatch(/of 10 series — the last page\.$/);
     });
 
@@ -576,11 +687,7 @@ describe('gdeltGetCoverageBreakdown', () => {
       expect(pages.flatMap((p) => p.topSeries ?? [])).toEqual(BIG.slice(0, 10));
     });
 
-    // 64 full tool calls over a 200 × 288 fixture: about 1 s alone, several times that under
-    // full-suite load, so the timeout is sized to the walk rather than the 5 s default.
-    it('pages a selection of all 190 folded labels as selectedSeries alone, in requested order', {
-      timeout: 30_000,
-    }, async () => {
+    it('pages a selection of all 190 folded labels as selectedSeries alone, in requested order', async () => {
       const { pages, labels } = await walk({ series: FOLDED }, 'selectedSeries');
       expect(labels).toEqual(FOLDED);
       for (const page of pages) {
@@ -590,7 +697,7 @@ describe('gdeltGetCoverageBreakdown', () => {
       }
     });
 
-    it('charges otherSeriesLabels before any series, still emitting one series', async () => {
+    it('returns all ten overview series despite large labels and data', async () => {
       const longLabels = Array.from({ length: 200 }, (_, s) => ({
         ...BIG[s]!,
         label: `${'L'.repeat(400)} ${s}`,
@@ -598,9 +705,11 @@ describe('gdeltGetCoverageBreakdown', () => {
       mockBreakdown(longLabels);
       const result = await call({});
       const sc = out(result);
-      expect(sc.topSeries).toHaveLength(1);
-      expect(sc.nextOffset).toBe(1);
+      expect(sc.topSeries).toHaveLength(10);
+      expect(sc.nextOffset).toBeUndefined();
       expect(sc.otherSeriesLabels).toHaveLength(190);
+      expect(surfaceBytes(result).structured).toBeGreaterThan(50_000);
+      expect(surfaceBytes(result).text).toBeGreaterThan(50_000);
     });
 
     it('fits a 10-or-fewer overview in one page with no continuation or notice', async () => {

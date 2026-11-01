@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/gdelt-mcp-server</h1>
   <p><b>Search and analyze global news coverage and US television transcripts from the GDELT Project's real-time APIs via MCP. STDIO or Streamable HTTP.</b>
-  <div>9 Tools</div>
+  <div>10 Tools</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.7.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/gdelt-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/gdelt-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/gdelt-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.7.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/gdelt-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.4.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/gdelt-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/gdelt-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -29,19 +29,20 @@
 
 ## Overview
 
-News and TV coverage analysis from the GDELT Project: the last 3 months of global news in 65+ languages, and US TV transcripts from 2009 through October 2024 across 150+ stations. Search articles and clips, track coverage spikes, analyze tone, and trace how a story spread across languages and countries.
+News and TV coverage analysis from the GDELT Project: the last 3 months of global news in 65+ languages, and historical TV transcripts across 150+ stations, with coverage dates varying by station. Search articles and clips, track coverage spikes, analyze tone, and compare coverage across languages, countries, stations, and shows.
 
 ### Tools
 
 | Tool | Description |
 |:---|:---|
-| `gdelt_search_articles` | Search the last 3 months of global news coverage (65+ languages) with full-text and filter operators. Fetches up to 250 articles, returns as many as fit a 48,000-byte response, and hands back the date windows to re-query for the rest. |
-| `gdelt_get_coverage_timeline` | Retrieve a time series of coverage volume or average tone for a query. `volume_with_articles` mode includes top articles per spike timestep, with `points` to get named timesteps' full article lists. Pages by `offset` within a 48,000-byte response. |
-| `gdelt_get_tone_distribution` | Get a tone histogram (bins ~−30 to +30) showing whether coverage is uniformly negative, bimodal, or clustered near neutral. Pages by `offset` within a 48,000-byte response. |
-| `gdelt_get_coverage_breakdown` | Break down coverage volume by source language or source country — a multi-series time series showing geographic propagation. Values are normalized shares of media output, not article counts. Pages by `offset` within a 48,000-byte response. |
+| `gdelt_search_articles` | Search recent global news with full-text and filter operators. Returns every fetched in-window article, up to 250 per call, with date-window continuation guidance at the provider ceiling. |
+| `gdelt_get_coverage_timeline` | Track normalized coverage, raw matching-article counts with monitored denominators, or average tone. Expand supplied article references for selected timesteps. |
+| `gdelt_get_tone_distribution` | Get a tone histogram (bins ~−30 to +30) showing whether coverage is uniformly negative, bimodal, or clustered near neutral. |
+| `gdelt_get_coverage_breakdown` | Compare coverage by source language or source country. Values are normalized shares of each source population's media output, not additive article counts. |
 | `gdelt_search_themes` | Find GKG theme identifiers for the `theme:` operator the DOC tools accept — `drought` finds `NATURAL_DISASTER_DROUGHT`, `cyberattack` finds `CYBER_ATTACK` — ranked by the count GDELT's theme lookup lists. |
-| `gdelt_search_tv` | Search US television news closed captions (2009–Oct 2024) and return per-station airtime time series. |
-| `gdelt_get_tv_clips` | Retrieve matching TV clips with transcript excerpts and Internet Archive viewing links — up to 3,000 fetched, as many as fit a 48,000-byte response returned — and the date windows to re-query for the rest. |
+| `gdelt_search_tv` | Search television news closed captions and return separate station timelines or pooled coverage. |
+| `gdelt_get_tv_breakdown` | Rank stations by airtime share or matching-clip count, and shows by share of matching clips. |
+| `gdelt_get_tv_clips` | Retrieve up to 3,000 matching TV clips with transcript excerpts and Internet Archive viewing links, returning every fetched in-window clip. |
 | `gdelt_get_tv_context` | Get the most frequent co-occurring words and phrases from GDELT's relevance-ranked sample of TV clips matching a query. |
 | `gdelt_list_tv_stations` | List TV stations with market, network, and monitoring date ranges — all of them, or filtered by station ID, network, or market — to verify station availability before querying. |
 
@@ -50,28 +51,29 @@ News and TV coverage analysis from the GDELT Project: the last 3 months of globa
 ### `gdelt_search_articles` <sub>tool</sub>
 
 - Full GDELT query syntax: phrases, boolean OR, exclusion, filter operators (`sourcecountry:`, `sourcelang:`, `domain:`, `theme:`, `tone<`/`tone>`), proximity (`near20:`) and repetition (`repeat3:`) — `gdelt_search_themes` finds the identifiers `theme:` takes
-- Configurable sort (`relevance`, `dateDesc`, `dateAsc`, `toneDesc`, `toneAsc`, `hybridRel`) and fetch count, up to 250 per call — a `maxRecords` up to 2,500 runs at 250 and reports the clamp in `limitClamp`; above 2,500 the call is rejected
+- Configurable sort (`relevance`, `dateDesc`, `dateAsc`, `toneDesc`, `toneAsc`, `hybridRel`) and fetch count, up to 250 per call; larger `maxRecords` values clamp to 250 by default
 - Returns URL, title, publication date, domain, language, source country, and social image URL
-- Responses carry as many articles as fit a 48,000-byte budget; the rest are counted in `withheldCount`, and `continuationWindows` gives date windows to re-query for them (de-duplicate by `url`). 250 is a hard ceiling, not a page size, so narrowing the date window is the only way past it
+- Returns every fetched in-window article. At the provider ceiling, `continuationWindows` gives narrower date windows to re-query (de-duplicate by `url`). The ceiling is not a cursor; an indivisible window can still contain more matches than GDELT returns
 - Articles outside an explicit `startDatetime`/`endDatetime` window are dropped, and the notice counts them
 
 ---
 
 ### `gdelt_get_coverage_timeline` <sub>tool</sub>
 
-- Three modes: `volume` (normalized % per timestep), `volume_with_articles` (volume plus top articles per spike — signal detection in one call), `tone` (average sentiment per timestep)
-- Each timestep carries its first 3 article links beside `referenceCount`, the true count; `points: ["<date>"]` returns only the named timesteps, each with every link
-- Responses hold as many whole timesteps as fit a 48,000-byte budget; a cut page returns `nextOffset` to pass back as `offset`. Each series' `pointCount` and `peak` cover the whole series on every page
-- Configurable smoothing (0–5 timesteps) and time range (`timespan`, or explicit `startDatetime`/`endDatetime`); date resolution (`15min`/`hour`/`day`) is inferred from the returned intervals
+- Four modes: `volume` (normalized % per timestep), `volume_raw` (matching-article counts with the monitored-article denominator `norm`), `volume_with_articles` (volume plus supplied top articles), and `tone` (average sentiment)
+- Reference-bearing timesteps carry their first 3 links beside `referenceCount`, the number of references GDELT supplied, not all matching articles. `points: ["<date>"]` selects named timesteps with every supplied link; GDELT's reference list itself is capped at ten
+- Pages whole timesteps with `offset` and `limit` (default 10, cap 400); `nextOffset` retrieves the next page. Each series' `pointCount` and `peak` cover the full series on every page
+- Smoothing accepts 0–30 timesteps. Width N > 1 returns trailing moving averages: the first N−1 source steps cannot produce a value, and peaks can appear later. In `volume_raw`, smoothing changes `value`, not `norm`
+- Time range uses `timespan` or explicit `startDatetime`/`endDatetime`; date resolution (`15min`/`hour`/`day`) is inferred from returned intervals
 - A `points` date matching no timestep, or an `offset` past the last timestep, is rejected with the valid values
 
 ---
 
 ### `gdelt_get_tone_distribution` <sub>tool</sub>
 
-- Histogram bins from approximately −30 to +30; each bin carries its first 3 article links beside `referenceCount`, and `bins: [<bin>]` returns only the named bins, each with every link. A `bins` value matching no bin is rejected with the available bins
+- Histogram bins from approximately −30 to +30; each bin's `count` counts matching articles, while `referenceCount` counts supplied links. The default preview shows 3 links; `bins: [<bin>]` selects named bins with every supplied link. An unknown bin is rejected with the available bins
 - Summary fields over the whole histogram: `peakNegativeBin`, `peakPositiveBin`, `neutralPct` (% of articles in the −2 to +2 range)
-- Responses hold as many whole bins as fit a 48,000-byte budget; a cut page returns `nextOffset` to pass back as `offset`. A snapshot across all matching articles, unlike the tone timeline (`gdelt_get_coverage_timeline` mode `tone`)
+- Pages whole bins with `offset` and `limit` (default 10, cap 400), returning `nextOffset` when more remain. This is a snapshot across matching articles, unlike the tone timeline
 
 ---
 
@@ -79,7 +81,8 @@ News and TV coverage analysis from the GDELT Project: the last 3 months of globa
 
 - Breaks down by `language` or `country` into a multi-series time series: the top 10 series by summed value, with every other series named in `otherSeriesLabels`
 - `series: ["<label>"]` returns only those series, complete, under `selectedSeries`; a label matching no series is rejected with the available labels
-- Responses hold as many whole series as fit a 48,000-byte budget; a cut page returns `nextOffset` to pass back as `offset`
+- Pages whole series with `offset` and `limit` (default 10, cap 75), returning `nextOffset` when more remain. Copy exact labels from the response for `series` selections
+- Smoothing accepts 0–30 timesteps with the same moving-average disclosure as coverage timelines
 - Values are normalized shares of each source's media output, not article counts, so don't sum them across sources
 
 ---
@@ -89,27 +92,37 @@ News and TV coverage analysis from the GDELT Project: the last 3 months of globa
 - Searches the identifiers in GDELT's [GKG theme lookup](https://data.gdeltproject.org/api/v2/guides/LOOKUP-GKGTHEMES.TXT) (59,315 themes); each match is the identifier, its listed count, and a paste-ready `operator` such as `theme:TAX_DISEASE_OUTBREAK`
 - Case-insensitive, with no stemming or synonyms: words match parts of an identifier (`cyberattack` → `CYBER_ATTACK`, `plant disease` → `TAX_PLANTDISEASE`). If nothing matches, it retries once with a trailing `s` dropped (`protests` → `PROTEST`) and the notice says so
 - Ranked by exact match, then listed count (a static prevalence figure, not a live article total), then identifier
-- Pages with `offset` / `limit` (1–100, default 25; a `limit` up to 1,000 runs at 100 and reports the clamp in `limitClamp`, and above 1,000 the call is rejected); `nextOffset` appears only when more matches remain, and an offset past a non-empty result fails `offset_out_of_range`
+- Pages with `offset` / `limit` (default 25, cap 100); larger limits clamp by default. `nextOffset` appears only when more matches remain, and an offset past a non-empty result fails `offset_out_of_range`
 - Does not queue behind the DOC and TV rate limit
 
 ---
 
 ### `gdelt_search_tv` <sub>tool</sub>
 
-- Up to 10 structured `stations` (e.g. `["CNN", "FOXNEWS"]`), or a `station:` selector embedded in the query — the TV API requires at least one, either way
+- Structured `stations` (e.g. `["CNN", "FOXNEWS"]`) preserve the entire requested list. TV queries can also use station, network, or market selectors; verify IDs and coverage dates through the station catalog
 - `normalize` toggles relative airtime % (default) vs. raw matching 15-second clip counts; optional `dateres` aggregation (`hour`/`day`/`week`/`month`/`year`). TV operators: `station:`, `network:`, `market:`, `show:`, `context:`
 - Each series carries `station` (the ID the `stations` input takes, `FOXNEWS`) and `stationName` (GDELT's label, `FOX News`). If an ID can't be resolved, the series keeps `stationName` without `station` and the notice says so
-- Pages at most 500 points per call in date-then-station-name order; pass `nextOffset` with the same inputs for the next page. A `limit` up to 5,000 runs at 500 and reports the clamp in `limitClamp`; above 5,000 the call is rejected. The text surface's per-station count, sum, and peak cover only the returned page
+- Pages points in date-then-station-name order (default 500, cap 20,000); pass `nextOffset` with the same inputs for the next page. The text surface's per-station count, sum, and peak cover only the returned page
+- `combined: true` pools stations into a `Combined` timeline. Normalized values use pooled matching clips divided by pooled monitored clips, not an average of station percentages; no station ID is assigned to the combined series
+- Smoothing accepts 0–30 timesteps and discloses leading-window loss and possible lag. Recognized upstream date resolution takes precedence over requested or inferred resolution
 - Check station date ranges with `gdelt_list_tv_stations` before querying recent events
 
 ---
 
 ### `gdelt_get_tv_clips` <sub>tool</sub>
 
-- Up to 3,000 clips fetched per call, sorted by relevance, date descending, or date ascending — a `maxRecords` up to 30,000 runs at 3,000 and reports the clamp in `limitClamp`; above 30,000 the call is rejected
+- Up to 3,000 clips fetched per call, sorted by relevance, date descending, or date ascending; larger `maxRecords` values clamp to 3,000 by default
 - Each clip: show name, `station` and `stationName` (resolved as in `gdelt_search_tv`, so a series' `station` passes straight into `stations`), air timestamp, 15-second transcript excerpt, direct Archive.org link, and optional thumbnail
 - The server requests whole clock hours, so any window width works; clips outside an explicit `startDatetime`/`endDatetime` window are dropped and counted in the notice (a `timespan` call drops nothing)
-- Responses carry as many clips as fit a 48,000-byte budget; the rest are counted in `withheldCount`, and `continuationWindows` gives date windows to re-query for them (de-duplicate by `archiveUrl`). 3,000 is a hard ceiling, not a page size, so narrowing the date window is the only way past it
+- Returns every fetched in-window clip. At the provider ceiling, `continuationWindows` gives narrower windows to re-query (de-duplicate by `archiveUrl`); whole-hour retrieval can still prevent reaching every match in a dense hour
+
+---
+
+### `gdelt_get_tv_breakdown` <sub>tool</sub>
+
+- Station rankings report percentages of station airtime by default, or matching 15-second clip counts with `normalize: false`; resolvable rows include a station ID
+- Show rankings always report percentages of matching clips, including when `normalize: false`. Labels are preserved exactly, but GDELT sometimes abbreviates them with ellipses, so they are not all reusable `show:` selectors
+- Rows sort by descending value, then label, with `offset` / `limit` paging (default 25, cap 10,000), `totalRows`, and `nextOffset`
 
 ---
 
@@ -118,6 +131,7 @@ News and TV coverage analysis from the GDELT Project: the last 3 months of globa
 - Returns the most frequent non-stopword terms co-occurring with the query
 - Terms and scores come from GDELT's sample of the 200 most relevant matching clips, not all coverage; every non-empty response says so in `notice`. Compare windows or stations with a separate, narrower call for each
 - Relative frequency scores 0–100, where the query term itself scores 100
+- Terms sort by score and page with `offset` / `limit` (default 25, cap 25,000). `totalTerms` counts the returned vocabulary across all pages, not matching clips; `nextOffset` and `truncated` disclose remaining terms
 
 ---
 
@@ -266,6 +280,7 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `GDELT_BASE_URL` | Override the GDELT API base URL for both DOC and TV APIs. | `https://api.gdeltproject.org/api/v2` |
 | `GDELT_REQUEST_DELAY_MS` | Minimum milliseconds between GDELT requests (enforces 1 req/5s limit). | `5300` |
 | `GDELT_REQUEST_TIMEOUT_MS` | Deadline for a single GDELT request (a call with retries is bounded at twice this). | `60000` |
+| `GDELT_CLAMP_LIMITS` | Clamp oversized positive integer counts to each tool's served cap, with `limitClamp`, a log, and a counter. Set `false` to reject above-cap counts instead. | `true` |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_PORT` | Port for the HTTP server. | `3010` |
 | `MCP_HTTP_ENDPOINT_PATH` | HTTP endpoint path where the MCP server is mounted. | `/mcp` |
@@ -319,7 +334,7 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 |:----------|:--------|
 | `src/index.ts` | `createApp()` entry point — registers tools and inits services. |
 | `src/config` | Server-specific environment variable parsing and validation with Zod. |
-| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). Nine tools across the DOC and TV APIs and the GKG theme lookup. |
+| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). Ten tools across the DOC and TV APIs and the GKG theme lookup. |
 | `src/services/gdelt` | `GdeltDocService` and `GdeltTvService` wrapping the DOC and TV APIs, the shared outbound pacer every DOC and TV call queues behind, and `GdeltThemeService` for the GKG theme lookup. |
 | `tests/` | Unit and integration tests mirroring `src/`. |
 

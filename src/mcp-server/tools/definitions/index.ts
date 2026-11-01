@@ -6,6 +6,7 @@
 export { gdeltGetCoverageBreakdown } from './get-coverage-breakdown.tool.js';
 export { gdeltGetCoverageTimeline } from './get-coverage-timeline.tool.js';
 export { gdeltGetToneDistribution } from './get-tone-distribution.tool.js';
+export { gdeltGetTvBreakdown } from './get-tv-breakdown.tool.js';
 export { gdeltGetTvClips } from './get-tv-clips.tool.js';
 export { gdeltGetTvContext } from './get-tv-context.tool.js';
 export { gdeltListTvStations } from './list-tv-stations.tool.js';

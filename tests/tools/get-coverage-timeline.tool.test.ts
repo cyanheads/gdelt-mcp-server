@@ -31,6 +31,194 @@ const DAY_SERIES = [
 ];
 
 describe('gdeltGetCoverageTimeline', () => {
+  it('renders smoothed raw values and the full-result peak without losing numeric precision', async () => {
+    const getTimeline = vi.fn().mockResolvedValue([
+      {
+        label: 'Article Count',
+        data: [
+          { date: '2026-10-21T15:00:00Z', value: 0.2837, norm: 11825 },
+          { date: '2026-10-21T16:00:00Z', value: 1.23456789, norm: 12000 },
+        ],
+      },
+    ]);
+    vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+      getTimeline,
+    } as unknown as docServiceModule.GdeltDocService);
+    const response = await runToolContract(gdeltGetCoverageTimeline, {
+      query: 'bird flu',
+      mode: 'volume_raw',
+      smoothing: 6,
+      limit: 1,
+    });
+    expect(response.isError).toBeFalsy();
+    expect(response.structuredContent).toMatchObject({
+      series: [
+        {
+          data: [{ date: '2026-10-21T15:00:00Z', value: 0.2837, norm: 11825 }],
+          peak: { date: '2026-10-21T16:00:00Z', value: 1.23456789, norm: 12000 },
+        },
+      ],
+      nextOffset: 1,
+    });
+    expect(contentText(response)).toContain('- 2026-10-21T15:00:00Z: 0.2837 (monitored: 11825)');
+    expect(contentText(response)).toContain(
+      '**Peak:** 1.23456789 at 2026-10-21T16:00:00Z (monitored: 12000)',
+    );
+    expect(getTimeline).toHaveBeenCalledTimes(1);
+  });
+  it('preserves raw denominators through selection and count pages on both surfaces', async () => {
+    const getTimeline = vi.fn().mockResolvedValue([
+      {
+        label: 'Article Count',
+        data: [
+          { date: '2026-10-21T15:00:00Z', value: 0, norm: 10000 },
+          { date: '2026-10-21T16:00:00Z', value: 11, norm: 11825 },
+          { date: '2026-10-21T17:00:00Z', value: 5.5, norm: 12000 },
+        ],
+      },
+    ]);
+    vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+      getTimeline,
+    } as unknown as docServiceModule.GdeltDocService);
+    const result = await runToolContract(gdeltGetCoverageTimeline, {
+      query: 'bird flu',
+      mode: 'volume_raw',
+      limit: 1,
+      offset: 2,
+      smoothing: 6,
+    });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({
+      mode: 'volume_raw',
+      totalCount: 3,
+      series: [{ data: [{ value: 5.5, norm: 12000 }], peak: { value: 11 } }],
+    });
+    expect(contentText(result)).toContain('monitored: 12000');
+    expect(contentText(result)).toContain('moving average');
+    expect(getTimeline).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: 'timelinevolraw', smoothing: 6 }),
+      expect.anything(),
+    );
+  });
+
+  it('uses a supplied-reference caption rather than a true matching-article total', () => {
+    const text = contentText({
+      content: gdeltGetCoverageTimeline.format!({
+        series: [
+          {
+            label: 'Volume',
+            data: [
+              {
+                date: '2026-10-21',
+                value: 11,
+                articles: [{ url: 'https://example.com', title: 'Title' }],
+                referenceCount: 10,
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    expect(text).toContain('supplied references');
+    expect(text).not.toContain('true total');
+  });
+
+  it('pages by requested timestep count even when all points fit the former byte budget', async () => {
+    const getTimeline = vi.fn().mockResolvedValue([
+      {
+        label: 'Volume',
+        data: Array.from({ length: 12 }, (_, i) => ({
+          date: `2026-10-${String(i + 1).padStart(2, '0')}`,
+          value: i,
+        })),
+      },
+    ]);
+    vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+      getTimeline,
+    } as unknown as docServiceModule.GdeltDocService);
+    const result = await runToolContract(gdeltGetCoverageTimeline, { query: 'test', limit: 2 });
+    expect(result.structuredContent).toMatchObject({
+      series: [{ data: [{ value: 0 }, { value: 1 }] }],
+      nextOffset: 2,
+    });
+    expect(contentText(result)).toContain('Next offset:** 2');
+  });
+
+  it('retains raw zero denominators and the full peak through exact point selection', async () => {
+    const getTimeline = vi.fn().mockResolvedValue([
+      {
+        label: 'Article Count',
+        data: [
+          { date: '2026-10-21T15:00:00Z', value: 0, norm: 0 },
+          { date: '2026-10-21T16:00:00Z', value: 11, norm: 11825 },
+        ],
+      },
+    ]);
+    vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+      getTimeline,
+    } as unknown as docServiceModule.GdeltDocService);
+    const result = await runToolContract(gdeltGetCoverageTimeline, {
+      query: 'bird flu',
+      mode: 'volume_raw',
+      points: ['2026-10-21T15:00:00Z'],
+      limit: 1,
+    });
+    expect(result.structuredContent).toMatchObject({
+      expandedPoints: ['2026-10-21T15:00:00Z'],
+      series: [{ data: [{ value: 0, norm: 0 }], peak: { value: 11, norm: 11825 }, pointCount: 2 }],
+    });
+    expect(contentText(result)).toContain('0 (monitored: 0)');
+    expect(contentText(result)).toContain('11 at 2026-10-21T16:00:00Z (monitored: 11825)');
+    expect(contentText(result)).not.toContain('%');
+  });
+
+  it.each([undefined, 0, 1, 6, 30])(
+    'composes smoothing %s with empty results without inventing data',
+    async (smoothing) => {
+      const getTimeline = vi.fn().mockResolvedValue([]);
+      vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+        getTimeline,
+      } as unknown as docServiceModule.GdeltDocService);
+      const result = await runToolContract(gdeltGetCoverageTimeline, {
+        query: 'bird flu',
+        mode: 'volume_raw',
+        offset: 42,
+        ...(smoothing != null && { smoothing }),
+      });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({
+        series: [],
+        notice: expect.stringContaining('No coverage data'),
+      });
+      expect(contentText(result)).not.toContain('Peak:');
+      if ((smoothing ?? 0) > 1)
+        expect(contentText(result)).toContain('leading steps without a full window');
+      else expect(contentText(result)).not.toContain('moving average');
+    },
+  );
+
+  it('applies and discloses the timestep cap once while retaining the next count page', async () => {
+    const getTimeline = vi.fn().mockResolvedValue([
+      {
+        label: 'Volume',
+        data: Array.from({ length: 401 }, (_, value) => ({ date: String(value), value })),
+      },
+    ]);
+    vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
+      getTimeline,
+    } as unknown as docServiceModule.GdeltDocService);
+    const result = await runToolContract(gdeltGetCoverageTimeline, { query: 'test', limit: 401 });
+    expect(result.structuredContent).toMatchObject({
+      limitClamp: { parameter: 'limit', requested: 401, applied: 400 },
+      nextOffset: 400,
+      series: [{ pointCount: 401 }],
+    });
+    expect(
+      (result.structuredContent as { series: Array<{ data: unknown[] }> }).series[0]!.data,
+    ).toHaveLength(400);
+    expect(contentText(result).match(/Limit clamped:/g)).toHaveLength(1);
+    expect(getTimeline).toHaveBeenCalledTimes(1);
+  });
   beforeEach(() => {
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
       getTimeline: vi.fn().mockResolvedValue(VOLUME_SERIES),
@@ -163,7 +351,7 @@ describe('gdeltGetCoverageTimeline', () => {
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('day');
     expect(text).toContain('Volume Intensity');
-    expect(text).toContain('1.200');
+    expect(text).toContain('**Peak:** 1.2 at 2024-01-02');
     expect(text).toContain('2024-01-02');
   });
 
@@ -225,7 +413,7 @@ describe('gdeltGetCoverageTimeline', () => {
       series: [{ label: 'Volume Intensity', data }],
     });
     const text = (blocks[0] as { text: string }).text;
-    for (const d of data) expect(text).toContain(`- ${d.date}: ${d.value.toFixed(3)}`);
+    for (const d of data) expect(text).toContain(`- ${d.date}: ${d.value}`);
     expect(text).not.toContain('more points');
   });
 
@@ -259,9 +447,9 @@ describe('gdeltGetCoverageTimeline', () => {
    * The per-point article list stays capped at ARTICLES_PER_POINT by default while every point
    * renders (see the constant's rationale — rendering all of them measures 566 KB of links at
    * the documented maximum). The cap is neither silent nor a dead end: each point renders its
-   * true upstream article count *and* how many links it showed, and `points` lifts the cap.
+   * supplied-reference count *and* how many links it showed, and `points` lifts the cap.
    */
-  it('discloses both the true article count and how many links it showed when capping', () => {
+  it('discloses both the supplied-reference count and how many links it showed when capping', () => {
     const articles = Array.from({ length: 8 }, (_, i) => ({
       url: `https://news.example/${i}`,
       title: `Headline ${i}`,
@@ -276,7 +464,7 @@ describe('gdeltGetCoverageTimeline', () => {
       ],
     });
     const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('(8 articles, 3 shown)');
+    expect(text).toContain('(8 supplied references, 3 shown)');
     expect(text).toContain('Headline 0');
     expect(text).toContain('Headline 2');
     expect(text).not.toContain('Headline 3');
@@ -301,7 +489,7 @@ describe('gdeltGetCoverageTimeline', () => {
       ],
     });
     const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('(1 articles)');
+    expect(text).toContain('(1 supplied references)');
     expect(text).not.toContain('shown');
   });
 
@@ -341,7 +529,7 @@ describe('gdeltGetCoverageTimeline', () => {
       // The expanded point reaches every article — including the five past the cap.
       for (const a of ARTICLES) expect(text).toContain(`[${a.title}](${a.url})`);
       // …and the point that was not named still shows 3 of its 8.
-      expect(text).toContain('(8 articles, 3 shown)');
+      expect(text).toContain('(8 supplied references, 3 shown)');
       expect(text).toContain('**Fully expanded timesteps:** 2024-01-01T00:00:00Z');
     });
 
@@ -481,9 +669,9 @@ describe('gdeltGetCoverageTimeline', () => {
       });
       expect((blocks[0] as { text: string }).text).toBe(
         '## GDELT Coverage Timeline\n**Date Resolution:** hour\n\n### Volume Intensity\n' +
-          '**Data points:** 2\n**Peak:** 1.500 at 2024-01-15T12:00:00Z\n' +
-          '- 2024-01-15T12:00:00Z: 1.500 (1 articles)\n  - [Alpha story](https://example.com/a)\n' +
-          '- 2024-01-15T13:00:00Z: 0.500',
+          '**Data points:** 2\n**Peak:** 1.5 at 2024-01-15T12:00:00Z\n' +
+          '- 2024-01-15T12:00:00Z: 1.5 (1 supplied references)\n  - [Alpha story](https://example.com/a)\n' +
+          '- 2024-01-15T13:00:00Z: 0.5',
       );
     });
 
@@ -511,11 +699,11 @@ describe('gdeltGetCoverageTimeline', () => {
           '',
           String.raw`### Volume \*Intensity\* \#`,
           '**Data points:** 2',
-          '**Peak:** 1.500 at 2024-01-15T12:00:00Z',
-          '- 2024-01-15T12:00:00Z: 1.500 (2 articles)',
+          '**Peak:** 1.5 at 2024-01-15T12:00:00Z',
+          '- 2024-01-15T12:00:00Z: 1.5 (2 supplied references)',
           String.raw`  - [\<b>A \&amp; B\</b> \[x\](y)](<https://example.com/a_(b)_c?x=1>)`,
           '  - [Plain title](<https://example.com/a b>)',
-          '- 2024-01-15T13:00:00Z: 0.500',
+          '- 2024-01-15T13:00:00Z: 0.5',
         ].join('\n'),
       );
 
@@ -528,12 +716,9 @@ describe('gdeltGetCoverageTimeline', () => {
   });
 
   /**
-   * #54: both surfaces are bounded by the shared per-surface byte budget. Fixtures sit at GDELT's
-   * documented maxima — 288 15-minute timesteps for a window under 72 hours, 10 references per
-   * timestep — with 100-character titles and URLs. Each response is cut into whole timesteps and
-   * walked with offset/nextOffset.
+   * Count pages retain every timestep and its selected references, independent of rendered size.
    */
-  describe('response budget (#54)', () => {
+  describe('count paging', () => {
     type Point = {
       date: string;
       value: number;
@@ -599,17 +784,14 @@ describe('gdeltGetCoverageTimeline', () => {
 
     beforeEach(() => mock(FULL));
 
-    it('keeps both surfaces of the 288-step, 10-reference maximum at or under 50,000 bytes', async () => {
+    it('returns ten timesteps by default with a count continuation on both surfaces', async () => {
       const result = await call({});
       expect(result.isError).toBeFalsy();
-      const bytes = surfaceBytes(result);
-      expect(bytes.structured).toBeLessThanOrEqual(50_000);
-      expect(bytes.text).toBeLessThanOrEqual(50_000);
       const sc = out(result);
-      expect(sc.nextOffset).toBe(sc.series[0]!.data.length);
+      expect(sc.series[0]!.data).toHaveLength(10);
+      expect(sc.nextOffset).toBe(10);
       expect(sc.notice).toBe(
-        `Returned timesteps 1–${sc.nextOffset} of 288 timesteps; timestep ${sc.nextOffset! + 1} would ` +
-          'push this response past its 48,000-byte budget. Continue with offset ' +
+        `Returned timesteps 1–${sc.nextOffset} of 288 timesteps; continue with offset ` +
           `${sc.nextOffset} (nextOffset) and otherwise identical inputs.`,
       );
       expect(contentText(result)).toContain(`**Next offset:** ${sc.nextOffset}`);
@@ -639,7 +821,7 @@ describe('gdeltGetCoverageTimeline', () => {
         const returned = sc.series[0]!.data.length;
         expect(returned).toBeLessThan(288);
         const text = contentText(result);
-        expect(text).toContain(`**Peak:** -9.500 at ${ALL_DATES[250]}`);
+        expect(text).toContain(`**Peak:** -9.5 at ${ALL_DATES[250]}`);
         expect(text).toContain(`**Data points:** 288 in the series, ${returned} in this response`);
         expect(sc.series[0]).toMatchObject({
           pointCount: 288,
@@ -673,30 +855,28 @@ describe('gdeltGetCoverageTimeline', () => {
         const upstream = FULL[0]!.data[i]!;
         expect(point.referenceCount).toBe(10);
         expect(point.articles).toEqual(upstream.articles.slice(0, 3));
-        expect(text).toContain(`- ${point.date}: ${point.value.toFixed(3)} (10 articles, 3 shown)`);
+        expect(text).toContain(`- ${point.date}: ${point.value} (10 supplied references, 3 shown)`);
         for (const a of upstream.articles.slice(0, 3)) expect(text).toContain(link(a));
         expect(text).not.toContain(link(upstream.articles[3]!));
       }
       expect(text.match(/^ {2}- \[/gm)).toHaveLength(page.length * 3);
     });
 
-    it('walks nextOffset over every timestep exactly once, in order, each page within budget', async () => {
+    it('walks nextOffset over every timestep exactly once in count pages', async () => {
       const walked: string[] = [];
       let offset: number | undefined = 0;
       let pages = 0;
       while (offset !== undefined) {
         const result = await call({ offset });
         expect(result.isError).toBeFalsy();
-        const bytes = surfaceBytes(result);
-        expect(bytes.structured).toBeLessThanOrEqual(50_000);
-        expect(bytes.text).toBeLessThanOrEqual(50_000);
         const sc = out(result);
+        expect(sc.series[0]!.data.length).toBeLessThanOrEqual(10);
         expect(sc.totalCount).toBe(288);
         walked.push(...sc.series[0]!.data.map((d) => d.date));
         offset = sc.nextOffset;
         pages++;
       }
-      expect(pages).toBeGreaterThan(1);
+      expect(pages).toBe(29);
       expect(walked).toEqual(ALL_DATES);
     });
 
@@ -733,43 +913,42 @@ describe('gdeltGetCoverageTimeline', () => {
     });
 
     /**
-     * Every page of a points selection carries the expandedPoints echo on both surfaces, so the
-     * echo is charged ahead of the timesteps: all 288 named, each with its 10 references, still
-     * keeps every page within 50,000 bytes.
+     * Every count page of a points selection carries the expandedPoints echo on both surfaces.
      */
-    it('walks points naming every timestep within budget, every timestep once and in order', async () => {
+    it('walks points naming every timestep once and in order', async () => {
       const walked: string[] = [];
       let offset: number | undefined = 0;
       let pages = 0;
       while (offset !== undefined) {
         const result = await call({ points: ALL_DATES, offset });
         expect(result.isError).toBeFalsy();
-        const bytes = surfaceBytes(result);
-        expect(bytes.structured).toBeLessThanOrEqual(50_000);
-        expect(bytes.text).toBeLessThanOrEqual(50_000);
         const sc = out(result);
+        expect(sc.series[0]!.data.length).toBeLessThanOrEqual(10);
         expect(sc.expandedPoints).toEqual(ALL_DATES);
         for (const point of sc.series[0]!.data) expect(point.articles).toHaveLength(10);
         walked.push(...sc.series[0]!.data.map((d) => d.date));
         offset = sc.nextOffset;
         pages++;
       }
-      expect(pages).toBeGreaterThan(1);
+      expect(pages).toBe(29);
       expect(walked).toEqual(ALL_DATES);
     });
 
-    it('emits a timestep larger than the budget alone, continuing from the next one', async () => {
+    it('returns every requested large timestep without a byte cut', async () => {
       const huge = volInfo(3, 10, 6_000);
       mock(huge);
       const dates = huge[0]!.data.map((d) => d.date);
       const first = out(await call({ points: dates }));
-      expect(first.series[0]!.data.map((d) => d.date)).toEqual([dates[0]]);
+      expect(first.series[0]!.data.map((d) => d.date)).toEqual(dates);
       expect(first.series[0]!.data[0]!.articles).toHaveLength(10);
-      expect(first.nextOffset).toBe(1);
-      const second = out(await call({ points: dates, offset: 1 }));
+      expect(first.nextOffset).toBeUndefined();
+      const second = out(await call({ points: dates, offset: 1, limit: 1 }));
       expect(second.series[0]!.data.map((d) => d.date)).toEqual([dates[1]]);
       expect(second.nextOffset).toBe(2);
-      expect(second.notice).toMatch(/^Returned timestep 2 of 3 timesteps; timestep 3 would push/);
+      expect(second.notice).toMatch(
+        /^Returned timesteps 2–2 of 3 timesteps; continue with offset 2/,
+      );
+      expect(surfaceBytes(await call({ points: dates })).structured).toBeGreaterThan(50_000);
     });
 
     it('returns volume mode at 288 timesteps as one page with no continuation or notice', async () => {
@@ -779,7 +958,7 @@ describe('gdeltGetCoverageTimeline', () => {
           data: ALL_DATES.map((date, k) => ({ date, value: k / 1000 })),
         },
       ]);
-      const result = await call({ mode: 'volume' });
+      const result = await call({ mode: 'volume', limit: 400 });
       const sc = out(result);
       expect(sc.series[0]!.data).toHaveLength(288);
       expect(sc).not.toHaveProperty('nextOffset');

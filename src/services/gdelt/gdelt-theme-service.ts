@@ -9,7 +9,7 @@
 import type { Context } from '@cyanheads/mcp-ts-core';
 import { serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 import { fetchWithTimeout } from '@cyanheads/mcp-ts-core/utils';
-import { markdownQuote } from '@/mcp-server/tools/markdown-escape.js';
+import { quoteText } from '@/mcp-server/tools/markdown-escape.js';
 import { GDELT_UNAVAILABLE_DATA } from './gdelt-fetch.js';
 
 /** GDELT's GKG theme lookup — the list the DOC 2.0 documentation links for the `theme:` operator. */
@@ -107,7 +107,7 @@ export class GdeltThemeService {
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       throw serviceUnavailable(
-        `GDELT's GKG theme lookup could not be downloaded: ${markdownQuote(detail)}`,
+        `GDELT's GKG theme lookup could not be downloaded: ${quoteText(detail)}`,
         { ...GDELT_UNAVAILABLE_DATA },
         { cause: error },
       );

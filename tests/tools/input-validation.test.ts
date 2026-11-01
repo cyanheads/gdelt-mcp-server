@@ -1,7 +1,7 @@
 /**
  * @fileoverview Input validation tests for all tool schemas. Verifies that missing,
  * malformed, and out-of-range inputs are rejected by the Zod schemas before handlers run,
- * that count inputs admit their clamp band past the per-call cap, plus the cross-field
+ * that count inputs admit positive safe integers past the per-call cap, plus the cross-field
  * date-range pairing rule the handlers enforce on top.
  * @module tests/tools/input-validation.test
  */
@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest';
 import { gdeltGetCoverageBreakdown } from '@/mcp-server/tools/definitions/get-coverage-breakdown.tool.js';
 import { gdeltGetCoverageTimeline } from '@/mcp-server/tools/definitions/get-coverage-timeline.tool.js';
 import { gdeltGetToneDistribution } from '@/mcp-server/tools/definitions/get-tone-distribution.tool.js';
+import { gdeltGetTvBreakdown } from '@/mcp-server/tools/definitions/get-tv-breakdown.tool.js';
 import { gdeltGetTvClips } from '@/mcp-server/tools/definitions/get-tv-clips.tool.js';
 import { gdeltGetTvContext } from '@/mcp-server/tools/definitions/get-tv-context.tool.js';
 import { gdeltListTvStations } from '@/mcp-server/tools/definitions/list-tv-stations.tool.js';
@@ -75,9 +76,9 @@ describe('gdeltGetCoverageTimeline input validation', () => {
     ).toThrow();
   });
 
-  it('rejects smoothing above 5', () => {
+  it('rejects smoothing above 30', () => {
     expect(() =>
-      gdeltGetCoverageTimeline.input.parse({ query: 'test', mode: 'volume', smoothing: 6 }),
+      gdeltGetCoverageTimeline.input.parse({ query: 'test', mode: 'volume', smoothing: 31 }),
     ).toThrow();
   });
 
@@ -93,14 +94,14 @@ describe('gdeltGetCoverageTimeline input validation', () => {
     ).toThrow();
   });
 
-  it('accepts all three valid mode values', () => {
-    for (const mode of ['volume', 'volume_with_articles', 'tone'] as const) {
+  it('accepts every valid mode value', () => {
+    for (const mode of ['volume', 'volume_raw', 'volume_with_articles', 'tone'] as const) {
       expect(() => gdeltGetCoverageTimeline.input.parse({ query: 'test', mode })).not.toThrow();
     }
   });
 
-  it('accepts smoothing at boundaries 0 and 5', () => {
-    for (const smoothing of [0, 5]) {
+  it('accepts smoothing at boundaries and beyond the old cap', () => {
+    for (const smoothing of [0, 1, 6, 30]) {
       expect(() =>
         gdeltGetCoverageTimeline.input.parse({ query: 'test', mode: 'volume', smoothing }),
       ).not.toThrow();
@@ -148,6 +149,19 @@ describe('gdeltGetToneDistribution input validation', () => {
   });
 });
 
+describe.each([
+  ['coverage timeline', gdeltGetCoverageTimeline, { query: 'test', mode: 'volume' }],
+  ['coverage breakdown', gdeltGetCoverageBreakdown, { query: 'test', breakdownBy: 'country' }],
+  ['TV timeline', gdeltSearchTv, { query: 'test' }],
+] as const)('%s smoothing range', (_name, tool, base) => {
+  it.each([0, 1, 6, 30])('preserves supported width %i', (smoothing) => {
+    expect(tool.input.parse({ ...base, smoothing }).smoothing).toBe(smoothing);
+  });
+  it.each([-1, 1.5, 31])('rejects unsupported width %s', (smoothing) => {
+    expect(() => tool.input.parse({ ...base, smoothing })).toThrow();
+  });
+});
+
 describe('gdeltGetTvClips input validation', () => {
   it('rejects empty query', () => {
     expect(() => gdeltGetTvClips.input.parse({ query: '' })).toThrow();
@@ -168,12 +182,8 @@ describe('gdeltGetTvClips input validation', () => {
   });
 });
 
-/**
- * The byte budget bounds what a response carries, not what a call may fetch: both record-list
- * tools keep their full maxRecords range. The clamp band past the ceiling, the hard ceiling,
- * and the defaults are pinned by the count-input table below.
- */
-describe('maxRecords ranges under the response byte budget', () => {
+/** Record tools preserve their provider fetch ranges. */
+describe('maxRecords provider ranges', () => {
   it.each([
     ['gdelt_search_articles', gdeltSearchArticles, 250],
     ['gdelt_get_tv_clips', gdeltGetTvClips, 3000],
@@ -183,15 +193,12 @@ describe('maxRecords ranges under the response byte budget', () => {
   });
 });
 
-/** The slice of a tool definition `runToolContract` takes, erased across the four tools. */
+/** The slice of a tool definition `runToolContract` takes, erased across count tools. */
 type CountTool = Parameters<typeof runToolContract>[0];
 
 /**
- * Every count input with a per-call cap: past the cap, up to ten times it, a call runs at the
- * cap (pinned per tool in its own test file); past ten times it, the call is rejected. These run
- * through `runToolContract`, which parses arguments as the production handler factory does —
- * input repair included — and every case here is rejected before a handler runs, so no
- * upstream stub is needed.
+ * Count schemas accept positive safe integers for handler clamping. Invalid cases run
+ * through the production argument-repair contract and reject before upstream I/O.
  */
 const CLAMPED_COUNT_INPUTS: ReadonlyArray<{
   name: string;
@@ -221,7 +228,7 @@ const CLAMPED_COUNT_INPUTS: ReadonlyArray<{
     name: 'gdelt_search_tv',
     tool: gdeltSearchTv as unknown as CountTool,
     parameter: 'limit',
-    cap: 500,
+    cap: 20000,
     fallback: 500,
     base: { query: 'test', stations: ['CNN'] },
   },
@@ -233,10 +240,50 @@ const CLAMPED_COUNT_INPUTS: ReadonlyArray<{
     fallback: 25,
     base: { query: 'drought' },
   },
+  {
+    name: 'gdelt_get_coverage_timeline',
+    tool: gdeltGetCoverageTimeline as unknown as CountTool,
+    parameter: 'limit',
+    cap: 400,
+    fallback: 10,
+    base: { query: 'test', mode: 'volume' },
+  },
+  {
+    name: 'gdelt_get_tone_distribution',
+    tool: gdeltGetToneDistribution as unknown as CountTool,
+    parameter: 'limit',
+    cap: 400,
+    fallback: 10,
+    base: { query: 'test' },
+  },
+  {
+    name: 'gdelt_get_coverage_breakdown',
+    tool: gdeltGetCoverageBreakdown as unknown as CountTool,
+    parameter: 'limit',
+    cap: 75,
+    fallback: 10,
+    base: { query: 'test', breakdownBy: 'country' },
+  },
+  {
+    name: 'gdelt_get_tv_context',
+    tool: gdeltGetTvContext as unknown as CountTool,
+    parameter: 'limit',
+    cap: 25000,
+    fallback: 25,
+    base: { query: 'test' },
+  },
+  {
+    name: 'gdelt_get_tv_breakdown',
+    tool: gdeltGetTvBreakdown as unknown as CountTool,
+    parameter: 'limit',
+    cap: 10000,
+    fallback: 25,
+    base: { query: 'test', breakdownBy: 'station' },
+  },
 ];
 
 describe.each(CLAMPED_COUNT_INPUTS)(
-  '$name $parameter — clamp band and hard ceiling',
+  '$name $parameter — clamped count input',
   ({ tool, parameter, cap, fallback, base }) => {
     const parse = (value: unknown) =>
       (tool.input as unknown as { parse: (v: unknown) => Record<string, unknown> }).parse({
@@ -245,34 +292,28 @@ describe.each(CLAMPED_COUNT_INPUTS)(
       });
     const call = (value: unknown) =>
       runToolContract(tool, { ...base, [parameter]: value } as never);
-    const textOf = (result: Awaited<ReturnType<typeof call>>) =>
-      result.content.map((block) => (block as { text?: string }).text ?? '').join('\n');
     const expectInvalidParams = (result: Awaited<ReturnType<typeof call>>) =>
       expect(result).toMatchObject({
         isError: true,
         structuredContent: { error: { code: JsonRpcErrorCode.InvalidParams } },
       });
 
-    it('admits cap + 1 and ten times the cap to the handler as sent', () => {
+    it('admits safe integers beyond the cap to the handler as sent', () => {
       expect(parse(cap + 1)[parameter]).toBe(cap + 1);
-      expect(parse(cap * 10)[parameter]).toBe(cap * 10);
+      expect(parse(cap * 10 + 1)[parameter]).toBe(cap * 10 + 1);
+      expect(parse(Number.MAX_SAFE_INTEGER)[parameter]).toBe(Number.MAX_SAFE_INTEGER);
     });
 
-    it('rejects ten times the cap + 1 as invalid_arguments, naming the ceiling', async () => {
-      const result = await call(cap * 10 + 1);
-      expectInvalidParams(result);
-      expect(textOf(result)).toContain(
-        `${parameter} must be at most ${cap * 10} (a value above ${cap} runs at ${cap}).`,
-      );
+    it('rejects an unsafe integer sent as a numeric string', async () => {
+      expectInvalidParams(await call(String(Number.MAX_SAFE_INTEGER + 1)));
     });
 
-    it('rejects ten times the cap + 1 sent as a numeric string', async () => {
-      expectInvalidParams(await call(String(cap * 10 + 1)));
-    });
-
-    it.each([0, -1, 1.5, true, 'many'])('rejects %j as invalid_arguments', async (value) => {
-      expectInvalidParams(await call(value));
-    });
+    it.each([0, -1, 1.5, true, 'many', Number.MAX_SAFE_INTEGER + 1])(
+      'rejects %j as invalid_arguments',
+      async (value) => {
+        expectInvalidParams(await call(value));
+      },
+    );
 
     it('keeps its default', () => {
       expect(parse(undefined)[parameter]).toBe(fallback);
@@ -331,12 +372,9 @@ describe('gdeltSearchTv input validation', () => {
     expect(parsed.stations).toEqual(['CNN']);
   });
 
-  it('accepts up to 10 stations and rejects 11 without truncation', () => {
-    const ten = Array.from({ length: 10 }, (_, index) => `STATION${index}`);
-    expect(gdeltSearchTv.input.parse({ query: 'test', stations: ten }).stations).toEqual(ten);
-    expect(() =>
-      gdeltSearchTv.input.parse({ query: 'test', stations: [...ten, 'STATION10'] }),
-    ).toThrow(/10/);
+  it('preserves every requested station beyond the old ten-station cap', () => {
+    const stations = Array.from({ length: 40 }, (_, index) => `STATION${index}`);
+    expect(gdeltSearchTv.input.parse({ query: 'test', stations }).stations).toEqual(stations);
   });
 
   it('preserves omitted and explicitly empty station selection', () => {
@@ -376,6 +414,11 @@ const DATE_RANGE_TOOLS: ReadonlyArray<{
   tool: DateRangeTool;
   base: Record<string, unknown>;
 }> = [
+  {
+    name: 'gdelt_get_tv_breakdown',
+    tool: gdeltGetTvBreakdown as unknown as DateRangeTool,
+    base: { query: 'test', breakdownBy: 'station' },
+  },
   {
     name: 'gdelt_search_articles',
     tool: gdeltSearchArticles as unknown as DateRangeTool,

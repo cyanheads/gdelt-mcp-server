@@ -7,6 +7,10 @@ import { z } from '@cyanheads/mcp-ts-core';
 import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 
 const ServerConfigSchema = z.object({
+  clampLimits: z
+    .stringbool()
+    .default(true)
+    .describe('Clamp oversized count inputs to their per-call cap; false rejects them.'),
   baseUrl: z
     .string()
     .url()
@@ -36,6 +40,7 @@ let _config: ServerConfig | undefined;
 
 export function getServerConfig(): ServerConfig {
   _config ??= parseEnvConfig(ServerConfigSchema, {
+    clampLimits: 'GDELT_CLAMP_LIMITS',
     baseUrl: 'GDELT_BASE_URL',
     requestDelayMs: 'GDELT_REQUEST_DELAY_MS',
     requestTimeoutMs: 'GDELT_REQUEST_TIMEOUT_MS',

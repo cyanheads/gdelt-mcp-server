@@ -26,6 +26,98 @@ const TV_RESULT = {
 };
 
 describe('gdeltSearchTv', () => {
+  it('renders exact Combined point and peak values across count pages', async () => {
+    const searchTv = vi.fn().mockResolvedValue({
+      series: [
+        {
+          stationName: 'Combined',
+          data: [
+            { date: '2020-01-30T12:00:00Z', value: 0.2837 },
+            { date: '2020-01-31T12:00:00Z', value: 0.19291234 },
+          ],
+        },
+      ],
+      dateResolution: 'day',
+      normalized: true,
+    });
+    vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+      searchTv,
+    } as unknown as tvServiceModule.GdeltTvService);
+    const first = await runToolContract(gdeltSearchTv, {
+      query: 'climate market:"National"',
+      combined: true,
+      limit: 1,
+    });
+    expect(first.isError).toBeFalsy();
+    expect(first.structuredContent).toMatchObject({
+      series: [{ data: [{ date: '2020-01-30T12:00:00Z', value: 0.2837 }] }],
+      nextOffset: 1,
+    });
+    expect(contentText(first)).toContain('- 2020-01-30T12:00:00Z: 0.2837');
+    expect(contentText(first)).toContain('Page peak: 0.2837 at 2020-01-30T12:00:00Z');
+    const second = await runToolContract(gdeltSearchTv, {
+      query: 'climate market:"National"',
+      combined: true,
+      limit: 1,
+      offset: 1,
+    });
+    expect(second.structuredContent).toMatchObject({
+      series: [{ data: [{ date: '2020-01-31T12:00:00Z', value: 0.19291234 }] }],
+    });
+    expect(contentText(second)).toContain('- 2020-01-31T12:00:00Z: 0.19291234');
+    expect(contentText(second)).toContain('Page peak: 0.19291234 at 2020-01-31T12:00:00Z');
+    expect(searchTv).toHaveBeenCalledTimes(2);
+  });
+  it.each([true, false])(
+    'renders pooled Combined coverage with normalize=%s without unresolved station notices',
+    async (normalize) => {
+      const searchTv = vi.fn().mockResolvedValue({
+        series: [
+          {
+            stationName: 'Combined',
+            data: [
+              { date: '2020-01-30T12:00:00Z', value: 0.1987 },
+              { date: '2020-01-31T12:00:00Z', value: 0.1929 },
+            ],
+          },
+        ],
+        dateResolution: 'day',
+        normalized: normalize,
+      });
+      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+        searchTv,
+      } as unknown as tvServiceModule.GdeltTvService);
+      const response = await runToolContract(gdeltSearchTv, {
+        query: '"climate change" market:"National"',
+        combined: true,
+        normalize,
+        smoothing: 30,
+        limit: 1,
+      });
+      expect(response.isError).toBeFalsy();
+      expect(searchTv).toHaveBeenCalledWith(
+        expect.objectContaining({ combined: true, normalize, smoothing: 30 }),
+        expect.anything(),
+      );
+      expect(response.structuredContent).toMatchObject({
+        combined: true,
+        dateResolution: 'day',
+        normalized: normalize,
+        totalPoints: 2,
+        nextOffset: 1,
+        series: [
+          { stationName: 'Combined', data: [{ date: '2020-01-30T12:00:00Z', value: 0.1987 }] },
+        ],
+      });
+      expect(contentText(response)).toContain('### Combined\n');
+      expect(contentText(response)).toContain('**Combined:** true');
+      expect(contentText(response)).not.toContain('no station ID');
+      expect(contentText(response)).not.toContain('could not be resolved');
+      expect(contentText(response)).toContain('peaks may lag');
+      expect(contentText(response)).toContain('**Next offset:** 1');
+    },
+  );
+
   beforeEach(() => {
     vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
       searchTv: vi.fn().mockResolvedValue(TV_RESULT),
@@ -115,6 +207,7 @@ describe('gdeltSearchTv', () => {
       });
       expect(result.isError).toBeFalsy();
       expect(result.structuredContent).toEqual({
+        combined: false,
         series: [],
         normalized: true,
         totalPoints: 0,
@@ -186,6 +279,7 @@ describe('gdeltSearchTv', () => {
 
   it('formats output with all required fields', () => {
     const output = {
+      combined: false,
       dateResolution: 'day' as const,
       timeRange: { start: '2024-01-01', end: '2024-01-02' },
       series: TV_RESULT.series,
@@ -202,9 +296,9 @@ describe('gdeltSearchTv', () => {
     expect(text).toContain('Yes');
     expect(text).toContain('CNN');
     // Peak value is 0.8
-    expect(text).toContain('0.800');
-    expect(text).toContain('2024-01-01: 0.500');
-    expect(text).toContain('2024-01-02: 0.800');
+    expect(text).toContain('Page peak: 0.8 at 2024-01-02');
+    expect(text).toContain('2024-01-01: 0.5');
+    expect(text).toContain('2024-01-02: 0.8');
     expect(text).toContain('Points 1–2 of 2');
   });
 
@@ -244,14 +338,10 @@ describe('gdeltSearchTv', () => {
       const input = gdeltSearchTv.input.parse({ query: 'test', limit: 3 });
       const result = await gdeltSearchTv.handler(input, ctx);
       const returned = result.series.flatMap((series) =>
-        series.data.map((point) => `${series.station}:${point.date}:${point.value.toFixed(3)}`),
+        series.data.map((point) => `${series.station}:${point.date}:${point.value}`),
       );
       expect(result).toMatchObject({ totalPoints: 6, offset: 0, limit: 3, nextOffset: 3 });
-      expect(returned).toEqual([
-        'CNN:2024-01-01:1.000',
-        'CNN:2024-01-02:2.000',
-        'FOXNEWS:2024-01-01:4.000',
-      ]);
+      expect(returned).toEqual(['CNN:2024-01-01:1', 'CNN:2024-01-02:2', 'FOXNEWS:2024-01-01:4']);
 
       const text = (gdeltSearchTv.format!(result)[0] as { text: string }).text;
       for (const point of returned) {
@@ -269,9 +359,9 @@ describe('gdeltSearchTv', () => {
       expect(result.nextOffset).toBeUndefined();
       expect(
         result.series.flatMap((series) =>
-          series.data.map((point) => `${series.station}:${point.date}:${point.value.toFixed(3)}`),
+          series.data.map((point) => `${series.station}:${point.date}:${point.value}`),
         ),
-      ).toEqual(['CNN:2024-01-03:3.000', 'FOXNEWS:2024-01-02:5.000', 'FOXNEWS:2024-01-03:6.000']);
+      ).toEqual(['CNN:2024-01-03:3', 'FOXNEWS:2024-01-02:5', 'FOXNEWS:2024-01-03:6']);
     });
 
     it('rejects an offset past the result with a recovery-bearing error', async () => {
@@ -287,17 +377,17 @@ describe('gdeltSearchTv', () => {
   });
 
   /**
-   * A limit above the 500-point page bound, up to 5000, runs exactly as limit 500: the same
+   * A limit above the 20,000-point page bound runs exactly as limit 20,000: the same
    * page, nextOffset, and `limit` output, plus a `limitClamp` disclosure on both surfaces.
    */
   describe('limit clamp', () => {
-    // 2 stations × 300 days = 600 points: a 500-point page leaves 100 for nextOffset.
+    // Two stations, each with 10,001 points: the capped page leaves two points.
     const LONG_RESULT = {
       ...TV_RESULT,
       series: ['CNN', 'FOXNEWS'].map((station, s) => ({
         station,
         stationName: station,
-        data: Array.from({ length: 300 }, (_, d) => ({
+        data: Array.from({ length: 10001 }, (_, d) => ({
           date: new Date(Date.UTC(2023, 0, 1 + d)).toISOString().slice(0, 10),
           value: s + d / 1000,
         })),
@@ -317,36 +407,38 @@ describe('gdeltSearchTv', () => {
         0,
       );
 
-    it('runs limit 501 and 5000 exactly as limit 500, disclosing the clamp', async () => {
-      const atCap = await run(500);
-      expect(atCap.structuredContent).toMatchObject({ limit: 500, nextOffset: 500 });
-      expect(points(atCap.structuredContent)).toBe(500);
+    it('runs larger limits exactly as limit 20000, disclosing the clamp', async () => {
+      const atCap = await run(20000);
+      expect(atCap.structuredContent).toMatchObject({ limit: 20000, nextOffset: 20000 });
+      expect(points(atCap.structuredContent)).toBe(20000);
       expect(atCap.structuredContent).not.toHaveProperty('limitClamp');
       expect(contentText(atCap)).not.toContain('Limit clamped');
 
-      for (const requested of [501, 5000]) {
+      for (const requested of [20001, 200000]) {
         const clamped = await run(requested);
         const { limitClamp, ...rest } = clamped.structuredContent as Record<string, unknown>;
-        expect(limitClamp).toEqual({ parameter: 'limit', requested, applied: 500 });
+        expect(limitClamp).toEqual({ parameter: 'limit', requested, applied: 20000 });
         expect(rest).toEqual(atCap.structuredContent);
         expect(contentText(clamped)).toContain(
-          `**Limit clamped:** limit ${requested} → 500 (per-call cap)`,
+          `**Limit clamped:** limit ${requested} → 20000 (per-call cap)`,
         );
-        expect(contentText(clamped)).toContain('**Point page:** offset 0, limit 500');
-        expect(contentText(clamped)).toContain('**Next offset:** 500');
+        expect(contentText(clamped)).toContain('**Point page:** offset 0, limit 20000');
+        expect(contentText(clamped)).toContain('**Next offset:** 20000');
       }
     });
 
     it('keeps the empty-result notice beside the clamp disclosure', async () => {
-      const clamped = await run(5000, { series: [], normalized: true });
+      const clamped = await run(20001, { series: [], normalized: true });
       expect(clamped.structuredContent).toMatchObject({
         series: [],
-        limit: 500,
+        limit: 20000,
         notice: expect.stringMatching(/No TV coverage for "x"/),
-        limitClamp: { parameter: 'limit', requested: 5000, applied: 500 },
+        limitClamp: { parameter: 'limit', requested: 20001, applied: 20000 },
       });
       expect(contentText(clamped)).toContain('No TV coverage for "x"');
-      expect(contentText(clamped)).toContain('**Limit clamped:** limit 5000 → 500 (per-call cap)');
+      expect(contentText(clamped)).toContain(
+        '**Limit clamped:** limit 20001 → 20000 (per-call cap)',
+      );
     });
   });
 
@@ -354,6 +446,7 @@ describe('gdeltSearchTv', () => {
   describe('Markdown escaping at the content[] boundary', () => {
     it('renders plain upstream values byte-identically to the expected format()', () => {
       const blocks = gdeltSearchTv.format!({
+        combined: false,
         dateResolution: 'day',
         timeRange: { start: '2024-01-15', end: '2024-01-16' },
         series: [
@@ -373,9 +466,9 @@ describe('gdeltSearchTv', () => {
       });
       expect((blocks[0] as { text: string }).text).toBe(
         '## GDELT TV News Coverage\n**Date Resolution:** day\n**Time Range:** 2024-01-15 to 2024-01-16\n' +
-          '**Normalized:** Yes (% of airtime)\n**Stations:** 1\n**Point page:** offset 0, limit 500\n' +
+          '**Normalized:** Yes (% of airtime)\n**Combined:** false\n**Stations:** 1\n**Point page:** offset 0, limit 500\n' +
           '**Points 1–2 of 2**\n\n### CNN (CNN)\nPoints on this page: 2 | Sum on this page: 0.75\n' +
-          'Page peak: 0.500 at 2024-01-15\n- 2024-01-15: 0.500\n- 2024-01-16: 0.250',
+          'Page peak: 0.5 at 2024-01-15\n- 2024-01-15: 0.5\n- 2024-01-16: 0.25',
       );
     });
 
@@ -527,12 +620,12 @@ describe('gdeltSearchTv', () => {
       const result = await runToolContract(gdeltSearchTv, {
         query: 'x',
         stations: ['FOXNEWS'],
-        limit: 5000,
+        limit: 20001,
       });
       const sc = result.structuredContent as Record<string, unknown>;
       expect(sc.series).toEqual([{ stationName: 'FOX News', data: [point('2024-01-01')] }]);
       expect(sc.notice).toMatch(/Station IDs could not be resolved.*gdelt_list_tv_stations/);
-      expect(sc.limitClamp).toEqual({ parameter: 'limit', requested: 5000, applied: 500 });
+      expect(sc.limitClamp).toEqual({ parameter: 'limit', requested: 20001, applied: 20000 });
       expect(contentText(result)).toContain(sc.notice as string);
       expect(contentText(result)).toContain('### FOX News (no station ID)');
     });
@@ -648,10 +741,10 @@ describe('gdeltSearchTv', () => {
           offset: 500,
         }),
       );
-      expect(first).toContain('Points on this page: 500 | Sum on this page: 125250.00');
-      expect(first).toContain('Page peak: 500.000 at 2024-01-21T19:00:00Z');
-      expect(second).toContain('Points on this page: 100 | Sum on this page: 55050.00');
-      expect(second).toContain('Page peak: 600.000 at 2024-01-25T23:00:00Z');
+      expect(first).toContain('Points on this page: 500 | Sum on this page: 125250');
+      expect(first).toContain('Page peak: 500 at 2024-01-21T19:00:00Z');
+      expect(second).toContain('Points on this page: 100 | Sum on this page: 55050');
+      expect(second).toContain('Page peak: 600 at 2024-01-25T23:00:00Z');
       for (const text of [first, second]) {
         expect(text).not.toMatch(/Total:/);
         expect(text).not.toMatch(/^Peak:/m);
@@ -669,8 +762,8 @@ describe('gdeltSearchTv', () => {
       const result = await runToolContract(gdeltSearchTv, { query: 'x', stations: ['CNN'] });
       expect(result.structuredContent).not.toHaveProperty('nextOffset');
       const text = contentText(result);
-      expect(text).toContain('Points on this page: 3 | Sum on this page: 6.00');
-      expect(text).toContain('Page peak: 3.000 at 2024-01-01T02:00:00Z');
+      expect(text).toContain('Points on this page: 3 | Sum on this page: 6');
+      expect(text).toContain('Page peak: 3 at 2024-01-01T02:00:00Z');
       expect(text).not.toMatch(/Total:/);
     });
   });

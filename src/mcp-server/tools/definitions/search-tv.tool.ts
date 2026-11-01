@@ -10,32 +10,32 @@ import { getGdeltTvService, type TvSearchSeries } from '@/services/gdelt/gdelt-t
 import {
   describeDateRangeFault,
   describeResolvedTimespan,
+  describeTvTimespanFault,
   GDELT_DATETIME_PATTERN,
 } from '../date-range.js';
-import { CLAMP_HEADROOM, clampToCap, limitClampSchema, renderLimitClamp } from '../limit-clamp.js';
+import {
+  clampToCap,
+  countInputSchema,
+  limitClampSchema,
+  renderLimitClamp,
+} from '../limit-clamp.js';
 import { escapeMarkdown, markdownQuote, renderQueryEcho } from '../markdown-escape.js';
 import { describeUnresolvedStations, stationLabel } from '../station-ids.js';
 
-/** Evidence-led request/response bounds: ten station selectors and 500 returned points. */
-const MAX_STATIONS = 10;
-const MAX_POINTS_PER_PAGE = 500;
-
-/** The `limit` schema maximum: past it a call is rejected; up to it, clamped to the page bound. */
-const MAX_LIMIT_ACCEPTED = MAX_POINTS_PER_PAGE * CLAMP_HEADROOM;
+/** Point pages bound the response without altering the selected station population. */
+const MAX_POINTS_PER_PAGE = 20_000;
 
 export const gdeltSearchTv = tool('gdelt_search_tv', {
   title: 'Search GDELT TV News',
   description:
-    'Search US television news closed captions (2009–October 2024, 150+ stations) for spoken mentions ' +
+    'Search television news closed captions for spoken mentions ' +
     'of a query. Returns a bounded, paged per-station time series showing airtime devoted to the topic — ' +
-    "up to 500 points per page; a larger limit runs at 500. Each series carries GDELT's display name " +
+    "500 points by default, up to 20,000 per page. Each series carries GDELT's display name " +
     'for the station and, when that name resolves to one, the station ID gdelt_get_tv_clips takes as stations. ' +
-    'Use the stations parameter to select networks (e.g. ["CNN", "FOXNEWS", "MSNBC"]) — the TV API ' +
-    'requires at least one station, supplied either there or as a station: selector inside query. ' +
+    'Use stations to select station IDs (e.g. ["CNN", "FOXNEWS", "MSNBC"]), or select with station:, network:, or quoted market: operators in query. ' +
     'TV query also supports in-query operators: station:CNN, network:CBS, market:"National", ' +
     'show:"Anderson Cooper 360", context:"vaccine". ' +
-    'Important: most station monitoring ended October 2024 — use gdelt_list_tv_stations to verify ' +
-    'active date ranges before querying recent events.',
+    'Archive coverage varies by station; use gdelt_list_tv_stations for station IDs, network and market values, and monitoring date ranges.',
   annotations: { readOnlyHint: true, openWorldHint: true },
 
   errors: [
@@ -64,9 +64,9 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       reason: 'gdelt_rate_limited',
       code: JsonRpcErrorCode.RateLimited,
       when: 'GDELT rejected the request for its one-request-per-five-seconds limit, or too many requests were already queued for this one to start in time.',
-      retryable: false,
+      retryable: true,
       recovery:
-        'Wait at least 5 seconds before retrying; GDELT accepts at most one request every 5 seconds.',
+        'Back off before retrying; five seconds is minimum request spacing, not a recovery guarantee, and rate limiting may persist longer. Honor Retry-After when supplied.',
       thrownBy: 'service',
     },
     {
@@ -90,13 +90,9 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       ),
     stations: z
       .array(z.string())
-      .max(MAX_STATIONS, `At most ${MAX_STATIONS} stations may be requested.`)
       .optional()
       .describe(
-        `Up to ${MAX_STATIONS} station IDs to filter to (e.g. ["CNN", "FOXNEWS", "MSNBC"]). ` +
-          'The GDELT TV API requires at least one station — supply it here, or embed a station: ' +
-          'selector directly in query. Omitting both is rejected; it does not fall back to all stations. ' +
-          'Use gdelt_list_tv_stations to see valid station IDs.',
+        'Station IDs to filter to (e.g. ["CNN", "FOXNEWS", "MSNBC"]). Every supplied ID is forwarded. Alternatively use station:, network:, or quoted market: selectors in query; a selector is required. Obtain IDs, network and market values, and per-station archive ranges from gdelt_list_tv_stations.',
       ),
     timespan: z
       .string()
@@ -104,7 +100,7 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       .describe(
         'Time window, e.g. "1m", "6m", "1y". ' +
           'Ignored when startDatetime/endDatetime are set. ' +
-          'TV data spans 2009–October 2024.',
+          'Check station monitoring dates with gdelt_list_tv_stations.',
       ),
     startDatetime: z
       .string()
@@ -126,15 +122,23 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       .number()
       .int()
       .min(0)
-      .max(5)
+      .max(30)
       .optional()
-      .describe('Smoothing window in timesteps (0 = none). Reduces noise for sporadic topics.'),
+      .describe(
+        'Trailing moving-average width in timesteps, 0–30 (0 or 1 = none). Width N needs N source steps; leading steps cannot produce averages and peaks may appear later.',
+      ),
     normalize: z
       .boolean()
       .default(true)
       .describe(
         'When true (default), values are normalized as % of total airtime, enabling cross-station comparison. ' +
           'When false, returns raw matching 15-second clip counts.',
+      ),
+    combined: z
+      .boolean()
+      .default(false)
+      .describe(
+        'Pool selected stations into one Combined timeline. Normalized values divide pooled matching clips by pooled monitored clips; false keeps separate station series.',
       ),
     dateres: z
       .enum(['hour', 'day', 'week', 'month', 'year'])
@@ -152,22 +156,17 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
         'Zero-based point offset into the deterministic date-then-station-name ordering. Use nextOffset ' +
           'from the preceding response with the same query inputs to retrieve the next page.',
       ),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(
-        MAX_LIMIT_ACCEPTED,
-        `limit must be at most ${MAX_LIMIT_ACCEPTED} (a value above ${MAX_POINTS_PER_PAGE} runs at ${MAX_POINTS_PER_PAGE}).`,
-      )
-      .default(MAX_POINTS_PER_PAGE)
-      .describe(
-        `Maximum timeline points returned in this response (1–${MAX_POINTS_PER_PAGE}; a value up to ` +
-          `${MAX_LIMIT_ACCEPTED} runs at ${MAX_POINTS_PER_PAGE}, and the response says so in limitClamp).`,
-      ),
+    limit: countInputSchema(
+      MAX_POINTS_PER_PAGE,
+      500,
+      'Maximum timeline points returned per page (default 500, cap 20,000). Larger counts clamp with limitClamp; strict deployments reject them.',
+    ),
   }),
 
   output: z.object({
+    combined: z
+      .boolean()
+      .describe('True for one pooled Combined timeline; false for separate station series.'),
     dateResolution: z
       .enum(['hour', 'day', 'week', 'month', 'year'])
       .optional()
@@ -226,7 +225,7 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
     limit: z
       .number()
       .describe(
-        'Maximum points this page holds — the requested limit, or 500 when a larger one was clamped.',
+        'Maximum points this page holds — the requested limit, or 20,000 when a larger one was clamped.',
       ),
     nextOffset: z
       .number()
@@ -265,6 +264,12 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
     if (dateRangeFault) {
       throw ctx.fail('invalid_date_range', dateRangeFault);
     }
+    const timespanFault = describeTvTimespanFault(input);
+    if (timespanFault) {
+      throw ctx.fail('invalid_query', 'Invalid TV timespan.', {
+        recovery: { hint: timespanFault },
+      });
+    }
 
     ctx.log.info('gdelt_search_tv', { query: input.query, stations: input.stations });
     const svc = getGdeltTvService();
@@ -279,6 +284,7 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
         ...(input.smoothing != null && { smoothing: input.smoothing }),
         ...(input.dateres && { dateres: input.dateres }),
         normalize: input.normalize,
+        combined: input.combined,
       },
       ctx,
     );
@@ -298,7 +304,7 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
     }
 
     const pageDates = page.series.flatMap((series) => series.data.map((point) => point.date));
-    const sortedPageDates = pageDates.slice().sort();
+    const sortedPageDates = pageDates.toSorted();
     const nextOffset =
       input.offset + pageDates.length < page.totalPoints
         ? input.offset + pageDates.length
@@ -313,23 +319,28 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
     // Every notice segment for this response accumulates here and is flushed once —
     // ctx.enrich.notice is last-wins, so a second call would silently drop the first.
     const notices: string[] = [];
-    if (isEmpty) {
+    if (input.smoothing != null && input.smoothing > 1) {
       notices.push(
-        `No TV coverage for ${markdownQuote(input.query)}.${describeResolvedTimespan(input)} Most TV data ends ` +
-          'October 2024 — check that the stations were active during the window with ' +
-          'gdelt_list_tv_stations, broaden the query, or extend the window.',
+        `Trailing moving average width ${input.smoothing} requires that many source steps, so leading steps without a full window cannot produce values; peaks may lag.`,
       );
     }
-    const unresolved = describeUnresolvedStations(
-      page.series,
-      result.stationCatalogUnavailable === true,
-      { singular: 'series', plural: 'series' },
-    );
+    if (isEmpty) {
+      notices.push(
+        `No TV coverage for ${markdownQuote(input.query)}.${describeResolvedTimespan(input)} Archive coverage varies by station — verify monitoring dates with gdelt_list_tv_stations and choose a matching window, or broaden the query.`,
+      );
+    }
+    const unresolved = input.combined
+      ? undefined
+      : describeUnresolvedStations(page.series, result.stationCatalogUnavailable === true, {
+          singular: 'series',
+          plural: 'series',
+        });
     if (unresolved) notices.push(unresolved);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
     ctx.log.info('gdelt_search_tv completed', { seriesCount: result.series.length });
     return {
+      combined: input.combined,
       ...(result.dateResolution && { dateResolution: result.dateResolution }),
       ...(start != null && end != null && { timeRange: { start, end } }),
       series: page.series,
@@ -352,6 +363,7 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
     }
     lines.push(
       `**Normalized:** ${result.normalized ? 'Yes (% of airtime)' : 'No (raw matching 15-second clip counts)'}`,
+      `**Combined:** ${result.combined}`,
       `**Stations:** ${result.series.length}`,
       `**Point page:** offset ${result.offset}, limit ${result.limit}`,
       returned > 0
@@ -367,13 +379,15 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
         s.data[0] ?? { date: '', value: 0 },
       );
       const sum = s.data.reduce((total, d) => total + d.value, 0);
-      lines.push(`\n### ${escapeMarkdown(stationLabel(s), 'heading-end')}`);
-      lines.push(`Points on this page: ${s.data.length} | Sum on this page: ${sum.toFixed(2)}`);
+      lines.push(
+        `\n### ${escapeMarkdown(result.combined ? s.stationName : stationLabel(s), 'heading-end')}`,
+      );
+      lines.push(`Points on this page: ${s.data.length} | Sum on this page: ${sum}`);
       if (peak.date) {
-        lines.push(`Page peak: ${peak.value.toFixed(3)} at ${escapeMarkdown(peak.date)}`);
+        lines.push(`Page peak: ${peak.value} at ${escapeMarkdown(peak.date)}`);
       }
       for (const point of s.data) {
-        lines.push(`- ${escapeMarkdown(point.date, 'line-start')}: ${point.value.toFixed(3)}`);
+        lines.push(`- ${escapeMarkdown(point.date, 'line-start')}: ${point.value}`);
       }
     }
     return [{ type: 'text', text: lines.join('\n') }];

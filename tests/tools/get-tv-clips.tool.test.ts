@@ -23,6 +23,41 @@ const CLIP = {
 };
 
 describe('gdeltGetTvClips', () => {
+  it('preserves the default request count', async () => {
+    mockClips([]);
+    const result = await runToolContract(gdeltGetTvClips, { query: 'climate' });
+    expect(result.isError).toBeFalsy();
+    expect(gdeltGetTvClips.input.parse({ query: 'climate' }).maxRecords).toBe(50);
+    expect(tvServiceModule.getGdeltTvService().getTvClips).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ maxRecords: 50 }),
+      expect.anything(),
+    );
+  });
+
+  it('returns every same-second record on both surfaces', async () => {
+    const fetched = Array.from({ length: 3000 }, (_, i) => ({
+      ...CLIP,
+      archiveUrl: `https://archive.org/details/retained-${i}`,
+      snippet: `record ${i} ${'ü'.repeat(500)}`,
+      date: '2024-01-15T20:00:00Z',
+    }));
+    mockClips(fetched);
+    const result = await runToolContract(gdeltGetTvClips, {
+      query: 'climate',
+      maxRecords: 3000,
+      sort: 'dateDesc',
+      startDatetime: '20240115000000',
+      endDatetime: '20240116000000',
+    });
+    expect(result.isError).toBeFalsy();
+    const sc = result.structuredContent as { clips: typeof fetched; totalCount: number };
+    expect(sc.clips).toEqual(fetched);
+    expect(sc.totalCount).toBe(3000);
+    expect(sc).not.toHaveProperty('withheldCount');
+    const text = contentText(result);
+    expect(text.match(/^### /gm)).toHaveLength(3000);
+    for (let i = 0; i < 3000; i++) expect(text).toContain(`retained-${i}`);
+  });
   beforeEach(() => {
     vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
       getTvClips: vi.fn().mockResolvedValue({ clips: [CLIP] }),
@@ -85,7 +120,9 @@ describe('gdeltGetTvClips', () => {
         clips: [],
         effectiveQuery: 'zqxwvjkplmq',
         totalCount: 0,
-        notice: expect.stringMatching(/No TV clips matched "zqxwvjkplmq".*October 2024/),
+        notice: expect.stringMatching(
+          /No TV clips matched "zqxwvjkplmq".*coverage varies by station/,
+        ),
       });
       const text = result.content.map((b) => (b as { text?: string }).text ?? '').join('\n');
       expect(text).toContain('No clips returned.');
@@ -93,7 +130,9 @@ describe('gdeltGetTvClips', () => {
       // The caller already pinned a window: the guidance checks it rather than asking for one.
       const notice = (result.structuredContent as { notice: string }).notice;
       expect(notice).not.toMatch(/supply explicit/);
-      expect(notice).toMatch(/check that 20240901000000–20241001000000 falls inside it/);
+      expect(notice).toMatch(
+        /check that 20240901000000–20241001000000 falls inside the selected stations' monitoring dates/,
+      );
     });
 
     it('names the resolved date range when a timespan was used', async () => {
@@ -204,10 +243,6 @@ describe('gdeltGetTvClips', () => {
       expect(enrichment.notice).toMatch(/ceiling/);
     });
 
-    /**
-     * A full 3,000 never fits the byte budget, so the uncut ceiling branch is reached only when
-     * GDELT fills maxRecords mostly with clips from outside the window, which are dropped.
-     */
     it('hands back halves on an uncut page when the cap was filled with out-of-window clips', async () => {
       const enrichment = await runAtCeiling(
         { startDatetime: '20200101000000', endDatetime: '20200103000000' },
@@ -241,22 +276,14 @@ describe('gdeltGetTvClips', () => {
       expect(enrichment.notice).toMatch(/whole clock hours/);
     });
 
-    /**
-     * The 3,000 clips at 01:30 are cut to the budget: those withheld were fetched and sit inside
-     * the window, so a sub-hour half reaches them — only clips past the cap of that hour can't be.
-     */
-    it('splits a cut window inside one clock hour at the second, even at the ceiling', async () => {
+    it('returns all same-hour clips at the ceiling and explains why narrower windows cannot reach more', async () => {
       const enrichment = await runAtCeiling(
         { startDatetime: '20200101010500', endDatetime: '20200101015000' },
         '2020-01-01T01:30:00Z',
       );
-      expect(enrichment.continuationWindows).toEqual([
-        { startDatetime: '20200101010500', endDatetime: '20200101012730' },
-        { startDatetime: '20200101012731', endDatetime: '20200101015000' },
-      ]);
-      expect(enrichment.notice).toMatch(
-        /more clips matched upstream than any window inside this hour can fetch/,
-      );
+      expect(enrichment.totalCount).toBe(3000);
+      expect(enrichment.continuationWindows).toBeUndefined();
+      expect(enrichment.notice).toMatch(/not retrievable/);
     });
 
     it('offers no halves when an uncut page at the ceiling has no clock hour inside its window', async () => {
@@ -289,7 +316,7 @@ describe('gdeltGetTvClips', () => {
       await gdeltGetTvClips.handler(input, ctx);
       const enrichment = getEnrichment(ctx);
       expect(enrichment.notice).toMatch(/Raise maxRecords \(up to 3000\)/);
-      expect(enrichment.notice).toMatch(/48,000-byte/);
+      expect(enrichment.notice).not.toMatch(/byte|withheld/);
       expect(enrichment.continuationWindows).toBeUndefined();
     });
   });
@@ -354,557 +381,81 @@ describe('gdeltGetTvClips', () => {
     );
   });
 
-  describe('48,000-byte response budget', () => {
-    const WINDOW = { startDatetime: '20240701000000', endDatetime: '20240702000000' };
-
-    it('keeps a full 3,000-clip page of long multi-byte records within 50,000 bytes on each surface', async () => {
-      const fetched = Array.from({ length: 3000 }, (_, i) => longClip(i, secondsAfter(NOON, -i)));
-      mockClips(fetched);
-      const result = await runToolContract(gdeltGetTvClips, {
-        query: 'climate',
-        stations: ['CNN'],
-        maxRecords: 3000,
-        sort: 'dateDesc',
-        ...WINDOW,
-      });
-      const sc = result.structuredContent as ClipPage;
-      const emitted = sc.clips.length;
-      expect(utf8(JSON.stringify(sc))).toBeLessThanOrEqual(50_000);
-      expect(utf8(contentText(result))).toBeLessThanOrEqual(50_000);
-      expect(emitted).toBeGreaterThan(0);
-      expect(sc.clips).toEqual(fetched.slice(0, emitted));
-      expect(sc.totalCount).toBe(emitted);
-      expect(sc.withheldCount).toBe(3000 - emitted);
-      const charges = fetched.map(chargeOf);
-      expect(sum(charges.slice(0, emitted))).toBeLessThanOrEqual(BUDGET);
-      expect(sum(charges.slice(0, emitted + 1))).toBeGreaterThan(BUDGET);
-      // Both surfaces carry the same clips: content[] is exactly format() of the emitted set.
-      expect((result.content[0] as { text: string }).text).toBe(
-        (gdeltGetTvClips.format!({ clips: sc.clips })[0] as { text: string }).text,
-      );
-      expect(sc.notice).toMatch(new RegExp(`Emitted ${emitted} of 3000 clips`));
-      expect(sc.notice).not.toMatch(/[Rr]aise maxRecords|[Ii]ncrease maxRecords/);
-    });
-
-    it('leaves a page that fits unchanged: no size notice, no withheldCount, no continuation', async () => {
-      const fetched = Array.from({ length: 49 }, (_, i) => ({
-        ...CLIP,
-        archiveUrl: `https://archive.org/details/CNN_${i}`,
-      }));
-      mockClips(fetched);
-      const result = await runToolContract(gdeltGetTvClips, {
-        query: 'vaccine',
-        stations: ['CNN'],
-      });
-      expect(result.structuredContent).toEqual({
-        clips: fetched,
-        effectiveQuery: 'vaccine',
-        totalCount: 49,
-      });
-    });
-
-    it('emits every clip of a page whose charges total exactly 48,000 bytes', async () => {
-      const fetched = exactFitClips(100, 480);
-      mockClips(fetched);
-      const result = await runToolContract(gdeltGetTvClips, {
-        query: 'x',
-        stations: ['CNN'],
-        maxRecords: 3000,
-        ...WINDOW,
-      });
-      expect(sum(fetched.map(chargeOf))).toBe(BUDGET);
-      const sc = result.structuredContent as ClipPage;
-      expect(sc.clips).toHaveLength(100);
-      expect(sc).not.toHaveProperty('withheldCount');
-      expect(sc).not.toHaveProperty('notice');
-    });
-
-    it('withholds the clip that takes the page one byte over the budget', async () => {
-      const fetched = exactFitClips(100, 480);
-      const last = fetched[99]!;
-      fetched[99] = { ...last, snippet: `${last.snippet}!` };
-      mockClips(fetched);
-      const result = await runToolContract(gdeltGetTvClips, {
-        query: 'x',
-        stations: ['CNN'],
-        maxRecords: 3000,
-        ...WINDOW,
-      });
-      const sc = result.structuredContent as ClipPage;
-      expect(sc.clips).toHaveLength(99);
-      expect(sc.withheldCount).toBe(1);
-    });
-
-    it('emits a clip larger than the whole budget alone, with the cut signal', async () => {
-      const giant = { ...longClip(0, NOON), snippet: 'a'.repeat(60_000) };
+  describe('complete fetched records', () => {
+    it('returns an oversized record beside all following records', async () => {
       const fetched = [
-        giant,
-        longClip(1, secondsAfter(NOON, -1)),
-        longClip(2, secondsAfter(NOON, -2)),
+        { ...longClip(0, NOON), snippet: 'a'.repeat(60_000) },
+        longClip(1, NOON),
+        longClip(2, NOON),
       ];
       mockClips(fetched);
-      const result = await runToolContract(gdeltGetTvClips, {
-        query: 'x',
-        stations: ['CNN'],
-        sort: 'dateDesc',
-        ...WINDOW,
-      });
+      const result = await runToolContract(gdeltGetTvClips, { query: 'climate', maxRecords: 3000 });
+      expect(result.isError).toBeFalsy();
       const sc = result.structuredContent as ClipPage;
-      expect(sc.clips).toEqual([giant]);
-      expect(sc.withheldCount).toBe(2);
-      expect(sc.notice).toMatch(/Emitted 1 of 3 clips/);
-      // A window resumed at NOON would return the giant first again, so the continuation skips
-      // past its second: the withheld clips at NOON−1 s and NOON−2 s are reachable there.
-      expect(sc.continuationWindows).toEqual([
-        { startDatetime: WINDOW.startDatetime, endDatetime: '20240701115959' },
-      ]);
-      expect(sc.notice).toMatch(/clips from that second not emitted here cannot be reached/);
-      expect(sc.notice).toMatch(/every earlier clip/);
-    });
-
-    it.each([
-      ['dateDesc', -1],
-      ['dateAsc', 1],
-    ] as const)('resumes a %s cut from the last emitted clip', async (sort, step) => {
-      const anchor = sort === 'dateDesc' ? secondsAfter(DAY, 3600) : secondsAfter(DAY, -3600);
-      const fetched = Array.from({ length: 400 }, (_, i) =>
-        longClip(i, secondsAfter(anchor, step * i * 30)),
-      );
-      mockClips(fetched);
-      const result = await runToolContract(gdeltGetTvClips, {
-        query: 'x',
-        stations: ['CNN'],
-        maxRecords: 3000,
-        sort,
-        startDatetime: '20240630000000',
-        endDatetime: '20240702000000',
-      });
-      const sc = result.structuredContent as ClipPage;
-      const lastMs = Date.parse(sc.clips.at(-1)!.date);
-      expect(sc.continuationWindows).toEqual([
-        sort === 'dateDesc'
-          ? { startDatetime: '20240630000000', endDatetime: gdeltAt(lastMs + 1000) }
-          : { startDatetime: gdeltAt(lastMs - 1000), endDatetime: '20240702000000' },
-      ]);
-      expect(sc.notice).toMatch(/de-duplicate by archiveUrl/);
-      expect(sc.notice).not.toMatch(/[Rr]aise maxRecords|[Ii]ncrease maxRecords/);
-    });
-
-    it('hands back the #21 halves for a relevance cut, naming N of M and the sort', async () => {
-      mockClips(Array.from({ length: 400 }, (_, i) => longClip(i, secondsAfter(DAY, i))));
-      const result = await runToolContract(gdeltGetTvClips, {
-        query: 'x',
-        stations: ['CNN'],
-        maxRecords: 3000,
-        sort: 'relevance',
-        startDatetime: '20240701000000',
-        endDatetime: '20240703000000',
-      });
-      const sc = result.structuredContent as ClipPage;
-      expect(sc.continuationWindows).toEqual([
-        { startDatetime: '20240701000000', endDatetime: '20240701235959' },
-        { startDatetime: '20240702000000', endDatetime: '20240703000000' },
-      ]);
-      expect(sc.notice).toMatch(new RegExp(`Emitted ${sc.clips.length} of 400 clips`));
-      expect(sc.notice).toMatch(/[Ss]ort relevance has no resume point/);
-      expect(sc.notice).not.toMatch(/[Rr]aise maxRecords|[Ii]ncrease maxRecords/);
-    });
-
-    /**
-     * Every clip GDELT returned shares NOON and the cap was not reached, so nothing earlier
-     * exists in the window: the window past that second would be empty.
-     */
-    it('offers no window when every fetched clip shares the last emitted second', async () => {
-      const at = NOON;
-      mockClips(Array.from({ length: 200 }, (_, i) => longClip(i, at)));
-      const result = await runToolContract(gdeltGetTvClips, {
-        query: 'x',
-        stations: ['CNN'],
-        maxRecords: 3000,
-        sort: 'dateDesc',
-        ...WINDOW,
-      });
-      const sc = result.structuredContent as ClipPage;
-      expect(sc.withheldCount).toBeGreaterThan(0);
+      expect(sc.clips).toEqual(fetched);
+      expect(sc.totalCount).toBe(3);
+      expect(sc).not.toHaveProperty('withheldCount');
       expect(sc).not.toHaveProperty('continuationWindows');
-      expect(sc.notice).toMatch(/cannot be reached by narrowing the date window/);
+      expect(sc).not.toHaveProperty('notice');
+      expect(contentText(result)).toContain('a'.repeat(60_000));
+      expect(contentText(result).match(/^### /gm)).toHaveLength(3);
     });
 
-    it('skips past a shared last second to the earlier withheld clips, and reaches them', async () => {
-      const shared = Array.from({ length: 80 }, (_, i) => longClip(i, NOON));
-      const earlier = Array.from({ length: 30 }, (_, i) =>
-        longClip(100 + i, secondsAfter(NOON, -60 * (i + 1))),
-      );
-      const upstream = measuredTvUpstream([...shared, ...earlier]);
-      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-        getTvClips: upstream,
-      } as unknown as tvServiceModule.GdeltTvService);
-      const base = { query: 'x', stations: ['CNN'], maxRecords: 3000, sort: 'dateDesc' as const };
-      const first = await runToolContract(gdeltGetTvClips, { ...base, ...WINDOW });
-      const sc = first.structuredContent as ClipPage;
-      expect(sc.clips.every((c) => c.date === NOON)).toBe(true);
-      expect(sc.continuationWindows).toEqual([
-        { startDatetime: WINDOW.startDatetime, endDatetime: '20240701115959' },
-      ]);
-      const next = await runToolContract(
-        gdeltGetTvClips,
-        gdeltGetTvClips.input.parse({ ...base, ...sc.continuationWindows![0] }),
-      );
-      const followUp = (next.structuredContent as ClipPage).clips;
-      expect(followUp.map((c) => c.archiveUrl).sort()).toEqual(
-        earlier.map((c) => c.archiveUrl).sort(),
-      );
-    });
+    it.each(['dateDesc', 'dateAsc', 'relevance'] as const)(
+      'returns all fetched records below the cap without a continuation under %s',
+      async (sort) => {
+        const fetched = Array.from({ length: 200 }, (_, i) => longClip(i, NOON));
+        mockClips(fetched);
+        const result = await runToolContract(gdeltGetTvClips, {
+          query: 'climate',
+          maxRecords: 3000,
+          sort,
+        });
+        const sc = result.structuredContent as ClipPage;
+        expect(sc.clips).toEqual(fetched);
+        expect(sc.totalCount).toBe(200);
+        expect(sc).not.toHaveProperty('withheldCount');
+        expect(sc).not.toHaveProperty('notice');
+        expect(sc).not.toHaveProperty('continuationWindows');
+        expect(contentText(result).match(/^### /gm)).toHaveLength(200);
+      },
+    );
 
-    it('gives the resume timestamp to pair with the other boundary when no window is known', async () => {
-      const fetched = Array.from({ length: 200 }, (_, i) => longClip(i, secondsAfter(DAY, -i)));
-      mockClips(fetched);
-      const result = await runToolContract(gdeltGetTvClips, {
-        query: 'x',
-        stations: ['CNN'],
-        maxRecords: 3000,
-        sort: 'dateDesc',
-      });
-      const sc = result.structuredContent as ClipPage;
-      const lastMs = Date.parse(sc.clips.at(-1)!.date);
-      expect(sc).not.toHaveProperty('continuationWindows');
-      expect(sc.notice).toContain(`endDatetime ${gdeltAt(lastMs + 1000)}`);
-      expect(sc.notice).toMatch(/paired with a startDatetime/);
-    });
-
-    /**
-     * A bigger maxRecords is never offered as the way to fit more into this response — the
-     * budget cut the page. Below the ceiling, though, the continuation should run at 3000: each
-     * continuation request fetches whole clock hours, and clips from outside its window would
-     * otherwise use up a small maxRecords first.
-     */
-    it('continues a page cut below the ceiling at maxRecords 3000, never raising it to fit this response', async () => {
-      mockClips(Array.from({ length: 200 }, (_, i) => longClip(i, secondsAfter(NOON, -i))));
-      const result = await runToolContract(gdeltGetTvClips, {
-        query: 'x',
-        stations: ['CNN'],
-        maxRecords: 200,
-        sort: 'dateDesc',
-        ...WINDOW,
-      });
-      const sc = result.structuredContent as ClipPage;
-      expect(sc.withheldCount).toBeGreaterThan(0);
-      expect(sc.notice).toMatch(/cap was reached too/);
-      expect(sc.notice).toMatch(
-        /Continue with maxRecords 3000: each continuation request fetches whole clock hours/,
-      );
-      expect(sc.notice).not.toMatch(/[Rr]aise maxRecords|[Ii]ncrease maxRecords/);
-    });
-
-    it('adds no maxRecords advice to a cut page already at the ceiling', async () => {
-      mockClips(Array.from({ length: 200 }, (_, i) => longClip(i, secondsAfter(NOON, -i))));
-      const result = await runToolContract(gdeltGetTvClips, {
-        query: 'x',
-        stations: ['CNN'],
-        maxRecords: 3000,
-        sort: 'dateDesc',
-        ...WINDOW,
-      });
-      expect((result.structuredContent as ClipPage).notice).not.toMatch(/Continue with maxRecords/);
-    });
-
-    /**
-     * Follow the continuation to the end against the measured TV API: each resume window goes
-     * back through the input schema, GDELT answers whole clock hours around it, and it rejects
-     * a window under 30 minutes. The dense walk's resume windows shrink toward the fixed
-     * boundary until they are minutes wide — every request must still be accepted, and every
-     * call must emit clips no earlier call did until the window is exhausted.
-     */
-    it.each([
-      [
-        'dateDesc',
-        'sparse',
-        600,
-        60,
-        { startDatetime: '20240630000000', endDatetime: '20240702000000' },
-      ],
-      [
-        'dateAsc',
-        'sparse',
-        600,
-        60,
-        { startDatetime: '20240630000000', endDatetime: '20240702000000' },
-      ],
-      [
-        'dateDesc',
-        'dense',
-        720,
-        10,
-        { startDatetime: '20240701000000', endDatetime: '20240701020000' },
-      ],
-      [
-        'dateAsc',
-        'dense',
-        720,
-        10,
-        { startDatetime: '20240701000000', endDatetime: '20240701020000' },
-      ],
-    ] as const)(
-      'walks a %s continuation over a %s window to completion against the measured TV API',
-      async (sort, _density, count, spacing, window) => {
-        const all = Array.from({ length: count }, (_, i) =>
-          longClip(i, secondsAfter(DAY, spacing * i + 5)),
+    it.each(['dateDesc', 'dateAsc', 'relevance'] as const)(
+      'walks cap continuations under %s across multiple clock hours',
+      async (sort) => {
+        const all = Array.from({ length: 7200 }, (_, i) =>
+          CLIP_AT(secondsAfter(DAY, 1 + i * 2), i),
         );
         const upstream = measuredTvUpstream(all);
         vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
           getTvClips: upstream,
         } as unknown as tvServiceModule.GdeltTvService);
-
-        let input = gdeltGetTvClips.input.parse({
-          query: 'x',
-          stations: ['CNN'],
-          maxRecords: 3000,
-          sort,
-          ...window,
-        });
+        const queue = [{ startDatetime: '20240701000000', endDatetime: '20240701040000' }];
         const seen = new Set<string>();
         let calls = 0;
-        let narrowest = Number.POSITIVE_INFINITY;
-        for (;;) {
-          narrowest = Math.min(narrowest, spanSeconds(input));
-          const result = await runToolContract(gdeltGetTvClips, input);
+        while (queue.length) {
+          const window = queue.shift()!;
+          const result = await runToolContract(gdeltGetTvClips, {
+            query: 'climate',
+            stations: ['CNN'],
+            maxRecords: 3000,
+            sort,
+            ...window,
+          });
           calls++;
           expect(result.isError).toBeFalsy();
           const sc = result.structuredContent as ClipPage;
-          const before = seen.size;
-          for (const c of sc.clips) seen.add(c.archiveUrl);
-          expect(seen.size).toBeGreaterThan(before);
-          if (!sc.continuationWindows) {
-            expect(sc).not.toHaveProperty('withheldCount');
-            break;
-          }
-          expect(sc.continuationWindows).toHaveLength(1);
-          input = gdeltGetTvClips.input.parse({ ...input, ...sc.continuationWindows[0] });
-          expect(calls).toBeLessThan(100);
+          expect(contentText(result).match(/^### /gm)?.length ?? 0).toBe(sc.clips.length);
+          for (const clip of sc.clips) seen.add(clip.archiveUrl);
+          if (sc.continuationWindows) queue.push(...sc.continuationWindows);
+          expect(calls).toBeLessThan(20);
         }
-        expect(calls).toBeGreaterThan(2);
+        expect(calls).toBe(7);
+        expect(upstream).toHaveBeenCalledTimes(calls);
         expect([...seen].sort()).toEqual(all.map((c) => c.archiveUrl).sort());
-        if (_density === 'dense') expect(narrowest).toBeLessThan(30 * 60);
       },
     );
-
-    /**
-     * At a low maxRecords a resumed dateAsc request, floored to the hour, spends its slots on the
-     * minutes already walked before any new clip. The cut page says to resume at maxRecords 3000;
-     * a caller that follows the notice makes progress on every hop.
-     */
-    it('walks a dateAsc continuation at a low maxRecords by following the notice', async () => {
-      const all = Array.from({ length: 720 }, (_, i) => longClip(i, secondsAfter(DAY, 10 * i + 5)));
-      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-        getTvClips: measuredTvUpstream(all),
-      } as unknown as tvServiceModule.GdeltTvService);
-
-      let input = gdeltGetTvClips.input.parse({
-        query: 'x',
-        stations: ['CNN'],
-        maxRecords: 90,
-        sort: 'dateAsc',
-        startDatetime: '20240701000000',
-        endDatetime: '20240701020000',
-      });
-      const seen = new Set<string>();
-      let calls = 0;
-      for (;;) {
-        const result = await runToolContract(gdeltGetTvClips, input);
-        calls++;
-        const sc = result.structuredContent as ClipPage;
-        const before = seen.size;
-        for (const c of sc.clips) seen.add(c.archiveUrl);
-        expect(seen.size).toBeGreaterThan(before);
-        if (!sc.continuationWindows) break;
-        const maxRecords = /maxRecords 3000/.test(sc.notice ?? '') ? 3000 : input.maxRecords;
-        input = gdeltGetTvClips.input.parse({ ...input, ...sc.continuationWindows[0], maxRecords });
-        expect(calls).toBeLessThan(100);
-      }
-      expect([...seen].sort()).toEqual(all.map((c) => c.archiveUrl).sort());
-    });
-
-    it('says how many maxRecords slots out-of-window clips took when the cap was hit', async () => {
-      const outside = Array.from({ length: 70 }, (_, i) => CLIP_AT(secondsAfter(DAY, i), i));
-      const inside = Array.from({ length: 20 }, (_, i) =>
-        CLIP_AT(secondsAfter(DAY, 1800 + i), 100 + i),
-      );
-      mockClips([...outside, ...inside]);
-      const result = await runToolContract(gdeltGetTvClips, {
-        query: 'x',
-        stations: ['CNN'],
-        maxRecords: 90,
-        sort: 'dateAsc',
-        startDatetime: '20240701003000',
-        endDatetime: '20240701020000',
-      });
-      const sc = result.structuredContent as ClipPage;
-      expect(sc.clips).toHaveLength(20);
-      expect(sc.notice).toMatch(/took 70 of the 90 maxRecords slots/);
-      expect(sc.notice).not.toMatch(/not a sign of missing results/);
-      expect(maxRecordsDirectives(sc.notice)).toEqual(['Raise maxRecords']);
-    });
-
-    /**
-     * A cut page that also dropped out-of-window clips after the cap was hit has two reasons to
-     * mention maxRecords — the slots the dropped clips took and the headroom continuation needs —
-     * and one directive covers both.
-     */
-    it('gives one maxRecords directive on a cut, capped page that also dropped clips', async () => {
-      const all = Array.from({ length: 150 }, (_, i) =>
-        longClip(i, secondsAfter('2024-01-16T01:00:05Z', i * 10)),
-      );
-      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-        getTvClips: measuredTvUpstream(all),
-      } as unknown as tvServiceModule.GdeltTvService);
-      const result = await runToolContract(gdeltGetTvClips, {
-        query: 'x',
-        stations: ['CNN'],
-        maxRecords: 100,
-        sort: 'dateAsc',
-        startDatetime: '20240116010500',
-        endDatetime: '20240116015959',
-      });
-      const sc = result.structuredContent as ClipPage;
-      expect(sc.withheldCount).toBeGreaterThan(0);
-      expect(sc.notice).toMatch(/took 30 of the 100 maxRecords slots/);
-      expect(maxRecordsDirectives(sc.notice)).toEqual(['Continue with maxRecords']);
-      expect(sc.notice).toMatch(/only a larger maxRecords reaches clips past this page's cap/);
-    });
-
-    it('gives one maxRecords directive on a cut, capped window inside one clock hour', async () => {
-      const all = Array.from({ length: 150 }, (_, i) =>
-        longClip(i, secondsAfter('2024-01-16T01:00:05Z', i * 10)),
-      );
-      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-        getTvClips: measuredTvUpstream(all),
-      } as unknown as tvServiceModule.GdeltTvService);
-      const result = await runToolContract(gdeltGetTvClips, {
-        query: 'x',
-        stations: ['CNN'],
-        maxRecords: 100,
-        sort: 'relevance',
-        startDatetime: '20240116010000',
-        endDatetime: '20240116012000',
-      });
-      const sc = result.structuredContent as ClipPage;
-      expect(sc.withheldCount).toBeGreaterThan(0);
-      expect(sc.continuationWindows).toHaveLength(2);
-      expect(sc.notice).toMatch(/aired outside/);
-      expect(maxRecordsDirectives(sc.notice)).toEqual(['Continue with maxRecords']);
-    });
-
-    /**
-     * A relevance cut on a 38-minute window: its halves are 19 minutes, which GDELT TV rejects
-     * as sent, so every half is requested as its whole hour and trimmed back to its own seconds.
-     */
-    it('reaches every clip of a 38-minute relevance window by following halves until each fits', async () => {
-      const all = Array.from({ length: 131 }, (_, i) =>
-        longClip(i, secondsAfter('2024-01-16T01:00:00Z', 1 + i * 17)),
-      );
-      const upstream = measuredTvUpstream(all);
-      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-        getTvClips: upstream,
-      } as unknown as tvServiceModule.GdeltTvService);
-      const base = { query: 'x', stations: ['CNN'], maxRecords: 3000, sort: 'relevance' as const };
-      const queue = [{ startDatetime: '20240116010000', endDatetime: '20240116013800' }];
-      const seen = new Set<string>();
-      let calls = 0;
-      while (queue.length > 0) {
-        const window = queue.shift()!;
-        const result = await runToolContract(
-          gdeltGetTvClips,
-          gdeltGetTvClips.input.parse({ ...base, ...window }),
-        );
-        calls++;
-        expect(result.isError).toBeFalsy();
-        const sc = result.structuredContent as ClipPage;
-        for (const c of sc.clips) seen.add(c.archiveUrl);
-        if (sc.continuationWindows) queue.push(...sc.continuationWindows);
-        else expect(sc).not.toHaveProperty('withheldCount');
-        expect(calls).toBeLessThan(50);
-      }
-      expect(calls).toBeGreaterThan(1);
-      expect(seen.size).toBe(131);
-    });
-
-    /**
-     * The page is cut and capped below the ceiling: its withheld clips were fetched and lie inside
-     * the window, so a sub-hour half reaches them; raising maxRecords reaches the rest of the hour.
-     */
-    it('splits a capped, cut relevance window inside one clock hour, and a half reaches withheld clips', async () => {
-      const all = Array.from({ length: 150 }, (_, i) =>
-        longClip(i, secondsAfter('2024-01-16T01:00:00Z', 1 + i * 10)),
-      );
-      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-        getTvClips: measuredTvUpstream(all),
-      } as unknown as tvServiceModule.GdeltTvService);
-      const base = { query: 'x', stations: ['CNN'], maxRecords: 100, sort: 'relevance' as const };
-      const result = await runToolContract(gdeltGetTvClips, {
-        ...base,
-        startDatetime: '20240116010000',
-        endDatetime: '20240116013800',
-      });
-      const sc = result.structuredContent as ClipPage;
-      expect(sc.withheldCount).toBeGreaterThan(0);
-      expect(sc.continuationWindows).toEqual([
-        { startDatetime: '20240116010000', endDatetime: '20240116011900' },
-        { startDatetime: '20240116011901', endDatetime: '20240116013800' },
-      ]);
-      expect(sc.notice).toMatch(/clips past that cap are out of reach of any narrower window/);
-      expect(maxRecordsDirectives(sc.notice)).toEqual(['Continue with maxRecords']);
-      expect(sc.notice).not.toMatch(/not retrievable/);
-
-      const emitted = new Set(sc.clips.map((c) => c.archiveUrl));
-      const reached: string[] = [];
-      for (const half of sc.continuationWindows!) {
-        const page = await runToolContract(gdeltGetTvClips, { ...base, ...half });
-        for (const c of (page.structuredContent as ClipPage).clips) {
-          if (!emitted.has(c.archiveUrl)) reached.push(c.archiveUrl);
-        }
-      }
-      expect(reached.length).toBeGreaterThan(0);
-    });
-
-    it('splits a relevance cut on the hour, so the halves share no clip and cover the window', async () => {
-      /** ~520-byte clips: 102 of them overflow the budget, each half's 51 fit. */
-      const midClip = (i: number, date: string) => ({
-        ...CLIP_AT(date, i),
-        snippet: 'x'.repeat(350),
-      });
-      const clips = [
-        ...Array.from({ length: 50 }, (_, i) => midClip(i, secondsAfter(DAY, 30 + i * 70))),
-        midClip(50, '2024-07-01T00:59:59Z'),
-        midClip(51, '2024-07-01T01:00:00Z'),
-        ...Array.from({ length: 50 }, (_, i) =>
-          midClip(52 + i, secondsAfter('2024-07-01T01:00:00Z', 30 + i * 70)),
-        ),
-      ];
-      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-        getTvClips: measuredTvUpstream(clips),
-      } as unknown as tvServiceModule.GdeltTvService);
-      const base = { query: 'x', stations: ['CNN'], maxRecords: 3000, sort: 'relevance' as const };
-      const first = await runToolContract(gdeltGetTvClips, {
-        ...base,
-        startDatetime: '20240701000000',
-        endDatetime: '20240701020000',
-      });
-      const halves = (first.structuredContent as ClipPage).continuationWindows!;
-      expect(halves).toEqual([
-        { startDatetime: '20240701000000', endDatetime: '20240701005959' },
-        { startDatetime: '20240701010000', endDatetime: '20240701020000' },
-      ]);
-      const emitted: Array<Set<string>> = [];
-      for (const half of halves) {
-        const page = await runToolContract(gdeltGetTvClips, { ...base, ...half });
-        const sc = page.structuredContent as ClipPage;
-        expect(sc).not.toHaveProperty('withheldCount');
-        emitted.push(new Set(sc.clips.map((c) => c.archiveUrl)));
-      }
-      const [a, b] = emitted as [Set<string>, Set<string>];
-      expect([...a].filter((url) => b.has(url))).toEqual([]);
-      expect(new Set([...a, ...b]).size).toBe(clips.length);
-    });
   });
 
   /**
@@ -988,7 +539,7 @@ describe('gdeltGetTvClips', () => {
 
   /**
    * GDELT TV answers whole clock hours, so it returns clips aired outside a window whose edges
-   * are not on the hour. Clips dated outside the resolved window are dropped before the budget,
+   * are not on the hour. Clips dated outside the resolved window are dropped,
    * and the notice says how many — as an expected edge effect, not missing results.
    */
   describe('clips dated outside the resolved window', () => {
@@ -1076,11 +627,46 @@ describe('gdeltGetTvClips', () => {
 });
 
 /**
- * A maxRecords above the 3000 ceiling, up to 30000, runs exactly as a call at 3000 — the same
- * upstream request, cap-hit detection, out-of-window slot count, byte-budget cut, notice, and
+ * A maxRecords above the 3000 ceiling, runs exactly as a call at 3000 — the same
+ * upstream request, cap-hit detection, out-of-window slot count, notice, and
  * continuation — and adds a `limitClamp` disclosure on both surfaces.
  */
 describe('gdelt_get_tv_clips maxRecords clamp', () => {
+  it('rejects above the served cap before service access when clamping is disabled', async () => {
+    vi.stubEnv('GDELT_CLAMP_LIMITS', 'false');
+    vi.resetModules();
+    try {
+      const { gdeltGetTvClips: strictTool } = await import(
+        '@/mcp-server/tools/definitions/get-tv-clips.tool.js'
+      );
+      const service = await import('@/services/gdelt/gdelt-tv-service.js');
+      const accessor = vi.spyOn(service, 'getGdeltTvService');
+      for (const maxRecords of [3001, '3001']) {
+        const result = await runToolContract(strictTool, { query: 'climate', maxRecords } as never);
+        expect(result.isError).toBe(true);
+        expect(contentText(result)).toContain('maxRecords');
+      }
+      expect(accessor).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
+  it.each([0, -1, 1.5, true, false])(
+    'rejects invalid count %s before service access',
+    async (maxRecords) => {
+      const accessor = vi.spyOn(tvServiceModule, 'getGdeltTvService');
+      const result = await runToolContract(gdeltGetTvClips, {
+        query: 'climate',
+        maxRecords,
+      } as never);
+      expect(result.isError).toBe(true);
+      expect(accessor).not.toHaveBeenCalled();
+      expect(contentText(result)).toContain('maxRecords');
+    },
+  );
+
   // Not on the hour, so the whole-hour request returns clips from before the window too.
   const WINDOW = { startDatetime: '20240116010500', endDatetime: '20240116045959' };
 
@@ -1111,21 +697,22 @@ describe('gdelt_get_tv_clips maxRecords clamp', () => {
   }
 
   // A clip every two seconds from 01:00:05 through the fourth hour: GDELT's whole-hour answer
-  // fills 3000 slots, 148 of them with clips from before the window, and the page is cut.
+  // fills 3000 slots, 148 of them with clips from before the window.
   const ALL = Array.from({ length: 7000 }, (_, i) =>
     longClip(i, secondsAfter('2024-01-16T01:00:05Z', i * 2)),
   );
 
-  it('runs a cut, capped page at 3001 and 30000 exactly as at 3000', async () => {
+  it('runs a capped page at 3001 and 30000 exactly as at 3000', async () => {
     const atCap = await run(ALL, { maxRecords: 3000 });
     const atCapPage = atCap.result.structuredContent as ClipPage;
     expect(atCap.sent).toBe(3000);
-    expect(atCapPage.withheldCount).toBeGreaterThan(0);
+    expect(atCapPage.clips).toHaveLength(2852);
+    expect(atCapPage).not.toHaveProperty('withheldCount');
     expect(atCapPage.notice).toMatch(/took 148 of the 3000 maxRecords slots/);
     expect(atCap.result.structuredContent).not.toHaveProperty('limitClamp');
     expect(contentText(atCap.result)).not.toContain('Limit clamped');
 
-    for (const requested of [3001, 30000]) {
+    for (const requested of [3001, 30000, 3_000_000]) {
       const clamped = await run(ALL, { maxRecords: requested });
       expect(clamped.sent).toBe(3000);
       expect(clamped.result.structuredContent).toMatchObject({
@@ -1259,48 +846,15 @@ describe('gdelt_get_tv_clips station IDs', () => {
     expect(contentText(result)).toContain(sc.notice!);
   });
 
-  it('names only labels on the clips the response returns, not on clips the budget withheld', async () => {
-    const heavy = exactFitClips(100, 480);
-    mockClips([...heavy, { ...UNMAPPED, date: secondsAfter(DAY, 200) }]);
-    const result = await runToolContract(gdeltGetTvClips, {
-      query: 'x',
-      stations: ['CNN'],
-      maxRecords: 3000,
-      startDatetime: '20240701000000',
-      endDatetime: '20240702000000',
-    });
+  it('includes unresolved labels even after a large group of resolved clips', async () => {
+    const heavy = Array.from({ length: 100 }, (_, i) => longClip(i, NOON));
+    mockClips([...heavy, { ...UNMAPPED, date: NOON }]);
+    const result = await runToolContract(gdeltGetTvClips, { query: 'climate', maxRecords: 3000 });
     const sc = result.structuredContent as ClipPage;
-    expect(sc.clips).toHaveLength(100);
-    expect(sc.withheldCount).toBe(1);
-    expect(sc.notice).not.toMatch(/KZZZ/);
-  });
-
-  /**
-   * The heading renders the label and the ID, and the budget charges the rendered heading. A
-   * label of `*`s renders escaped at two bytes per character against one in JSON, so the rendered
-   * line is the larger charge; one more `*` takes a page fitting exactly 48,000 bytes over by two
-   * while its JSON stays under. A heading without the label would leave JSON the charge and fit
-   * all 100.
-   */
-  it('charges each clip for the station label and ID its heading renders', async () => {
-    const stars = { stationName: `KZZZ ${'*'.repeat(100)}` };
-    const fitted = exactFitClips(100, 480, stars);
-    expect(utf8(JSON.stringify(fitted[0])) + 1).toBeLessThan(470);
-    const longer = fitted.map((clip, i) =>
-      i === 50 ? { ...clip, stationName: `${clip.stationName}*` } : clip,
-    );
-    expect(chargeOf(longer[50]!)).toBe(482);
-    mockClips(longer);
-    const result = await runToolContract(gdeltGetTvClips, {
-      query: 'x',
-      stations: ['CNN'],
-      maxRecords: 3000,
-      startDatetime: '20240701000000',
-      endDatetime: '20240702000000',
-    });
-    const sc = result.structuredContent as ClipPage;
-    expect(sc.clips).toHaveLength(99);
-    expect(sc.withheldCount).toBe(1);
+    expect(sc.clips).toHaveLength(101);
+    expect(sc).not.toHaveProperty('withheldCount');
+    expect(sc.notice).toMatch(/KZZZ/);
+    expect(contentText(result)).toContain('KZZZ Local News');
   });
 
   it('describes the station fields and the unresolved-ID notice', () => {
@@ -1316,7 +870,7 @@ describe('gdelt_get_tv_clips station IDs', () => {
     );
     // The drop notice fires on an uncut page too, so the absence condition names the drop.
     expect(gdeltGetTvClips.enrichment?.notice?.description).toMatch(
-      /Absent when a non-empty result set fit under both the cap and the budget, no clip was dropped as out of window, and every clip carries its station ID\.$/,
+      /Absent when a non-empty result set is below the cap, no clip was dropped as out of window, and every clip carries its station ID\.$/,
     );
   });
 
@@ -1398,16 +952,13 @@ describe('gdelt_get_tv_clips station IDs', () => {
 
 // ─── Fixtures and fakes ───────────────────────────────────────────────────────
 
-const BUDGET = 48_000;
 const DAY = '2024-07-01T00:00:00Z';
 const NOON = '2024-07-01T12:00:00Z';
-const HEADING = '## GDELT TV Clips';
 
 type Clip = typeof CLIP;
 type ClipPage = {
   clips: Clip[];
   totalCount: number;
-  withheldCount?: number;
   notice?: string;
   continuationWindows?: Array<{ startDatetime: string; endDatetime: string }>;
 };
@@ -1421,38 +972,13 @@ function mockClips(clips: unknown[], stationCatalogUnavailable = false) {
   } as unknown as tvServiceModule.GdeltTvService);
 }
 
-function utf8(text: string): number {
-  return Buffer.byteLength(text, 'utf8');
-}
-
-function sum(values: number[]): number {
-  return values.reduce((total, v) => total + v, 0);
-}
-
-/** What one clip adds to each surface, measured through the tool's own format(). */
-function chargeOf(clip: Clip): number {
-  const text = (gdeltGetTvClips.format!({ clips: [clip] })[0] as { text: string }).text;
-  return Math.max(utf8(JSON.stringify(clip)) + 1, utf8(text) - utf8(HEADING));
-}
-
 /** ISO 8601 (second precision) `seconds` after `iso`. */
 function secondsAfter(iso: string, seconds: number): string {
   return new Date(Date.parse(iso) + seconds * 1000).toISOString().replace('.000Z', 'Z');
 }
 
-function gdeltAt(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 19).replace(/[-:T]/g, '');
-}
-
 function CLIP_AT(date: string, i: number): Clip {
   return { ...CLIP, date, archiveUrl: `https://archive.org/details/CLIP_${i}` };
-}
-
-/** Every sentence in a notice that tells the caller to change maxRecords. */
-function maxRecordsDirectives(notice: string | undefined): string[] {
-  return [...(notice ?? '').matchAll(/(?:Continue with|[Rr]aise|[Ii]ncrease) maxRecords/g)].map(
-    ([match]) => match,
-  );
 }
 
 /** A clip with a long multi-byte snippet and long URLs — heavier than any live sample. */
@@ -1468,30 +994,10 @@ function longClip(i: number, date: string): Clip {
   };
 }
 
-/** `count` clips each charged exactly `charge` bytes, found by padding the snippet. */
-function exactFitClips(count: number, charge: number, extra: Partial<Clip> = {}): Clip[] {
-  return Array.from({ length: count }, (_, i) => {
-    const base = { ...CLIP_AT(secondsAfter(DAY, i), 1000 + i), ...extra };
-    for (let pad = 0; pad < charge; pad++) {
-      const clip = { ...base, snippet: `s${'x'.repeat(pad)}` };
-      if (chargeOf(clip) === charge) return clip;
-    }
-    throw new Error(`no padding gives a ${charge}-byte clip`);
-  });
-}
-
 function parseGdelt(v: string): number {
   return Date.parse(
     `${v.slice(0, 4)}-${v.slice(4, 6)}-${v.slice(6, 8)}T${v.slice(8, 10)}:${v.slice(10, 12)}:${v.slice(12, 14)}Z`,
   );
-}
-
-/** Seconds an input's explicit window spans. */
-function spanSeconds(input: {
-  startDatetime?: string | undefined;
-  endDatetime?: string | undefined;
-}): number {
-  return (parseGdelt(input.endDatetime!) - parseGdelt(input.startDatetime!)) / 1000;
 }
 
 /**

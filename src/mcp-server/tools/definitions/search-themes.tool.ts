@@ -8,14 +8,16 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGdeltThemeService, themeQueryWords } from '@/services/gdelt/gdelt-theme-service.js';
-import { CLAMP_HEADROOM, clampToCap, limitClampSchema, renderLimitClamp } from '../limit-clamp.js';
-import { escapeMarkdown, markdownQuote, renderQueryEcho } from '../markdown-escape.js';
+import {
+  clampToCap,
+  countInputSchema,
+  limitClampSchema,
+  renderLimitClamp,
+} from '../limit-clamp.js';
+import { escapeMarkdown, markdownQuote, quoteText, renderQueryEcho } from '../markdown-escape.js';
 
 /** Page-size ceiling: 100 of the longest identifiers stay near 17 KB of structuredContent. */
 const MAX_MATCHES_PER_PAGE = 100;
-
-/** The `limit` schema maximum: past it a call is rejected; up to it, clamped to the page ceiling. */
-const MAX_LIMIT_ACCEPTED = MAX_MATCHES_PER_PAGE * CLAMP_HEADROOM;
 
 export const gdeltSearchThemes = tool('gdelt_search_themes', {
   title: 'Search GDELT GKG Themes',
@@ -79,19 +81,11 @@ export const gdeltSearchThemes = tool('gdelt_search_themes', {
         'Zero-based offset into the ranked matches. Use nextOffset from the preceding response with ' +
           'the same query to retrieve the next page.',
       ),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(
-        MAX_LIMIT_ACCEPTED,
-        `limit must be at most ${MAX_LIMIT_ACCEPTED} (a value above ${MAX_MATCHES_PER_PAGE} runs at ${MAX_MATCHES_PER_PAGE}).`,
-      )
-      .default(25)
-      .describe(
-        `Maximum matches returned in this response (1–${MAX_MATCHES_PER_PAGE}; a value up to ` +
-          `${MAX_LIMIT_ACCEPTED} runs at ${MAX_MATCHES_PER_PAGE}, and the response says so in limitClamp).`,
-      ),
+    limit: countInputSchema(
+      MAX_MATCHES_PER_PAGE,
+      25,
+      'Maximum matches returned in this response. Values above 100 run at 100 with a limitClamp disclosure when clamping is enabled.',
+    ),
   }),
 
   output: z.object({
@@ -158,7 +152,7 @@ export const gdeltSearchThemes = tool('gdelt_search_themes', {
     if (themeQueryWords(input.query).length === 0) {
       throw ctx.fail(
         'invalid_query',
-        `Query ${markdownQuote(input.query)} has no letter or digit to match against theme identifiers.`,
+        `Query ${quoteText(input.query)} has no letter or digit to match against theme identifiers.`,
       );
     }
 
@@ -172,7 +166,7 @@ export const gdeltSearchThemes = tool('gdelt_search_themes', {
         offset: input.offset,
         totalMatches,
         recovery: {
-          hint: `Retry with offset 0–${totalMatches - 1}; ${markdownQuote(input.query)} has ${totalMatches} matches.`,
+          hint: `Retry with offset 0–${totalMatches - 1}; ${quoteText(input.query)} has ${totalMatches} matches.`,
         },
       });
     }

@@ -299,7 +299,7 @@ describe('gdeltFetch pacing', () => {
     );
     expect(error.data).toMatchObject({
       reason: 'gdelt_rate_limited',
-      retryable: false,
+      retryable: true,
       retryAfter: GDELT_MAX_QUEUE_WAIT_MS / 1000,
       recovery: {
         hint: expect.stringMatching(
@@ -325,7 +325,7 @@ describe('gdeltFetch pacing', () => {
       code: JsonRpcErrorCode.RateLimited,
       data: {
         reason: 'gdelt_rate_limited',
-        retryable: false,
+        retryable: true,
         recovery: { hint: expect.stringMatching(/wait about \d+ seconds/i) },
       },
     });
