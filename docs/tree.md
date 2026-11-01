@@ -1,6 +1,6 @@
 # gdelt-mcp-server - Directory Structure
 
-Generated on: 2026-10-14 18:04:28
+Generated on: 2026-11-01 07:30:59
 
 ```text
 gdelt-mcp-server/
@@ -31,6 +31,7 @@ gdelt-mcp-server/
 │   ├── 0.5.x/
 │   ├── 0.6.x/
 │   ├── 0.7.x/
+│   ├── 0.8.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -43,6 +44,8 @@ gdelt-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -141,6 +144,9 @@ gdelt-mcp-server/
 │   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
+├── skills/
+│   └── gdelt-guide/
+│       └── SKILL.md
 ├── src/
 │   ├── config/
 │   │   └── server-config.ts
@@ -154,6 +160,7 @@ gdelt-mcp-server/
 │   │       │   ├── get-coverage-breakdown.tool.ts
 │   │       │   ├── get-coverage-timeline.tool.ts
 │   │       │   ├── get-tone-distribution.tool.ts
+│   │       │   ├── get-tv-breakdown.tool.ts
 │   │       │   ├── get-tv-clips.tool.ts
 │   │       │   ├── get-tv-context.tool.ts
 │   │       │   ├── index.ts
@@ -164,7 +171,6 @@ gdelt-mcp-server/
 │   │       ├── date-range.ts
 │   │       ├── limit-clamp.ts
 │   │       ├── markdown-escape.ts
-│   │       ├── response-budget.ts
 │   │       └── station-ids.ts
 │   ├── services/
 │   │   └── gdelt/
@@ -182,6 +188,8 @@ gdelt-mcp-server/
 │   │   └── tv-station-catalog.json
 │   ├── prompts/
 │   ├── resources/
+│   ├── scripts/
+│   │   └── bundle-agent-docs.test.ts
 │   ├── services/
 │   │   ├── date-resolution.test.ts
 │   │   ├── gdelt-doc-service.test.ts
@@ -189,26 +197,30 @@ gdelt-mcp-server/
 │   │   ├── gdelt-fetch.test.ts
 │   │   ├── gdelt-pacer.test.ts
 │   │   ├── gdelt-theme-service.test.ts
-│   │   └── gdelt-tv-service.test.ts
+│   │   ├── gdelt-tv-service.test.ts
+│   │   └── request-contract.test.ts
 │   └── tools/
+│       ├── count-limits.test.ts
 │       ├── date-range.test.ts
 │       ├── error-propagation.test.ts
 │       ├── get-coverage-breakdown.tool.test.ts
 │       ├── get-coverage-timeline.tool.test.ts
 │       ├── get-tone-distribution.tool.test.ts
+│       ├── get-tv-breakdown.tool.test.ts
 │       ├── get-tv-clips.tool.test.ts
 │       ├── get-tv-context.tool.test.ts
 │       ├── input-validation.test.ts
 │       ├── list-tv-stations.tool.test.ts
 │       ├── markdown-escape.test.ts
 │       ├── markdown-render.ts
-│       ├── response-budget.test.ts
 │       ├── search-articles.tool.test.ts
 │       ├── search-themes.tool.test.ts
 │       ├── search-tv.tool.test.ts
 │       ├── security.test.ts
 │       ├── theme-operator-hints.test.ts
-│       └── tool-surface.test.ts
+│       ├── timespan-contract.test.ts
+│       ├── tool-surface.test.ts
+│       └── tv-analytics-regressions.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes
@@ -225,7 +237,9 @@ gdelt-mcp-server/
 ├── Dockerfile
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── tsconfig.build.json
