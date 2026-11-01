@@ -55,8 +55,11 @@ export function themeQueryWords(query: string): string[] {
 export class GdeltThemeService {
   /** The one load in flight or finished. Reset on failure so the next call fetches again. */
   private index: Promise<readonly ThemeRow[]> | undefined;
+  private readonly timeoutMs: number;
 
-  constructor(private readonly timeoutMs: number) {}
+  constructor(timeoutMs: number) {
+    this.timeoutMs = timeoutMs;
+  }
 
   /**
    * Match `query` against every theme identifier. A theme matches when each query word is a
