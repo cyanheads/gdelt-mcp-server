@@ -141,11 +141,18 @@ const HTML_ENTITIES = new Map([
   ['&amp;', '&'],
 ]);
 
-/** The text rendered HTML displays: its tags stripped and the entities `literalHtml` writes decoded. */
+/**
+ * The text rendered HTML displays: its tags stripped, repeating until a pass removes nothing so
+ * no removal can leave a tag behind, and the entities `literalHtml` writes decoded.
+ */
 export function displayedText(html: string): string {
-  return html
-    .replace(/<[^>]*>/g, '')
-    .replace(/&(?:lt|gt|quot|amp);/g, (entity) => HTML_ENTITIES.get(entity) as string);
+  let text = html;
+  let previous: string;
+  do {
+    previous = text;
+    text = text.replace(/<[^>]*>/g, '');
+  } while (text !== previous);
+  return text.replace(/&(?:lt|gt|quot|amp);/g, (entity) => HTML_ENTITIES.get(entity) as string);
 }
 
 /** The `href` a link destination resolves to when it parses as exactly `url`. */
