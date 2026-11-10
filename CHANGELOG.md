@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.9.0](changelog/0.9.x/0.9.0.md) — 2026-11-10 · ⚠️ Breaking
+
+The TV tools refuse stations entries that are not station IDs, and an empty TV result names the selected stations whose monitoring range the window misses. Markdown escaping no longer corrupts bare URLs and emails in GFM renderers. Adopts @cyanheads/mcp-ts-core ^0.13.22.
+
 ## [0.8.1](changelog/0.8.x/0.8.1.md) — 2026-11-01
 
 Response cache that serves a stored answer when GDELT refuses, an optional local GKG mirror the DOC tools fall back to, UTC timespan math, and mode-qualified analytics date descriptions.
