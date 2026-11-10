@@ -183,7 +183,7 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
       limit: countInputSchema(
         400,
         10,
-        'Maximum bins per page (default 10, cap 400). Larger counts clamp to 400 unless GDELT_CLAMP_LIMITS=false.',
+        'Maximum bins per page (default 10, cap 400). Larger counts clamp with limitClamp; strict deployments reject them.',
       ),
       offset: z
         .number()

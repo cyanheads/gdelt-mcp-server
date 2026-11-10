@@ -220,7 +220,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       limit: countInputSchema(
         75,
         10,
-        'Maximum series per page (default 10, cap 75). Larger counts clamp to 75 unless GDELT_CLAMP_LIMITS=false.',
+        'Maximum series per page (default 10, cap 75). Larger counts clamp with limitClamp; strict deployments reject them.',
       ),
       offset: z
         .number()
