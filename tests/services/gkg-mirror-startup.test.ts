@@ -184,6 +184,42 @@ describe('initGkgMirrorClient / disposeGkgMirrorClient', () => {
     });
   });
 
+  it('logs a tick skipped while another process syncs the store, and the job does not fail', async () => {
+    fake.refresh.mockResolvedValue({ ran: false, reason: 'sync_locked' });
+    const info = vi.spyOn(logger, 'info');
+    const error = vi.spyOn(logger, 'error');
+    await real.initGkgMirrorClient(CONFIG, 'http');
+
+    await job()?.task.execute();
+
+    expect(info).toHaveBeenCalledWith(
+      'GKG mirror refresh skipped: another process is syncing the store',
+      expect.objectContaining({ operation: `scheduler:job:${JOB_ID}` }),
+    );
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('fails the job when a refresh fails, and not when closing the client stopped it', async () => {
+    const error = vi.spyOn(logger, 'error');
+    await real.initGkgMirrorClient(CONFIG, 'http');
+
+    fake.refresh.mockRejectedValueOnce(new Error('data.gdeltproject.org answered HTTP 503'));
+    await job()?.task.execute();
+    expect(error).toHaveBeenCalledWith(
+      `Job '${JOB_ID}' failed.`,
+      expect.objectContaining({ message: 'data.gdeltproject.org answered HTTP 503' }),
+      expect.anything(),
+    );
+
+    error.mockClear();
+    fake.refresh.mockImplementationOnce(async () => {
+      Object.assign(fake.client, { closing: true });
+      throw Object.assign(new Error('This operation was aborted'), { name: 'AbortError' });
+    });
+    await job()?.task.execute();
+    expect(error).not.toHaveBeenCalled();
+  });
+
   it('on stdio, starts the client and schedules nothing', async () => {
     await real.initGkgMirrorClient(CONFIG, 'stdio');
 

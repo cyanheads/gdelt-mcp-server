@@ -152,14 +152,20 @@ export class GkgMirrorClient {
 
   /**
    * Run one refresh in the worker; a call while one runs joins it rather than starting another.
-   * Resolves `{ ran: false }` until an init has completed. Rejects when the run fails (it has
-   * already been logged); the next run resumes from the slot ledger.
+   * Resolves `{ ran: false }` until an init has completed, and while another process holds the
+   * store's sync lease. Rejects when the run fails (it has already been logged), or as an abort
+   * when {@link close} stopped it; the next run resumes from the slot ledger.
    */
   refresh(): Promise<GkgMirrorRefreshOutcome> {
     this.#refreshing ??= this.#call('refresh', {}).finally(() => {
       this.#refreshing = undefined;
     });
     return this.#refreshing;
+  }
+
+  /** True once {@link close} has been called. */
+  get closing(): boolean {
+    return this.#closing !== undefined;
   }
 
   /**
@@ -304,9 +310,9 @@ let refreshScheduled = false;
 
 /**
  * Start the mirror worker when `GDELT_MIRROR_PATH` is set, and on HTTP transport schedule a
- * refresh every 15 minutes (skipped until an init has completed; a tick never overlaps a running
- * one). Init never runs here: it is the operator's `mirror:init`. stdio operators run
- * `mirror:refresh` from cron instead.
+ * refresh every 15 minutes (skipped until an init has completed, and while another process
+ * syncs the store; a tick never overlaps a running one). Init never runs here: it is the
+ * operator's `mirror:init`. stdio operators run `mirror:refresh` from cron instead.
  *
  * A store that will not open rejects with a `ConfigurationError` naming the path, why, and the
  * fix, which the framework prints as its startup banner before exiting 1.
@@ -335,7 +341,12 @@ export async function initGkgMirrorClient(
       REFRESH_JOB_ID,
       REFRESH_SCHEDULE,
       async (context) => {
-        const outcome = await client.refresh();
+        const outcome = await client.refresh().catch((error: unknown) => {
+          // Teardown stopped the run, which the worker logged as stopped: no job failure.
+          if (client.closing) return;
+          throw error;
+        });
+        if (!outcome) return;
         if (outcome.ran) {
           /**
            * The logger writes only a context's canonical fields and `extra`, so the counts go in
@@ -348,7 +359,11 @@ export async function initGkgMirrorClient(
               additionalContext: { ...outcome.result },
             }),
           );
-        } else logger.debug('GKG mirror refresh skipped: no init has completed', context);
+        } else if (outcome.reason === 'not_ready') {
+          logger.debug('GKG mirror refresh skipped: no init has completed', context);
+        } else {
+          logger.info('GKG mirror refresh skipped: another process is syncing the store', context);
+        }
       },
       'Refresh the local GKG mirror from the 15-minute GKG feeds',
     );

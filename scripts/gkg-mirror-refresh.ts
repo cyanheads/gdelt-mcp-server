@@ -1,8 +1,8 @@
 /**
  * @fileoverview `bun run mirror:refresh` — one refresh of the local GKG mirror: fetch the slots
  * published since the last run and expire those that left the window. The HTTP server schedules
- * this itself every 15 minutes; stdio operators run this script from cron instead. Do not run it
- * against a store a running HTTP server is refreshing.
+ * this itself every 15 minutes; stdio operators run this script from cron instead. While another
+ * process syncs the store, the run stops before fetching anything and the script exits 1.
  * @module scripts/gkg-mirror-refresh
  */
 

@@ -30,10 +30,13 @@ export type GkgMirrorWorkerRequest =
 
 export type GkgMirrorWorkerOp = GkgMirrorWorkerRequest['op'];
 
-/** A refresh that ran, or the reason it did not: no init has completed yet. */
+/**
+ * A refresh that ran, or the reason it did not: no init has completed yet, or another process
+ * (an operator's `mirror:init` or `mirror:refresh`) holds the store's sync lease.
+ */
 export type GkgMirrorRefreshOutcome =
   | { ran: true; result: SyncResult }
-  | { ran: false; reason: 'not_ready' };
+  | { ran: false; reason: 'not_ready' | 'sync_locked' };
 
 /** Reply value per operation. */
 export type GkgMirrorWorkerReplies = {
@@ -121,6 +124,12 @@ export async function serveGkgMirrorWorker(
         refresh = { abort, done };
         try {
           return { ran: true, result: await done };
+        } catch (error) {
+          // The lease is claimed before the walk starts, so a locked run fetched and wrote nothing.
+          if (error instanceof McpError && error.data?.reason === 'sync_locked') {
+            return { ran: false, reason: 'sync_locked' };
+          }
+          throw error;
         } finally {
           refresh = undefined;
         }

@@ -237,6 +237,23 @@ describe('GkgMirrorClient', () => {
     await expect(third).resolves.toMatchObject({ ran: true, result: { pagesFetched: 0 } });
   });
 
+  it("skips a refresh while another process holds the store's sync lease, and runs once it is released", async () => {
+    const fixture = await prepareStore({ ready: true });
+    const leases = fixture.store.syncLease;
+    if (!leases) throw new Error('The SQLite mirror store provides no sync lease.');
+    const held = await leases.claim('another-process', 60_000);
+    if (!held) throw new Error('The fixture could not claim the sync lease.');
+    const client = await startClient(fixture.path);
+
+    await expect(client.refresh()).resolves.toEqual({ ran: false, reason: 'sync_locked' });
+
+    await leases.release(held);
+    await expect(client.refresh()).resolves.toMatchObject({
+      ran: true,
+      result: { pagesFetched: 2 },
+    });
+  });
+
   it('closes the store on close(), checkpointing its WAL, after which a query answers store_error', async () => {
     const fixture = await prepareStore({ ready: true });
     const client = await startClient(fixture.path);
@@ -256,7 +273,10 @@ describe('GkgMirrorClient', () => {
     const client = await startClient(fixture.path, 'hang');
 
     const refresh = client.refresh();
+    // The scheduled job reads `closing` to tell this stop from a refresh failure.
+    expect(client.closing).toBe(false);
     const closed = client.close();
+    expect(client.closing).toBe(true);
     const error = await refresh.then(
       () => undefined,
       (reason: unknown) => reason,
