@@ -101,13 +101,13 @@ News and TV coverage analysis from the GDELT Project: global news in 65+ languag
 
 ### `gdelt_search_tv` <sub>tool</sub>
 
-- Structured `stations` (e.g. `["CNN", "FOXNEWS"]`) preserve the entire requested list. TV queries can also use station, network, or market selectors; verify IDs and coverage dates through the station catalog
+- Structured `stations` (e.g. `["CNN", "FOXNEWS"]`) take station IDs, not display labels. Each entry is trimmed, blank entries are dropped, and the rest of the list is sent in full; an entry that is not letters and digits (`"FOX News"`, `"CNN,MSNBC"`, `"CNN*"`) fails with `invalid_query` before any request. TV queries can also use station, network, or market selectors; verify IDs and coverage dates through the station catalog
 - `normalize` toggles relative airtime % (default) vs. raw matching 15-second clip counts; optional `dateres` aggregation (`hour`/`day`/`week`/`month`/`year`). TV operators: `station:`, `network:`, `market:`, `show:`, `context:`
 - Each series carries `station` (the ID the `stations` input takes, `FOXNEWS`) and `stationName` (GDELT's label, `FOX News`). If an ID can't be resolved, the series keeps `stationName` without `station` and the notice says so
 - Pages points in date-then-station-name order (default 500, cap 20,000); pass `nextOffset` with the same inputs for the next page. The text surface's per-station count, sum, and peak cover only the returned page
 - `combined: true` pools stations into a `Combined` timeline. Normalized values use pooled matching clips divided by pooled monitored clips, not an average of station percentages; no station ID is assigned to the combined series
 - Smoothing accepts 0–30 timesteps and discloses leading-window loss and possible lag. Recognized upstream date resolution takes precedence over requested or inferred resolution
-- Check station date ranges with `gdelt_list_tv_stations` before querying recent events
+- A relative `timespan` counts back from now, past the end of most stations' monitoring; for archived periods pass `startDatetime`/`endDatetime` inside a station's range from `gdelt_list_tv_stations`. An empty result for `stations` names each selected station whose monitoring range the window misses, with that range
 
 ---
 
@@ -117,6 +117,7 @@ News and TV coverage analysis from the GDELT Project: global news in 65+ languag
 - Each clip: show name, `station` and `stationName` (resolved as in `gdelt_search_tv`, so a series' `station` passes straight into `stations`), air timestamp, 15-second transcript excerpt, direct Archive.org link, and optional thumbnail
 - The server requests whole clock hours, so any window width works; clips outside an explicit `startDatetime`/`endDatetime` window are dropped and counted in the notice (a `timespan` call drops nothing)
 - Returns every fetched in-window clip. At the provider ceiling, `continuationWindows` gives narrower windows to re-query (de-duplicate by `archiveUrl`); whole-hour retrieval can still prevent reaching every match in a dense hour
+- An empty result for `stations` names each selected station whose monitoring range the window misses
 
 ---
 
@@ -125,6 +126,7 @@ News and TV coverage analysis from the GDELT Project: global news in 65+ languag
 - Station rankings report percentages of station airtime by default, or matching 15-second clip counts with `normalize: false`; resolvable rows include a station ID
 - Show rankings always report percentages of matching clips, including when `normalize: false`. Labels are preserved exactly, but GDELT sometimes abbreviates them with ellipses, so they are not all reusable `show:` selectors
 - Rows sort by descending value, then label, with `offset` / `limit` paging (default 25, cap 10,000), `totalRows`, and `nextOffset`
+- An empty result for `stations` names each selected station whose monitoring range the window misses
 
 ---
 
@@ -134,6 +136,7 @@ News and TV coverage analysis from the GDELT Project: global news in 65+ languag
 - Terms and scores come from GDELT's sample of the 200 most relevant matching clips, not all coverage; every non-empty response says so in `notice`. Compare windows or stations with a separate, narrower call for each
 - Relative frequency scores 0–100, where the query term itself scores 100
 - Terms sort by score and page with `offset` / `limit` (default 25, cap 25,000). `totalTerms` counts the returned vocabulary across all pages, not matching clips; `nextOffset` and `truncated` disclose remaining terms
+- An empty result for `stations` names each selected station whose monitoring range the window misses
 
 ---
 
@@ -246,7 +249,7 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
 
 ### Prerequisites
 
-- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+- [Bun v1.4.4](https://bun.sh/) or higher (or Node.js v24+).
 - No API key required — GDELT is a free public API.
 
 ### Installation
@@ -368,7 +371,7 @@ docker exec gdelt bun run mirror:init
 
 **Disk and bandwidth.** A stored article takes about 1.8 KB, plus about 3 MB for the domain-to-country table. A 7-day window (the default) runs about 3 GB in a typical week and up to about 5.6 GB at weekday peak volume; a busy 15-minute slot holds up to about 4,760 rows across both feeds. The first `mirror:init` for 7 days fetches about 1,344 files, up to about 12.5 GB, and takes 50–60 minutes, most of it the pause between files. Steady-state refresh downloads 0.56–1.71 GB a day. Size scales with `GDELT_MIRROR_WINDOW_DAYS`.
 
-**Refresh.** On HTTP transport the server refreshes the mirror every 15 minutes once a first init has completed. On stdio, run `bun run mirror:refresh` from cron every 15 minutes. Don't run cron refresh against a store an HTTP server is also refreshing: the result stays consistent, but the downloads are duplicated.
+**Refresh.** On HTTP transport the server refreshes the mirror every 15 minutes once a first init has completed. On stdio, run `bun run mirror:refresh` from cron every 15 minutes. One process syncs a store at a time: a run that starts while another holds it stops before fetching anything, so the server skips that tick and `mirror:init` or `mirror:refresh` exits 1 with `Mirror sync is already in progress`; rerun the script once the other run finishes. A run that was killed holds the store for up to two minutes more.
 
 ## Project structure
 

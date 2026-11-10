@@ -3,12 +3,14 @@
  * @module tests/tools/search-tv.tool.test
  */
 
+import { JsonRpcErrorCode, requestCancelled } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { gdeltSearchTv } from '@/mcp-server/tools/definitions/search-tv.tool.js';
 import * as gdeltFetchModule from '@/services/gdelt/gdelt-fetch.js';
 import * as tvServiceModule from '@/services/gdelt/gdelt-tv-service.js';
 import { contentText, literalHtml, renderMarkdown } from './markdown-render.js';
+import { CNN_RANGE, expectNotice, freezeClock } from './station-range-fixtures.js';
 
 const TV_RESULT = {
   series: [
@@ -195,6 +197,7 @@ describe('gdeltSearchTv', () => {
     function mockSearch(result: unknown) {
       vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
         searchTv: vi.fn().mockResolvedValue(result),
+        stationRanges: vi.fn().mockResolvedValue(CNN_RANGE),
       } as unknown as tvServiceModule.GdeltTvService);
     }
 
@@ -274,6 +277,142 @@ describe('gdeltSearchTv', () => {
       expect(gdeltSearchTv.enrichment?.notice?.description).not.toMatch(
         /Absent on successful responses/,
       );
+    });
+  });
+
+  /**
+   * An empty answer for selected stations names each one whose monitoring range the window
+   * misses, right after the resolved-timespan sentence; the sentence itself is tabled in
+   * station-ids.test.ts. The catalog is consulted only when that sentence can be built.
+   */
+  describe('selected stations outside the window', () => {
+    const EMPTY = { series: [], normalized: true };
+    const TAIL =
+      'Archive coverage varies by station — verify monitoring dates with gdelt_list_tv_stations and choose a matching window, or broaden the query.';
+
+    function mockService(result: unknown) {
+      const svc = {
+        searchTv: vi.fn().mockResolvedValue(result),
+        stationRanges: vi.fn().mockResolvedValue(CNN_RANGE),
+      };
+      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue(
+        svc as unknown as tvServiceModule.GdeltTvService,
+      );
+      return svc;
+    }
+
+    it('names a range the resolved timespan starts after, looked up once from the call start', async () => {
+      freezeClock();
+      const svc = mockService(EMPTY);
+      // The main request takes time; the catalog wait still counts from the call's start.
+      svc.searchTv.mockImplementation(async () => {
+        vi.setSystemTime(new Date('2026-11-10T12:00:30Z'));
+        return EMPTY;
+      });
+      const result = await runToolContract(gdeltSearchTv, {
+        query: 'inflation',
+        stations: [' cnn '],
+        timespan: '6m',
+      });
+      expectNotice(
+        result,
+        `No TV coverage for "inflation". Timespan "6m" resolved to 2026-05-10 – 2026-11-10. CNN was monitored 2009-07-02 – 2024-10-10; the window starts after that range ends. Set startDatetime and endDatetime inside that range to search that station. ${TAIL}`,
+      );
+      expect(svc.stationRanges).toHaveBeenCalledTimes(1);
+      expect(svc.stationRanges).toHaveBeenCalledWith(
+        expect.anything(),
+        Date.parse('2026-11-10T12:00:00Z'),
+      );
+    });
+
+    it('names no range for a station active when the catalog was read', async () => {
+      freezeClock();
+      const svc = mockService(EMPTY);
+      svc.stationRanges.mockResolvedValue(
+        new Map([
+          [
+            'CNN',
+            { stationId: 'CNN', startDate: '2009-07-02', endDate: '2024-10-10', isActive: true },
+          ],
+        ]),
+      );
+      const result = await runToolContract(gdeltSearchTv, {
+        query: 'inflation',
+        stations: ['CNN'],
+        timespan: '6m',
+      });
+      expectNotice(
+        result,
+        `No TV coverage for "inflation". Timespan "6m" resolved to 2026-05-10 – 2026-11-10. ${TAIL}`,
+      );
+      expect(svc.stationRanges).toHaveBeenCalledTimes(1);
+    });
+
+    it('names a range an explicit window ends before', async () => {
+      mockService(EMPTY);
+      const result = await runToolContract(gdeltSearchTv, {
+        query: 'x',
+        stations: ['CNN'],
+        startDatetime: '20080101000000',
+        endDatetime: '20080201000000',
+      });
+      expectNotice(
+        result,
+        `No TV coverage for "x". CNN was monitored 2009-07-02 – 2024-10-10; the window ends before that range starts. Set startDatetime and endDatetime inside that range to search that station. ${TAIL}`,
+      );
+    });
+
+    it('keeps the notice as it was when the catalog is unavailable to the call', async () => {
+      freezeClock();
+      const svc = mockService(EMPTY);
+      svc.stationRanges.mockResolvedValue(undefined);
+      const result = await runToolContract(gdeltSearchTv, {
+        query: 'x',
+        stations: ['CNN'],
+        timespan: '6m',
+      });
+      expectNotice(
+        result,
+        `No TV coverage for "x". Timespan "6m" resolved to 2026-05-10 – 2026-11-10. ${TAIL}`,
+      );
+      expect(svc.stationRanges).toHaveBeenCalledTimes(1);
+    });
+
+    it.each<[string, Record<string, unknown>, unknown]>([
+      ['no window is known', { stations: ['CNN'] }, EMPTY],
+      ['stations are selected only in query', { query: 'x station:CNN', timespan: '6m' }, EMPTY],
+      ['coverage was returned', { stations: ['CNN'], timespan: '6m' }, TV_RESULT],
+      [
+        'the catalog already failed to load in this call',
+        { stations: ['CNN'], timespan: '6m' },
+        {
+          series: [{ stationName: 'CNN', data: [] }],
+          normalized: true,
+          stationCatalogUnavailable: true,
+        },
+      ],
+    ])('never consults the catalog when %s', async (_case, input, answer) => {
+      const svc = mockService(answer);
+      const result = await runToolContract(gdeltSearchTv, { query: 'x', ...input } as never);
+      expect(result.isError).toBeFalsy();
+      expect(svc.stationRanges).not.toHaveBeenCalled();
+      expect(String((result.structuredContent as { notice?: string }).notice)).not.toContain(
+        'was monitored',
+      );
+    });
+
+    it('fails a call cancelled during the lookup as cancelled', async () => {
+      const svc = mockService(EMPTY);
+      svc.stationRanges.mockRejectedValue(requestCancelled('Request cancelled.'));
+      const result = await runToolContract(gdeltSearchTv, {
+        query: 'x',
+        stations: ['CNN'],
+        timespan: '6m',
+      });
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: JsonRpcErrorCode.RequestCancelled } },
+      });
     });
   });
 

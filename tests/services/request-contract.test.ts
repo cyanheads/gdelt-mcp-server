@@ -55,6 +55,10 @@ describe('relative-window compatibility', () => {
     ['Hourly DATERES not available for >7 day timespans.', /seven|7/],
     ['Invalid query start date, earliest start date is July 2, 2009.', /date|window/],
     [
+      'The TIMESPAN is too far in the past, earliest start date is July 2, 2009.',
+      /shorter timespan/,
+    ],
+    [
       'You cannot have multiple standalone non-negative station/show/network/market selectors.',
       /selector/,
     ],

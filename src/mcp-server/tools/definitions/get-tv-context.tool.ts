@@ -12,6 +12,7 @@ import {
   describeResolvedTimespan,
   describeTvTimespanFault,
   GDELT_DATETIME_PATTERN,
+  resolveEffectiveWindow,
 } from '../date-range.js';
 import {
   clampToCap,
@@ -21,6 +22,7 @@ import {
 } from '../limit-clamp.js';
 import { escapeMarkdown, markdownQuote, renderQueryEcho } from '../markdown-escape.js';
 import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
+import { describeStationRangeMisses, parseStationIds } from '../station-ids.js';
 
 /**
  * The population GDELT computes the word cloud from. Its TV API documentation names the 200
@@ -65,7 +67,7 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
     {
       reason: 'invalid_query',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'GDELT rejected the query — no station was selected, or the query string is malformed.',
+      when: 'A stations entry is not a station ID, GDELT rejected the query — no station was selected, or the query string is malformed — or the TV timespan is malformed.',
       recovery:
         'Read the recovery hint for the specific rule GDELT rejected; when no station was selected, list valid IDs with gdelt_list_tv_stations.',
       thrownBy: 'service',
@@ -101,7 +103,7 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       .array(z.string())
       .optional()
       .describe(
-        'Station IDs to filter to (e.g. ["CNN", "FOXNEWS"]). Alternatively use station:, network:, or quoted market: selectors in query; a selector is required. Obtain IDs, network and market values, and per-station archive ranges from gdelt_list_tv_stations.',
+        'Station IDs to filter to (e.g. ["CNN", "FOXNEWS"]) — the stationId values gdelt_list_tv_stations returns, not display labels such as "FOX News". Alternatively use station:, network:, or quoted market: selectors in query; a selector is required. Obtain network and market values and per-station archive ranges from gdelt_list_tv_stations.',
       ),
     limit: countInputSchema(
       25_000,
@@ -120,8 +122,7 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       .string()
       .optional()
       .describe(
-        'Time window, e.g. "1m", "6m". Ignored when startDatetime/endDatetime are set. ' +
-          'Check station monitoring dates with gdelt_list_tv_stations.',
+        "Relative window counting back from now (a number and unit such as d, m, or y). Now is past the end of most stations' monitoring, so for archived periods set startDatetime/endDatetime inside a station's range from gdelt_list_tv_stations. Ignored when startDatetime/endDatetime are set.",
       ),
     startDatetime: z
       .string()
@@ -180,9 +181,7 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       .string()
       .optional()
       .describe(
-        `On every non-empty result, that terms and scores come from ${SAMPLE_SCOPE} — compare ` +
-          'windows or stations with a separate, narrower call for each. When no clips matched, so ' +
-          'there is no vocabulary to report, the resolved timespan window and how to broaden the query or check station monitoring dates.',
+        `On every non-empty result, that terms and scores come from ${SAMPLE_SCOPE} — compare windows or stations with a separate, narrower call for each. When no clips matched, so there is no vocabulary to report: the resolved timespan window; for each selected station whose monitoring range the window misses, that range and how to search inside it; and how to broaden the query or check station monitoring dates.`,
       ),
     staleResponse: staleResponseSchema,
   },
@@ -194,6 +193,8 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
   },
 
   async handler(input, ctx) {
+    const startedAt = Date.now();
+    const stationIds = parseStationIds(input.stations);
     const dateRangeFault = describeDateRangeFault(input.startDatetime, input.endDatetime);
     if (dateRangeFault) {
       throw ctx.fail('invalid_date_range', dateRangeFault);
@@ -211,7 +212,7 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
     const result = await svc.getTvContext(
       {
         query: input.query,
-        ...(input.stations?.length && { stations: input.stations }),
+        ...(stationIds.length > 0 && { stations: stationIds }),
         ...(input.timespan && { timespan: input.timespan }),
         ...(input.startDatetime && { startDatetime: input.startDatetime }),
         ...(input.endDatetime && { endDatetime: input.endDatetime }),
@@ -237,11 +238,18 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
     const nextOffset =
       input.offset + words.length < totalTerms ? input.offset + words.length : undefined;
 
-    ctx.enrich.notice(
-      result.words.length === 0
-        ? `No TV context data for ${markdownQuote(input.query)}.${describeResolvedTimespan(input)} Archive coverage varies by station — verify monitoring dates with gdelt_list_tv_stations and choose a matching window, or broaden the query.`
-        : SAMPLING_NOTICE,
-    );
+    if (result.words.length === 0) {
+      const window = resolveEffectiveWindow(input);
+      const ranges =
+        window && stationIds.length > 0 ? await svc.stationRanges(ctx, startedAt) : undefined;
+      const rangeMisses =
+        window && ranges ? describeStationRangeMisses(stationIds, ranges, window) : '';
+      ctx.enrich.notice(
+        `No TV context data for ${markdownQuote(input.query)}.${describeResolvedTimespan(input)}${rangeMisses} Archive coverage varies by station — verify monitoring dates with gdelt_list_tv_stations and choose a matching window, or broaden the query.`,
+      );
+    } else {
+      ctx.enrich.notice(SAMPLING_NOTICE);
+    }
 
     ctx.log.info('gdelt_get_tv_context completed', { wordCount: result.words.length });
     return {

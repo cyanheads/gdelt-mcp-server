@@ -1,7 +1,8 @@
 /**
  * @fileoverview Service wrapping the GDELT TV API v2. Handles TV news transcript search,
  * clip retrieval, context/word cloud, and station metadata — including resolving the display
- * labels GDELT puts on timeline series and clips to the station IDs its queries take.
+ * labels GDELT puts on timeline series and clips to the station IDs its queries take, and the
+ * stations' monitoring ranges, from one process-wide catalog load.
  * @module services/gdelt/gdelt-tv-service
  */
 
@@ -91,9 +92,25 @@ export type TvContextWord = {
 /** Station IDs keyed by the display label GDELT puts on timeline series and clips. */
 type StationIdsByLabel = ReadonlyMap<string, string>;
 
+/**
+ * A catalog station's ID, monitoring dates (`YYYY-MM-DD`, as {@link TvStation} carries them), and
+ * whether it was active when the catalog was read. An active station's end date moves on every day
+ * while the process keeps the one it read, so for it `endDate` is only where coverage had reached.
+ */
+export type TvStationRange = Pick<TvStation, 'stationId' | 'startDate' | 'endDate' | 'isActive'>;
+
+/** Catalog stations' monitoring ranges keyed by uppercase station ID — GDELT matches IDs in any case. */
+export type StationRanges = ReadonlyMap<string, TvStationRange>;
+
+/** The station catalog as one load yields it: IDs by display label, and ranges by ID. */
+type StationCatalog = {
+  readonly idsByLabel: StationIdsByLabel;
+  readonly rangesById: StationRanges;
+};
+
 /** A station-catalog load in flight, shared by every call awaiting it. */
 type CatalogLoad = {
-  readonly ids: Promise<StationIdsByLabel>;
+  readonly catalog: Promise<StationCatalog>;
   /** Keep the load running until at least `waitUntil`, when a joining call waits that long. */
   readonly waitUntil: (waitUntil: number) => void;
 };
@@ -107,7 +124,7 @@ export class GdeltTvService {
    */
   private readonly catalogWaitMs: number;
   /** The station catalog, once a load has landed. Kept for the process. */
-  private stationIds: StationIdsByLabel | undefined;
+  private catalog: StationCatalog | undefined;
   /** The one catalog load in flight. Cleared when it settles or is abandoned. */
   private catalogLoad: CatalogLoad | undefined;
 
@@ -306,20 +323,27 @@ export class GdeltTvService {
     });
   }
 
+  /**
+   * Every catalog station's monitoring range keyed by uppercase ID, or `undefined` when the
+   * catalog is unavailable to this call — for an empty answer, to name the selected stations its
+   * window misses. The same process-wide load station IDs resolve from, under the same rules (see
+   * {@link catalogFor}): no request once a load has landed, one load in flight, a failed one not
+   * kept. The wait ends {@link catalogWaitMs} after `callStartedAt`, the epoch-ms start of the
+   * tool call, as it does for station IDs.
+   */
+  async stationRanges(ctx: Context, callStartedAt: number): Promise<StationRanges | undefined> {
+    return (await this.catalogFor(ctx, callStartedAt + this.catalogWaitMs))?.rangesById;
+  }
+
   // ─── Private helpers ────────────────────────────────────────────────────────
 
   /**
    * Station IDs for a call's labels, or `undefined` when the catalog is unavailable to this
    * call. GDELT labels timeline series and clips with a station's catalog description
    * ("FOX News"), never the ID its `station:` operator takes ("FOXNEWS"), so each label is
-   * matched exactly against the `stationdetails` catalog — loaded once per process, after the
-   * call's own request, and only when there is a label to resolve. An empty label — a row GDELT
-   * sent without one — has nothing to resolve.
-   *
-   * The catalog is a side lookup and never fails the call: a failed or empty load, or one still
-   * running at `waitUntil`, leaves the labels unresolved. Only the caller's own cancellation
-   * fails the call — as cancelled. `waitUntil` is counted from the start of the call (see
-   * {@link GDELT_FALLBACK_BUDGET_MS}), so the lookup cannot hold an answer past it.
+   * matched exactly against the `stationdetails` catalog — after the call's own request, and
+   * only when there is a label to resolve. An empty label — a row GDELT sent without one — has
+   * nothing to resolve.
    */
   private async stationIdsFor(
     labels: readonly string[],
@@ -327,27 +351,47 @@ export class GdeltTvService {
     waitUntil: number,
   ): Promise<StationIdsByLabel | undefined> {
     if (!labels.some(Boolean)) return new Map();
+    return (await this.catalogFor(ctx, waitUntil))?.idsByLabel;
+  }
+
+  /**
+   * The station catalog for a call, or `undefined` when it is unavailable to this call. Loaded
+   * once per process (see {@link loadCatalog}).
+   *
+   * The catalog is a side lookup and never fails the call: a failed or empty load, or one still
+   * running at `waitUntil`, yields `undefined`. Only the caller's own cancellation fails the call —
+   * as cancelled. `waitUntil` is counted from the start of the call (see
+   * {@link GDELT_FALLBACK_BUDGET_MS}), so the lookup cannot hold an answer past it; a call that
+   * has already spent it, or is already cancelled, starts no load.
+   */
+  private async catalogFor(ctx: Context, waitUntil: number): Promise<StationCatalog | undefined> {
+    if (this.catalog) return this.catalog;
+    const cancelled = () =>
+      requestCancelled('Request cancelled while loading the station catalog.');
+    if (ctx.signal.aborted) throw cancelled();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let onAbort: (() => void) | undefined;
     try {
+      const remainingMs = waitUntil - Date.now();
+      if (remainingMs <= 0) throw new Error('the call wait budget was spent before the lookup');
       return await Promise.race([
-        this.loadStationIds(ctx, waitUntil),
+        this.loadCatalog(ctx, waitUntil),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error('station catalog did not load within the call wait budget')),
-            Math.max(0, waitUntil - Date.now()),
+            remainingMs,
           );
         }),
         new Promise<never>((_, reject) => {
-          onAbort = () =>
-            reject(requestCancelled('Request cancelled while resolving station IDs.'));
+          onAbort = () => reject(cancelled());
+          // Starting the load can itself run past a cancellation, before this listener exists.
           if (ctx.signal.aborted) onAbort();
           else ctx.signal.addEventListener('abort', onAbort, { once: true });
         }),
       ]);
     } catch (error) {
       if (ctx.signal.aborted) throw error;
-      ctx.log.warning('GDELT TV station catalog unavailable; station IDs left unresolved', {
+      ctx.log.warning('GDELT TV station catalog unavailable; answering without it', {
         error: error instanceof Error ? error.message : String(error),
       });
       return;
@@ -358,17 +402,16 @@ export class GdeltTvService {
   }
 
   /**
-   * The catalog, loading it on first use. Concurrent first calls share the one load, which runs
-   * until the latest `waitUntil` among them. A load still running then is abandoned: its request
-   * is aborted, which frees the one GDELT request slot it holds for whatever is queued behind
-   * it, and it counts as failed — nothing is kept even if an answer arrives, and the next call
-   * loads again.
+   * The catalog load: the one in flight, or a new one when there is none. Concurrent first calls
+   * share the one load, which runs until the latest `waitUntil` among them. A load still running
+   * then is abandoned: its request is aborted, which frees the one GDELT request slot it holds for
+   * whatever is queued behind it, and it counts as failed — nothing is kept even if an answer
+   * arrives, and the next call loads again.
    */
-  private loadStationIds(ctx: Context, waitUntil: number): Promise<StationIdsByLabel> {
-    if (this.stationIds) return Promise.resolve(this.stationIds);
+  private loadCatalog(ctx: Context, waitUntil: number): Promise<StationCatalog> {
     if (this.catalogLoad) {
       this.catalogLoad.waitUntil(waitUntil);
-      return this.catalogLoad.ids;
+      return this.catalogLoad.catalog;
     }
     const controller = new AbortController();
     let abandonAt = waitUntil;
@@ -384,14 +427,14 @@ export class GdeltTvService {
       );
     };
     const load: CatalogLoad = {
-      ids: this.fetchStationIds(ctx, controller.signal).then(
-        (ids) => {
+      catalog: this.fetchCatalog(ctx, controller.signal).then(
+        (catalog) => {
           clearTimeout(timer);
           if (this.catalogLoad === load) {
-            this.stationIds = ids;
+            this.catalog = catalog;
             this.catalogLoad = undefined;
           }
-          return ids;
+          return catalog;
         },
         (error: unknown) => {
           clearTimeout(timer);
@@ -407,7 +450,7 @@ export class GdeltTvService {
     };
     this.catalogLoad = load;
     scheduleAbandon();
-    return load.ids;
+    return load.catalog;
   }
 
   /**
@@ -416,9 +459,10 @@ export class GdeltTvService {
    * One attempt, never the retry ladder: a failure costs this call its IDs, not its answer, and
    * the next call loads again. Fresh stored answers only: the load runs on the first caller's
    * `ctx`, where a stale serve would mark that caller's own fresh answer as stale. An empty
-   * catalog is GDELT failing, not an answer.
+   * catalog is GDELT failing, not an answer. The entries are GDELT's, unvalidated: one without a
+   * string ID ranges no station and costs the others nothing.
    */
-  private async fetchStationIds(ctx: Context, signal: AbortSignal): Promise<StationIdsByLabel> {
+  private async fetchCatalog(ctx: Context, signal: AbortSignal): Promise<StationCatalog> {
     const stations = await this.listStations(
       { ...ctx, signal },
       { maxRetries: 0, freshOnly: true },
@@ -426,7 +470,17 @@ export class GdeltTvService {
     if (stations.length === 0) {
       throw serviceUnavailable('GDELT TV station catalog came back empty.');
     }
-    return new Map(stations.map((s) => [s.description, s.stationId]));
+    return {
+      idsByLabel: new Map(stations.map((s) => [s.description, s.stationId])),
+      rangesById: new Map(
+        stations.flatMap(
+          ({ stationId, startDate, endDate, isActive }): [string, TvStationRange][] =>
+            typeof stationId === 'string'
+              ? [[stationId.toUpperCase(), { stationId, startDate, endDate, isActive }]]
+              : [],
+        ),
+      ),
+    };
   }
 
   private buildBaseParams(query: string, stations?: string[]): URLSearchParams {

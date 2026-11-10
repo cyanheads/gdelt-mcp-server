@@ -12,6 +12,7 @@ import {
   describeResolvedTimespan,
   describeTvTimespanFault,
   GDELT_DATETIME_PATTERN,
+  resolveEffectiveWindow,
 } from '../date-range.js';
 import {
   clampToCap,
@@ -21,7 +22,12 @@ import {
 } from '../limit-clamp.js';
 import { escapeMarkdown, markdownQuote, renderQueryEcho } from '../markdown-escape.js';
 import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
-import { describeUnresolvedStations, stationLabel } from '../station-ids.js';
+import {
+  describeStationRangeMisses,
+  describeUnresolvedStations,
+  parseStationIds,
+  stationLabel,
+} from '../station-ids.js';
 
 /** Point pages bound the response without altering the selected station population. */
 const MAX_POINTS_PER_PAGE = 20_000;
@@ -56,7 +62,7 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
     {
       reason: 'invalid_query',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'GDELT rejected the query — no station was selected, or the query string is malformed.',
+      when: 'A stations entry is not a station ID, GDELT rejected the query — no station was selected, or the query string is malformed — or the TV timespan is malformed.',
       recovery:
         'Read the recovery hint for the specific rule GDELT rejected; when no station was selected, list valid IDs with gdelt_list_tv_stations.',
       thrownBy: 'service',
@@ -93,15 +99,13 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       .array(z.string())
       .optional()
       .describe(
-        'Station IDs to filter to (e.g. ["CNN", "FOXNEWS", "MSNBC"]). Every supplied ID is forwarded. Alternatively use station:, network:, or quoted market: selectors in query; a selector is required. Obtain IDs, network and market values, and per-station archive ranges from gdelt_list_tv_stations.',
+        'Station IDs to filter to (e.g. ["CNN", "FOXNEWS", "MSNBC"]) — the stationId values gdelt_list_tv_stations returns, not display labels such as "FOX News". Every supplied ID is forwarded. Alternatively use station:, network:, or quoted market: selectors in query; a selector is required. Obtain network and market values and per-station archive ranges from gdelt_list_tv_stations.',
       ),
     timespan: z
       .string()
       .optional()
       .describe(
-        'Time window, e.g. "1m", "6m", "1y". ' +
-          'Ignored when startDatetime/endDatetime are set. ' +
-          'Check station monitoring dates with gdelt_list_tv_stations.',
+        "Relative window counting back from now (a number and unit such as d, m, or y). Now is past the end of most stations' monitoring, so for archived periods set startDatetime/endDatetime inside a station's range from gdelt_list_tv_stations. Ignored when startDatetime/endDatetime are set.",
       ),
     startDatetime: z
       .string()
@@ -247,11 +251,7 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       .string()
       .optional()
       .describe(
-        'Guidance when the query matched no TV coverage — the resolved timespan window, the October ' +
-          '2024 archive cutoff, and how to check station coverage. When a returned series has no ' +
-          'station ID, why: GDELT returned it without a station label, or its station catalog did ' +
-          'not load or has no entry for the named label — with how to look the ID up. Absent when coverage was returned and every series ' +
-          'carries its station ID.',
+        'When smoothing is above 1, that leading steps without a full window have no values and peaks may lag. When the query matched no TV coverage: the resolved timespan window; for each selected station whose monitoring range the window misses, that range and how to search inside it; and how to check station coverage. When a returned series has no station ID, why: GDELT returned it without a station label, or its station catalog did not load or has no entry for the named label — with how to look the ID up. Absent when coverage was returned, smoothing is at most 1, and every series carries its station ID or combined is true.',
       ),
     staleResponse: staleResponseSchema,
   },
@@ -263,6 +263,8 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
   },
 
   async handler(input, ctx) {
+    const startedAt = Date.now();
+    const stationIds = parseStationIds(input.stations);
     const dateRangeFault = describeDateRangeFault(input.startDatetime, input.endDatetime);
     if (dateRangeFault) {
       throw ctx.fail('invalid_date_range', dateRangeFault);
@@ -274,13 +276,13 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       });
     }
 
-    ctx.log.info('gdelt_search_tv', { query: input.query, stations: input.stations });
+    ctx.log.info('gdelt_search_tv', { query: input.query, stations: stationIds });
     const svc = getGdeltTvService();
 
     const result = await svc.searchTv(
       {
         query: input.query,
-        ...(input.stations?.length && { stations: input.stations }),
+        ...(stationIds.length > 0 && { stations: stationIds }),
         ...(input.timespan && { timespan: input.timespan }),
         ...(input.startDatetime && { startDatetime: input.startDatetime }),
         ...(input.endDatetime && { endDatetime: input.endDatetime }),
@@ -328,8 +330,16 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       );
     }
     if (isEmpty) {
+      // A catalog this call already failed to load is not requested again.
+      const window = resolveEffectiveWindow(input);
+      const ranges =
+        window && stationIds.length > 0 && !result.stationCatalogUnavailable
+          ? await svc.stationRanges(ctx, startedAt)
+          : undefined;
+      const rangeMisses =
+        window && ranges ? describeStationRangeMisses(stationIds, ranges, window) : '';
       notices.push(
-        `No TV coverage for ${markdownQuote(input.query)}.${describeResolvedTimespan(input)} Archive coverage varies by station — verify monitoring dates with gdelt_list_tv_stations and choose a matching window, or broaden the query.`,
+        `No TV coverage for ${markdownQuote(input.query)}.${describeResolvedTimespan(input)}${rangeMisses} Archive coverage varies by station — verify monitoring dates with gdelt_list_tv_stations and choose a matching window, or broaden the query.`,
       );
     }
     const unresolved = input.combined

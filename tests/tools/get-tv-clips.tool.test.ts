@@ -14,7 +14,14 @@ import {
 } from '@/services/gdelt/gdelt-response-cache.js';
 import * as tvServiceModule from '@/services/gdelt/gdelt-tv-service.js';
 import { initGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
-import { contentText, hrefFor, literalHtml, renderMarkdown } from './markdown-render.js';
+import {
+  contentText,
+  hrefFor,
+  literalHtml,
+  renderingFailures,
+  renderMarkdown,
+} from './markdown-render.js';
+import { CNN_RANGE, expectNotice, freezeClock } from './station-range-fixtures.js';
 
 const CLIP = {
   show: 'Anderson Cooper 360',
@@ -109,6 +116,7 @@ describe('gdeltGetTvClips', () => {
     beforeEach(() => {
       vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
         getTvClips: vi.fn().mockResolvedValue({ clips: [] }),
+        stationRanges: vi.fn().mockResolvedValue(CNN_RANGE),
       } as unknown as tvServiceModule.GdeltTvService);
     });
 
@@ -225,6 +233,7 @@ describe('gdeltGetTvClips', () => {
       }));
       vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
         getTvClips: vi.fn().mockResolvedValue({ clips }),
+        stationRanges: vi.fn().mockResolvedValue(CNN_RANGE),
       } as unknown as tvServiceModule.GdeltTvService);
 
       const ctx = createMockContext({ errors: gdeltGetTvClips.errors });
@@ -383,6 +392,25 @@ describe('gdeltGetTvClips', () => {
         expect(html).not.toMatch(/<(ul|li|i|em)>|<a href="y"/);
       },
     );
+
+    it('displays a caption URL in a snippet as written, with no backslash in a GFM link', async () => {
+      const snippet = 'FOR MORE GO TO WWW.CNN.COM/_LIVE TONIGHT';
+      mockClips([{ ...CLIP, snippet }]);
+      const result = await runToolContract(gdeltGetTvClips, { query: 'x', stations: ['CNN'] });
+      const clips = (result.structuredContent as { clips: Array<{ snippet: string }> }).clips;
+      expect(clips[0]?.snippet).toBe(snippet);
+      const line = contentText(result)
+        .split('\n')
+        .find((l) => l.startsWith('**Snippet:**'));
+      expect(line).toBe(String.raw`**Snippet:** FOR MORE GO TO WWW\.CNN.COM/\_LIVE TONIGHT`);
+      expect(
+        renderingFailures(
+          line ?? '',
+          `<p><strong>Snippet:</strong> ${literalHtml(snippet)}</p>`,
+          `Snippet: ${snippet}`,
+        ),
+      ).toEqual([]);
+    });
   });
 
   describe('complete fetched records', () => {
@@ -680,6 +708,7 @@ describe('gdelt_get_tv_clips maxRecords clamp', () => {
     const getTvClips = measuredTvUpstream(all);
     vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
       getTvClips,
+      stationRanges: vi.fn().mockResolvedValue(CNN_RANGE),
     } as unknown as tvServiceModule.GdeltTvService);
     const result = await runToolContract(gdeltGetTvClips, {
       query: 'x',
@@ -982,6 +1011,94 @@ describe('gdelt_get_tv_clips stale response', () => {
   });
 });
 
+/**
+ * Both empty answers — nothing returned, and every returned clip dropped as out of window — name
+ * each selected station whose monitoring range the window misses; the sentence itself is tabled
+ * in station-ids.test.ts. The catalog is consulted only when that sentence can be built.
+ */
+describe('gdelt_get_tv_clips selected stations outside the window', () => {
+  const NAMED =
+    'CNN was monitored 2009-07-02 – 2024-10-10; the window starts after that range ends. Set startDatetime and endDatetime inside that range to search that station.';
+  /** Not on the hour: GDELT's whole-hour answer can carry clips from outside it. */
+  const LATE_WINDOW = { startDatetime: '20250101000500', endDatetime: '20250101005000' };
+
+  it('names a range when nothing was returned, looked up once from the call start', async () => {
+    freezeClock();
+    const svc = mockClips([]);
+    // The main request takes time; the catalog wait still counts from the call's start.
+    svc.getTvClips.mockImplementation(async () => {
+      vi.setSystemTime(new Date('2026-11-10T12:00:30Z'));
+      return { clips: [] };
+    });
+    const result = await runToolContract(gdeltGetTvClips, {
+      query: 'inflation',
+      stations: [' cnn '],
+      timespan: '6m',
+    });
+    expectNotice(
+      result,
+      `No TV clips matched "inflation". Timespan "6m" resolved to 2026-05-10 – 2026-11-10. ${NAMED} TV coverage varies by station — use gdelt_list_tv_stations to verify station IDs and monitoring dates, then supply explicit startDatetime/endDatetime inside that coverage.`,
+    );
+    expect(svc.stationRanges).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      Date.parse('2026-11-10T12:00:00Z'),
+    );
+  });
+
+  it('names a range when every returned clip aired outside the window', async () => {
+    const svc = mockClips([CLIP_AT('2025-01-01T00:55:00Z', 1), CLIP_AT('2025-01-01T00:01:00Z', 2)]);
+    const result = await runToolContract(gdeltGetTvClips, {
+      query: 'x',
+      stations: ['CNN'],
+      ...LATE_WINDOW,
+    });
+    expect((result.structuredContent as ClipPage).clips).toEqual([]);
+    expectNotice(
+      result,
+      `GDELT answers TV windows in whole clock hours, so it also returned 2 clips aired outside 20250101000500–20250101005000; they were dropped. That is expected at any window edge not on the hour — including the edges continuationWindows hands back — and not a sign of missing results. No clip aired inside the window. ${NAMED} TV coverage varies by station — check that 20250101000500–20250101005000 falls inside the selected stations' monitoring dates with gdelt_list_tv_stations, or broaden the query.`,
+    );
+    expect(svc.stationRanges).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the notice as it was when the catalog is unavailable to the call', async () => {
+    freezeClock();
+    const svc = mockClips([]);
+    svc.stationRanges.mockResolvedValue(undefined);
+    const result = await runToolContract(gdeltGetTvClips, {
+      query: 'x',
+      stations: ['CNN'],
+      timespan: '6m',
+    });
+    expectNotice(
+      result,
+      'No TV clips matched "x". Timespan "6m" resolved to 2026-05-10 – 2026-11-10. TV coverage varies by station — use gdelt_list_tv_stations to verify station IDs and monitoring dates, then supply explicit startDatetime/endDatetime inside that coverage.',
+    );
+  });
+
+  it.each<[string, Record<string, unknown>, unknown[], boolean]>([
+    ['no window is known', { stations: ['CNN'] }, [], false],
+    ['stations are selected only in query', { query: 'x station:CNN', timespan: '6m' }, [], false],
+    [
+      'a clip aired inside the window',
+      { stations: ['CNN'], ...LATE_WINDOW },
+      [CLIP_AT('2025-01-01T00:30:00Z', 1)],
+      false,
+    ],
+    [
+      'the catalog already failed to load in this call',
+      { stations: ['CNN'], ...LATE_WINDOW },
+      [CLIP_AT('2025-01-01T00:55:00Z', 1)],
+      true,
+    ],
+  ])('never consults the catalog when %s', async (_case, input, clips, catalogFailed) => {
+    const svc = mockClips(clips, catalogFailed);
+    const result = await runToolContract(gdeltGetTvClips, { query: 'x', ...input } as never);
+    expect(result.isError).toBeFalsy();
+    expect(svc.stationRanges).not.toHaveBeenCalled();
+    expect(String((result.structuredContent as ClipPage).notice)).not.toContain('was monitored');
+  });
+});
+
 // ─── Fixtures and fakes ───────────────────────────────────────────────────────
 
 const DAY = '2024-07-01T00:00:00Z';
@@ -996,12 +1113,17 @@ type ClipPage = {
 };
 
 function mockClips(clips: unknown[], stationCatalogUnavailable = false) {
-  vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+  const svc = {
     getTvClips: vi.fn().mockResolvedValue({
       clips,
       ...(stationCatalogUnavailable && { stationCatalogUnavailable }),
     }),
-  } as unknown as tvServiceModule.GdeltTvService);
+    stationRanges: vi.fn().mockResolvedValue(CNN_RANGE),
+  };
+  vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue(
+    svc as unknown as tvServiceModule.GdeltTvService,
+  );
+  return svc;
 }
 
 /** ISO 8601 (second precision) `seconds` after `iso`. */

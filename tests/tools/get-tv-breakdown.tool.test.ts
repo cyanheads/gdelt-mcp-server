@@ -9,18 +9,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetTvBreakdown } from '@/mcp-server/tools/definitions/get-tv-breakdown.tool.js';
 import * as service from '@/services/gdelt/gdelt-tv-service.js';
 import { contentText } from './markdown-render.js';
+import { CNN_RANGE, expectNotice, freezeClock } from './station-range-fixtures.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
 });
 
+function mockService(result: unknown) {
+  const svc = {
+    getTvBreakdown: vi.fn().mockResolvedValue(result),
+    stationRanges: vi.fn().mockResolvedValue(CNN_RANGE),
+  };
+  vi.spyOn(service, 'getGdeltTvService').mockReturnValue(svc as unknown as service.GdeltTvService);
+  return svc;
+}
+
 function mockResult(result: unknown) {
-  const getTvBreakdown = vi.fn().mockResolvedValue(result);
-  vi.spyOn(service, 'getGdeltTvService').mockReturnValue({
-    getTvBreakdown,
-  } as unknown as service.GdeltTvService);
-  return getTvBreakdown;
+  return mockService(result).getTvBreakdown;
 }
 
 describe('gdeltGetTvBreakdown', () => {
@@ -287,5 +293,99 @@ describe('gdeltGetTvBreakdown', () => {
     expect(response.structuredContent).toMatchObject({
       error: { data: { reason: 'gdelt_rate_limited' } },
     });
+  });
+});
+
+/**
+ * An empty ranking for selected stations names each one whose monitoring range the window
+ * misses, right after the resolved-timespan sentence; the sentence itself is tabled in
+ * station-ids.test.ts. The catalog is consulted only when that sentence can be built.
+ */
+describe('gdeltGetTvBreakdown selected stations outside the window', () => {
+  const EMPTY = { rows: [], valueUnit: 'percent_station_airtime' };
+  const NAMED_AFTER =
+    'CNN was monitored 2009-07-02 – 2024-10-10; the window starts after that range ends. Set startDatetime and endDatetime inside that range to search that station.';
+  const TAIL = 'Check station monitoring ranges with gdelt_list_tv_stations or broaden the query.';
+
+  it('names a range the resolved timespan starts after, looked up once from the call start', async () => {
+    freezeClock();
+    const svc = mockService(EMPTY);
+    // The main request takes time; the catalog wait still counts from the call's start.
+    svc.getTvBreakdown.mockImplementation(async () => {
+      vi.setSystemTime(new Date('2026-11-10T12:00:30Z'));
+      return EMPTY;
+    });
+    const result = await runToolContract(gdeltGetTvBreakdown, {
+      query: 'inflation',
+      breakdownBy: 'station',
+      stations: [' cnn '],
+      timespan: '6m',
+    });
+    expectNotice(
+      result,
+      `No TV rankings for "inflation". Timespan "6m" resolved to 2026-05-10 – 2026-11-10. ${NAMED_AFTER} ${TAIL}`,
+    );
+    expect(svc.stationRanges).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      Date.parse('2026-11-10T12:00:00Z'),
+    );
+  });
+
+  it('names a range an explicit window ends before, ahead of the show notice', async () => {
+    mockService({ rows: [], valueUnit: 'percent_matching_clips' });
+    const result = await runToolContract(gdeltGetTvBreakdown, {
+      query: 'x',
+      breakdownBy: 'show',
+      stations: ['CNN'],
+      startDatetime: '20080101000000',
+      endDatetime: '20080201000000',
+    });
+    expectNotice(
+      result,
+      `No TV rankings for "x". CNN was monitored 2009-07-02 – 2024-10-10; the window ends before that range starts. Set startDatetime and endDatetime inside that range to search that station. ${TAIL} Show values are percentages of matching clips, regardless of normalize. Provider labels may contain ellipses and may not work as exact show: selectors.`,
+    );
+  });
+
+  it('keeps the notice as it was when the catalog is unavailable to the call', async () => {
+    freezeClock();
+    const svc = mockService(EMPTY);
+    svc.stationRanges.mockResolvedValue(undefined);
+    const result = await runToolContract(gdeltGetTvBreakdown, {
+      query: 'x',
+      breakdownBy: 'station',
+      stations: ['CNN'],
+      timespan: '6m',
+    });
+    expectNotice(
+      result,
+      `No TV rankings for "x". Timespan "6m" resolved to 2026-05-10 – 2026-11-10. ${TAIL}`,
+    );
+  });
+
+  it.each<[string, Record<string, unknown>, unknown]>([
+    ['no window is known', { stations: ['CNN'] }, EMPTY],
+    ['stations are selected only in query', { query: 'x station:CNN', timespan: '6m' }, EMPTY],
+    [
+      'rows were returned',
+      { stations: ['CNN'], timespan: '6m' },
+      { rows: [{ label: 'CNN', value: 1, station: 'CNN' }], valueUnit: 'percent_station_airtime' },
+    ],
+    [
+      'the catalog already failed to load in this call',
+      { stations: ['CNN'], timespan: '6m' },
+      { ...EMPTY, stationCatalogUnavailable: true },
+    ],
+  ])('never consults the catalog when %s', async (_case, input, answer) => {
+    const svc = mockService(answer);
+    const result = await runToolContract(gdeltGetTvBreakdown, {
+      query: 'x',
+      breakdownBy: 'station',
+      ...input,
+    } as never);
+    expect(result.isError).toBeFalsy();
+    expect(svc.stationRanges).not.toHaveBeenCalled();
+    expect(String((result.structuredContent as { notice?: string }).notice)).not.toContain(
+      'was monitored',
+    );
   });
 });

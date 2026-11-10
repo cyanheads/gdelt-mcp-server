@@ -27,7 +27,12 @@ import {
 } from '../limit-clamp.js';
 import { escapeMarkdown, markdownQuote, markdownUrl, renderQueryEcho } from '../markdown-escape.js';
 import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
-import { describeUnresolvedStations, stationLabel } from '../station-ids.js';
+import {
+  describeStationRangeMisses,
+  describeUnresolvedStations,
+  parseStationIds,
+  stationLabel,
+} from '../station-ids.js';
 
 /**
  * Hard ceiling GDELT's TV API serves in one clip request. Past it there is no offset or
@@ -114,7 +119,7 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
     {
       reason: 'invalid_query',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'GDELT rejected the query — no station was selected, or the query string is malformed.',
+      when: 'A stations entry is not a station ID, GDELT rejected the query — no station was selected, or the query string is malformed — or the TV timespan is malformed.',
       recovery:
         'Read the recovery hint for the specific rule GDELT rejected; when no station was selected, list valid IDs with gdelt_list_tv_stations.',
       thrownBy: 'service',
@@ -150,14 +155,13 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
       .array(z.string())
       .optional()
       .describe(
-        'Station IDs to filter to (e.g. ["CNN", "FOXNEWS"]). Alternatively use station:, network:, or quoted market: selectors in query. A selector is required; use gdelt_list_tv_stations for station IDs, networks, markets, and monitoring dates.',
+        'Station IDs to filter to (e.g. ["CNN", "FOXNEWS"]) — the stationId values gdelt_list_tv_stations returns, not display labels such as "FOX News". Alternatively use station:, network:, or quoted market: selectors in query. A selector is required; use gdelt_list_tv_stations for networks, markets, and monitoring dates.',
       ),
     timespan: z
       .string()
       .optional()
       .describe(
-        'Time window, e.g. "1m", "6m". Ignored when startDatetime/endDatetime are set. ' +
-          'TV coverage varies by station; check monitoring dates with gdelt_list_tv_stations.',
+        "Relative window counting back from now (a number and unit such as d, m, or y). Now is past the end of most stations' monitoring, so for archived periods set startDatetime/endDatetime inside a station's range from gdelt_list_tv_stations. Ignored when startDatetime/endDatetime are set.",
       ),
     startDatetime: z
       .string()
@@ -201,7 +205,7 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
       .string()
       .optional()
       .describe(
-        'Guidance on an incomplete or empty result. When no clips matched, the resolved timespan window and how to check station monitoring dates and choose an explicit window. When GDELT returned clips aired outside the requested window, how many were dropped. When the maxRecords cap was reached, raise maxRecords below the 3000 ceiling or narrow the date window at it. When a returned clip has no station ID, why: GDELT returned it without a station label, or its station catalog did not load or has no entry for the named label — with how to look the ID up. Absent when a non-empty result set is below the cap, no clip was dropped as out of window, and every clip carries its station ID.',
+        'Guidance on an incomplete or empty result. When no clips matched, or every returned clip aired outside the requested window: the resolved timespan window; for each selected station whose monitoring range the window misses, that range and how to search inside it; and how to check station monitoring dates and choose an explicit window. When GDELT returned clips aired outside the requested window, how many were dropped. When the maxRecords cap was reached, raise maxRecords below the 3000 ceiling or narrow the date window at it. When a returned clip has no station ID, why: GDELT returned it without a station label, or its station catalog did not load or has no entry for the named label — with how to look the ID up. Absent when a non-empty result set is below the cap, no clip was dropped as out of window, and every clip carries its station ID.',
       ),
     continuationWindows: z
       .array(
@@ -229,6 +233,8 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
   },
 
   async handler(input, ctx) {
+    const startedAt = Date.now();
+    const stationIds = parseStationIds(input.stations);
     const dateRangeFault = describeDateRangeFault(input.startDatetime, input.endDatetime);
     if (dateRangeFault) {
       throw ctx.fail('invalid_date_range', dateRangeFault);
@@ -254,7 +260,7 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
     const { clips: upstream, stationCatalogUnavailable } = await svc.getTvClips(
       {
         query: input.query,
-        ...(input.stations?.length && { stations: input.stations }),
+        ...(stationIds.length > 0 && { stations: stationIds }),
         ...(input.timespan && { timespan: input.timespan }),
         ...requested,
         maxRecords,
@@ -283,12 +289,22 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
     ctx.enrich.echo(input.query);
     ctx.enrich.total(clips.length);
 
+    // Either empty answer — nothing returned, or every clip aired outside the window — names the
+    // selected stations the window misses. A catalog this call already failed to load is not
+    // requested again.
+    const ranges =
+      clips.length === 0 && window && stationIds.length > 0 && !stationCatalogUnavailable
+        ? await svc.stationRanges(ctx, startedAt)
+        : undefined;
+    const rangeMisses =
+      window && ranges ? describeStationRangeMisses(stationIds, ranges, window) : '';
+
     // Every notice segment for this response accumulates here and is flushed once —
     // ctx.enrich.notice is last-wins, so a second call would silently drop the first.
     const notices: string[] = [];
     if (upstream.length === 0) {
       notices.push(
-        `No TV clips matched ${markdownQuote(input.query)}.${describeResolvedTimespan(input)} ${noClipGuidance(input)}`,
+        `No TV clips matched ${markdownQuote(input.query)}.${describeResolvedTimespan(input)}${rangeMisses} ${noClipGuidance(input)}`,
       );
     } else if (capHit) {
       if (belowCeiling) {
@@ -319,7 +335,7 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
       );
       if (fetched.length === 0) {
         notices.push(
-          `No clip aired inside the window.${describeResolvedTimespan(input)} ${noClipGuidance(input)}`,
+          `No clip aired inside the window.${describeResolvedTimespan(input)}${rangeMisses} ${noClipGuidance(input)}`,
         );
       }
     }

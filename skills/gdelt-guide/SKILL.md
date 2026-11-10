@@ -4,7 +4,7 @@ description: Investigate recent news spikes and compare historical television co
 license: Apache-2.0
 metadata:
   author: "cyanheads"
-  version: "1.1"
+  version: "1.2"
 ---
 
 ## Scope
@@ -14,12 +14,12 @@ Use DOC analysis for recent global news and TV analysis for monitored television
 ## Identifiers
 
 - Obtain GKG theme identifiers and paste-ready `theme:` operators from `gdelt_search_themes`. Its listed count is a lookup figure, not a live article total. Search words in identifiers; a zero match does not establish that a concept is absent from the taxonomy.
-- Obtain station IDs, network and market values, and monitoring dates from `gdelt_list_tv_stations`. Use `stationId` or a resolved result's `station` for filtering. A display name or archive URL prefix is not a station ID. If a result omits its station ID, resolve it through the catalog before chaining.
+- Obtain station IDs, network and market values, and monitoring dates from `gdelt_list_tv_stations`. Use `stationId` or a resolved result's `station` for filtering. A display name or archive URL prefix is not a station ID: `stations` refuses an entry that is not letters and digits before any request, and GDELT rejects one it does not know. If a result omits its station ID, resolve it through the catalog before chaining.
 - Obtain exact breakdown labels from `gdelt_get_coverage_breakdown`, timestep dates from `gdelt_get_coverage_timeline`, and histogram bins from `gdelt_get_tone_distribution` before requesting expanded evidence. Preserve labels as returned.
 
 ## Gates
 
-1. Verify temporal coverage before interpreting an empty result. Article search and relative `timespan` windows cover a rolling three months. Explicit `startDatetime`/`endDatetime` windows reach older coverage in the `volume` and `tone` timeline modes, the language and country breakdowns, and the tone distribution; `volume_raw` and `volume_with_articles` stay within three months. GDELT documents coverage from January 1, 2017, so confirm that a dated answer actually spans the window you asked for. TV monitoring ranges differ by station. Intersect station ranges for comparisons and pin explicit historical dates. An empty answer outside coverage says nothing about whether a topic was discussed, and an empty DOC answer inside it may be GDELT under load: GDELT also returns empty answers when overloaded, so retry the same call later before reporting no coverage.
+1. Verify temporal coverage before interpreting an empty result. Article search and relative `timespan` windows cover a rolling three months. Explicit `startDatetime`/`endDatetime` windows reach older coverage in the `volume` and `tone` timeline modes, the language and country breakdowns, and the tone distribution; `volume_raw` and `volume_with_articles` stay within three months. GDELT documents coverage from January 1, 2017, so confirm that a dated answer actually spans the window you asked for. TV monitoring ranges differ by station, and a relative TV `timespan` counts back from now, past the end of most stations' monitoring. Intersect station ranges for comparisons and pin explicit historical dates. An empty TV result for named `stations` names each one whose range the window misses. An empty answer outside coverage says nothing about whether a topic was discussed, and an empty DOC answer inside it may be GDELT under load: GDELT also returns empty answers when overloaded, so retry the same call later before reporting no coverage.
 2. Keep the query, window, station population, resolution, normalization, and smoothing comparable. Raw TV values count matching 15-second clips; normalized values measure airtime share. DOC raw-volume values count distinct matching articles, or moving averages when smoothed; `norm` remains an unsmoothed monitored denominator. Do not compare those units interchangeably.
 3. Treat a source country as the outlet's origin, not the event's location. DOC country/language breakdown values are shares of each source's output; do not add different sources into a global share or infer absolute article totals from their rank.
 4. Inspect linked articles or TV excerpts before explaining a spike, claiming stance, or inferring causation. `referenceCount` counts links supplied by GDELT, not all matching articles. Expanding references retrieves supplied evidence only.

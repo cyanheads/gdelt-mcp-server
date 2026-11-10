@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetCoverageBreakdown } from '@/mcp-server/tools/definitions/get-coverage-breakdown.tool.js';
 import { gdeltGetCoverageTimeline } from '@/mcp-server/tools/definitions/get-coverage-timeline.tool.js';
 import { gdeltGetToneDistribution } from '@/mcp-server/tools/definitions/get-tone-distribution.tool.js';
+import { gdeltGetTvBreakdown } from '@/mcp-server/tools/definitions/get-tv-breakdown.tool.js';
 import { gdeltGetTvClips } from '@/mcp-server/tools/definitions/get-tv-clips.tool.js';
 import { gdeltGetTvContext } from '@/mcp-server/tools/definitions/get-tv-context.tool.js';
 import { gdeltListTvStations } from '@/mcp-server/tools/definitions/list-tv-stations.tool.js';
@@ -235,6 +236,18 @@ const REJECTION_CASES: ReadonlyArray<{
         ),
       ),
   },
+  {
+    name: 'gdelt_get_tv_breakdown',
+    errors: gdeltGetTvBreakdown.errors!,
+    arrange: () => mockTv({ getTvBreakdown: vi.fn().mockRejectedValue(TV_REJECTION()) }),
+    run: () =>
+      Promise.resolve(
+        gdeltGetTvBreakdown.handler(
+          gdeltGetTvBreakdown.input.parse({ query: 'climate', breakdownBy: 'station' }),
+          createMockContext({ errors: gdeltGetTvBreakdown.errors }),
+        ),
+      ),
+  },
 ];
 
 describe('invalid_query propagates from parseGdeltJson to the wire', () => {
@@ -345,6 +358,7 @@ describe('gdelt_rate_limited propagates through production-shaped tool contracts
     gdeltSearchTv,
     gdeltGetTvClips,
     gdeltGetTvContext,
+    gdeltGetTvBreakdown,
     gdeltListTvStations,
   ])('$name declares separate rate-limited and unavailable contracts', (tool) => {
     expect(tool.errors).toEqual(
@@ -544,7 +558,11 @@ describe('empty/sparse payload edge cases', () => {
  * success shape is proven end to end rather than from a stubbed service's empty array.
  */
 describe('a `{}` zero-match answer reaches the wire as a success', () => {
-  const SERVER_CONFIG = { baseUrl: 'https://api.gdeltproject.org/api/v2', requestDelayMs: 0 };
+  const SERVER_CONFIG = {
+    baseUrl: 'https://api.gdeltproject.org/api/v2',
+    requestDelayMs: 0,
+    requestTimeoutMs: 60_000,
+  };
 
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -588,7 +606,14 @@ describe('a `{}` zero-match answer reaches the wire as a success', () => {
       totalCount: 0,
       notice: expect.stringContaining('No TV clips matched "zqxwvjkplmq"'),
     });
-    expect(mockedFetchWithTimeout).toHaveBeenCalledTimes(1);
+    // An empty answer for a selected station and a known window asks for the station catalog
+    // once, to name a range the window misses; the `{}` catalog is unavailable, so none is named.
+    expect(
+      mockedFetchWithTimeout.mock.calls.map(([url]) =>
+        new URL(String(url)).searchParams.get('mode'),
+      ),
+    ).toEqual(['clipgallery', 'stationdetails']);
+    expect((result.structuredContent as { notice: string }).notice).not.toContain('was monitored');
   });
 
   it('TV — gdelt_search_tv derives no resolution or time range from an empty timeline', async () => {
@@ -620,7 +645,11 @@ describe('a `{}` zero-match answer reaches the wire as a success', () => {
  */
 describe('gdelt_unavailable on an exhausted upstream timeout', () => {
   /** Only `baseUrl` is read here; the request deadline comes from the server config. */
-  const SERVER_CONFIG = { baseUrl: 'https://api.gdeltproject.org/api/v2', requestDelayMs: 0 };
+  const SERVER_CONFIG = {
+    baseUrl: 'https://api.gdeltproject.org/api/v2',
+    requestDelayMs: 0,
+    requestTimeoutMs: 60_000,
+  };
 
   /** A connection that accepts and never answers — each attempt runs out its own deadline. */
   function acceptAndNeverAnswer(): void {
@@ -784,7 +813,11 @@ describe('gdelt_unavailable on an exhausted upstream timeout', () => {
  * to both wire surfaces.
  */
 describe('gdelt_unavailable on a transient upstream failure', () => {
-  const SERVER_CONFIG = { baseUrl: 'https://api.gdeltproject.org/api/v2', requestDelayMs: 0 };
+  const SERVER_CONFIG = {
+    baseUrl: 'https://api.gdeltproject.org/api/v2',
+    requestDelayMs: 0,
+    requestTimeoutMs: 60_000,
+  };
 
   beforeEach(async () => {
     const actual = await vi.importActual<typeof import('@cyanheads/mcp-ts-core/utils')>(

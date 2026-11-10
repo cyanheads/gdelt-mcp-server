@@ -967,6 +967,194 @@ describe('GdeltTvService station ID resolution', () => {
     expect(upstream.catalogCalls()).toBe(0);
   });
 
+  it('starts no catalog load for a caller already cancelled', async () => {
+    const upstream = routeUpstream({ timelinevol: timeline(['FOX News']) });
+    const cancelled = new AbortController();
+    cancelled.abort();
+    const ctx = createMockContext({ signal: cancelled.signal });
+    await expect(makeService().searchTv({ query: 'x' }, ctx)).rejects.toMatchObject({
+      code: JsonRpcErrorCode.RequestCancelled,
+    });
+    await expect(makeService().stationRanges(ctx, Date.now())).rejects.toMatchObject({
+      code: JsonRpcErrorCode.RequestCancelled,
+    });
+    expect(upstream.catalogCalls()).toBe(0);
+  });
+
+  /**
+   * The monitoring ranges an empty TV answer names come from the same process-wide catalog load
+   * station IDs resolve from: the same request, the same memo, the same failure rules.
+   */
+  describe('station ranges', () => {
+    const now = () => Date.now();
+
+    it('keys every catalog station by its uppercase ID, with its monitoring dates', async () => {
+      const lowercase: RawTvStation = {
+        StationID: 'kzzz',
+        Description: 'KZZZ Local',
+        Market: 'Nowhere',
+        Network: 'KZZZ',
+        StartDate: '20150101T000000Z',
+        EndDate: '20160630T235959Z',
+      };
+      const upstream = routeUpstream({}, () =>
+        Promise.resolve({ station_details: [...CATALOG.station_details, lowercase] }),
+      );
+      const svc = makeService();
+      const ranges = await svc.stationRanges(createMockContext(), now());
+      expect(ranges?.size).toBe(160);
+      expect(ranges?.get('CNN')).toEqual({
+        stationId: 'CNN',
+        startDate: '2009-07-02',
+        endDate: '2024-10-10',
+        isActive: false,
+      });
+      expect(ranges?.get('KZZZ')).toEqual({
+        stationId: 'kzzz',
+        startDate: '2015-01-01',
+        endDate: '2016-06-30',
+        isActive: false,
+      });
+      expect(ranges?.has('kzzz')).toBe(false);
+      expect(await svc.stationRanges(createMockContext(), now())).toBe(ranges);
+      expect(upstream.catalogCalls()).toBe(1);
+    });
+
+    /**
+     * A station's end date moves on daily while GDELT still monitors it, and the process keeps
+     * the date it read, so each range says whether the station was active at that read — under
+     * the station list's rule: an end date, read as a UTC day, within 24 hours of the read.
+     */
+    it('marks each range active when its end date was within 24 hours of the read', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        // 27 h after 2026-11-02T00:00Z, 3 h after 2026-11-03T00:00Z.
+        vi.setSystemTime(new Date('2026-11-03T03:00:00Z'));
+        const station = (id: string, endDate: string): RawTvStation => ({
+          StationID: id,
+          Description: `${id} Local`,
+          Market: 'Local',
+          Network: 'ABC',
+          StartDate: '20100101',
+          EndDate: endDate,
+        });
+        routeUpstream({}, () =>
+          Promise.resolve({
+            station_details: [station('ENDED', '20261102'), station('LIVE', '20261103')],
+          }),
+        );
+        const ranges = await makeService().stationRanges(createMockContext(), now());
+        expect(ranges?.get('LIVE')).toEqual({
+          stationId: 'LIVE',
+          startDate: '2010-01-01',
+          endDate: '2026-11-03',
+          isActive: true,
+        });
+        expect(ranges?.get('ENDED')).toEqual({
+          stationId: 'ENDED',
+          startDate: '2010-01-01',
+          endDate: '2026-11-02',
+          isActive: false,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    /**
+     * The catalog is upstream data: an entry GDELT sends without a string `StationID` names no
+     * station to range, and must not cost every other station its ID or its range.
+     */
+    it('skips a catalog entry without a station ID, keeping every other ID and range', async () => {
+      const unnamed = {
+        Description: 'Unnamed Station',
+        Market: 'Nowhere',
+        Network: 'NONE',
+        StartDate: '20200101T000000Z',
+        EndDate: '20200102T000000Z',
+      } as unknown as RawTvStation;
+      const upstream = routeUpstream({ timelinevol: timeline(['FOX News']) }, () =>
+        Promise.resolve({ station_details: [unnamed, ...CATALOG.station_details] }),
+      );
+      const svc = makeService();
+      const result = await svc.searchTv({ query: 'x' }, createMockContext());
+      expect(result.series[0]?.station).toBe('FOXNEWS');
+      expect(result).not.toHaveProperty('stationCatalogUnavailable');
+      const ranges = await svc.stationRanges(createMockContext(), now());
+      expect(ranges?.size).toBe(159);
+      expect(ranges?.get('CNN')?.endDate).toBe('2024-10-10');
+      expect(upstream.catalogCalls()).toBe(1);
+    });
+
+    it('answers from the load station IDs made, and station IDs from its load', async () => {
+      const upstream = routeUpstream({ timelinevol: timeline(['FOX News']) });
+      const svc = makeService();
+      await svc.searchTv({ query: 'x' }, createMockContext());
+      expect((await svc.stationRanges(createMockContext(), now()))?.get('FOXNEWS')).toEqual({
+        stationId: 'FOXNEWS',
+        startDate: '2009-07-02',
+        endDate: '2024-10-10',
+        isActive: false,
+      });
+      expect(upstream.catalogCalls()).toBe(1);
+
+      const fresh = makeService();
+      expect((await fresh.stationRanges(createMockContext(), now()))?.has('CNN')).toBe(true);
+      const series = await fresh.searchTv({ query: 'x' }, createMockContext());
+      expect(series.series[0]?.station).toBe('FOXNEWS');
+      expect(upstream.modes()).toEqual([
+        'timelinevol',
+        'stationdetails',
+        'stationdetails',
+        'timelinevol',
+      ]);
+    });
+
+    it('shares one in-flight load with a concurrent station-ID lookup', async () => {
+      const held = heldCatalog();
+      const upstream = routeUpstream({ timelinevol: timeline(['FOX News']) }, held.answer);
+      const svc = makeService();
+      const series = svc.searchTv({ query: 'x' }, createMockContext());
+      await tick();
+      const ranges = svc.stationRanges(createMockContext(), now());
+      held.release();
+      expect((await series).series[0]?.station).toBe('FOXNEWS');
+      expect((await ranges)?.get('CNN')?.startDate).toBe('2009-07-02');
+      expect(upstream.catalogCalls()).toBe(1);
+    });
+
+    it.each([
+      ['an HTTP 5xx', () => Promise.reject(serviceUnavailable('GDELT TV API returned HTTP 503.'))],
+      ['a network error', () => Promise.reject(new TypeError('fetch failed'))],
+      ['an empty catalog', () => Promise.resolve({ station_details: [] })],
+    ])(
+      'answers undefined when the load fails with %s, keeping nothing, and loads again next call',
+      async (_case, failure) => {
+        let fail = true;
+        const upstream = routeUpstream({}, () => (fail ? failure() : Promise.resolve(CATALOG)));
+        const svc = makeService();
+        expect(await svc.stationRanges(createMockContext(), now())).toBeUndefined();
+        fail = false;
+        expect((await svc.stationRanges(createMockContext(), now()))?.has('CNN')).toBe(true);
+        expect(upstream.catalogCalls()).toBe(2);
+      },
+    );
+
+    it('fails a caller cancelled mid-load as cancelled, never as absent ranges', async () => {
+      const held = heldCatalog();
+      routeUpstream({}, held.answer);
+      const cancelled = new AbortController();
+      const call = makeService().stationRanges(
+        createMockContext({ signal: cancelled.signal }),
+        now(),
+      );
+      await tick();
+      cancelled.abort();
+      await expect(call).rejects.toMatchObject({ code: JsonRpcErrorCode.RequestCancelled });
+      held.release();
+    });
+  });
+
   describe('the call deadline', () => {
     beforeEach(() => {
       vi.useFakeTimers();
@@ -1084,6 +1272,39 @@ describe('GdeltTvService station ID resolution', () => {
       await vi.advanceTimersByTimeAsync(1);
       expect(settled).toBe(true);
       expect((await call).stationCatalogUnavailable).toBe(true);
+    });
+
+    /**
+     * requestTimeoutMs 100 → a 200 ms catalog wait, counted from `callStartedAt`. A call that
+     * started 150 ms ago has 50 ms of it left; the catalog would answer in 100, so the lookup
+     * answers `undefined` at 50 and abandons the load.
+     */
+    it('waits for station ranges no longer than the catalog wait counted from the call start', async () => {
+      const catalogSignals: AbortSignal[] = [];
+      const upstream = routeUpstream({}, ({ signal }) => {
+        catalogSignals.push(signal);
+        return resolveAfter(100, CATALOG);
+      });
+      const call = makeService(100).stationRanges(createMockContext(), Date.now() - 150);
+      let settled = false;
+      void call.then(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(49);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
+      expect(await call).toBeUndefined();
+      expect(catalogSignals[0]?.aborted).toBe(true);
+      expect(upstream.catalogCalls()).toBe(1);
+    });
+
+    it('starts no load once the call has spent its catalog wait', async () => {
+      const upstream = routeUpstream({});
+      const svc = makeService(100);
+      expect(await svc.stationRanges(createMockContext(), Date.now() - 200)).toBeUndefined();
+      expect(await svc.stationRanges(createMockContext(), Date.now() - 5_000)).toBeUndefined();
+      expect(upstream.catalogCalls()).toBe(0);
     });
   });
 });
@@ -1265,5 +1486,40 @@ describe('GdeltTvService station catalog wait, through the real fetch path', () 
     await vi.advanceTimersByTimeAsync(20_000);
     expect((await next).series[0]?.station).toBe('FOXNEWS');
     expect(calls).toEqual({ main: 2, catalog: 2 });
+  });
+
+  /**
+   * What naming the selected stations' ranges costs an empty answer: the first lookup in a
+   * process is one catalog request, held behind the request gap after the main request settled
+   * (5,300 ms, the GDELT_REQUEST_DELAY_MS default); once it has landed, a lookup costs nothing.
+   */
+  it('costs the first range lookup one catalog request behind the request gap, and later ones none', async () => {
+    disposeGdeltPacer();
+    initGdeltPacer(5_300);
+    const calls = routeFetch(
+      async () => json({}),
+      async () => json(CATALOG),
+    );
+    const svc = makeService();
+    const startedAt = Date.now();
+    const main = svc.searchTv({ query: 'x', stations: ['CNN'] }, createMockContext());
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await main).series).toEqual([]);
+    expect(calls).toEqual({ main: 1, catalog: 0 });
+
+    const ranges = svc.stationRanges(createMockContext(), startedAt);
+    const state = timed(ranges);
+    await vi.advanceTimersByTimeAsync(5_299);
+    expect(state.settledAfterMs).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(state.settledAfterMs).toBe(5_300);
+    expect((await ranges)?.get('CNN')?.endDate).toBe('2024-10-10');
+
+    const again = svc.stationRanges(createMockContext(), Date.now());
+    const againState = timed(again);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(againState.settledAfterMs).toBe(0);
+    expect(await again).toBe(await ranges);
+    expect(calls).toEqual({ main: 1, catalog: 1 });
   });
 });

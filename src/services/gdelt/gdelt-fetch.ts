@@ -778,6 +778,10 @@ const GDELT_REJECTIONS: ReadonlyArray<{ marker: string; hint: string; api?: stri
     hint: 'Check the requested date window and timespan syntax. Use dates inside the API archive and a supported relative unit, or supply startDatetime and endDatetime together.',
   },
   {
+    marker: 'timespan is too far in the past',
+    hint: 'The relative timespan reaches back before the API archive begins. Use a shorter timespan, or supply startDatetime and endDatetime together with dates inside the archive.',
+  },
+  {
     marker: 'multiple standalone non-negative',
     hint: 'Avoid conflicting positive station/show/network/market selectors. Supply the station in stations or in query rather than both, or group alternative selectors as required by GDELT.',
   },

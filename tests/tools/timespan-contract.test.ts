@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetCoverageBreakdown } from '@/mcp-server/tools/definitions/get-coverage-breakdown.tool.js';
 import { gdeltGetCoverageTimeline } from '@/mcp-server/tools/definitions/get-coverage-timeline.tool.js';
 import { gdeltGetToneDistribution } from '@/mcp-server/tools/definitions/get-tone-distribution.tool.js';
+import { gdeltGetTvBreakdown } from '@/mcp-server/tools/definitions/get-tv-breakdown.tool.js';
 import { gdeltGetTvClips } from '@/mcp-server/tools/definitions/get-tv-clips.tool.js';
 import { gdeltGetTvContext } from '@/mcp-server/tools/definitions/get-tv-context.tool.js';
 import { gdeltSearchArticles } from '@/mcp-server/tools/definitions/search-articles.tool.js';
@@ -153,6 +154,7 @@ describe('TV timespan input', () => {
       const searchTv = vi.fn().mockResolvedValue({ series: [], normalized: true });
       vi.spyOn(tv, 'getGdeltTvService').mockReturnValue({
         searchTv,
+        stationRanges: vi.fn().mockResolvedValue(undefined),
       } as unknown as tv.GdeltTvService);
       const result = await runToolContract(gdeltSearchTv, {
         query: 'climate',
@@ -165,7 +167,10 @@ describe('TV timespan input', () => {
   );
   it('ignores malformed timespan when explicit dates win', async () => {
     const searchTv = vi.fn().mockResolvedValue({ series: [], normalized: true });
-    vi.spyOn(tv, 'getGdeltTvService').mockReturnValue({ searchTv } as unknown as tv.GdeltTvService);
+    vi.spyOn(tv, 'getGdeltTvService').mockReturnValue({
+      searchTv,
+      stationRanges: vi.fn().mockResolvedValue(undefined),
+    } as unknown as tv.GdeltTvService);
     const result = await runToolContract(gdeltSearchTv, {
       query: 'climate',
       stations: ['CNN'],
@@ -176,6 +181,35 @@ describe('TV timespan input', () => {
     expect(result.isError).not.toBe(true);
     expect(searchTv).toHaveBeenCalledTimes(1);
   });
+
+  /**
+   * A relative window counts back from now, past the end of most stations' monitoring, so no TV
+   * timespan description offers a short one bare; each points to archived periods instead. Each
+   * notice description names what the handler emits for selected stations outside the window,
+   * and none promises a sentence no handler writes.
+   */
+  it.each([gdeltSearchTv, gdeltGetTvClips, gdeltGetTvContext, gdeltGetTvBreakdown])(
+    '$name describes timespan and notice as the handler uses them',
+    (tool) => {
+      const timespan = (tool.input.shape as { timespan: z.ZodType }).timespan.description;
+      expect(timespan).toMatch(/^Relative window counting back from now/);
+      expect(timespan).toMatch(/past the end of most stations' monitoring/);
+      expect(timespan).toMatch(
+        /set startDatetime\/endDatetime inside a station's range from gdelt_list_tv_stations/,
+      );
+      expect(timespan).toMatch(/Ignored when startDatetime\/endDatetime are set\./);
+      expect(timespan).not.toMatch(/\b\d+(?:m|y|d|w|h|min)\b/);
+      const notice = tool.enrichment?.notice?.description;
+      expect(notice).toMatch(
+        /for each selected station whose monitoring range the window misses, that range and how to search inside it/,
+      );
+      expect(notice).not.toMatch(/October 2024|archive cutoff/);
+      // The handler's own malformed-timespan rejection is part of the invalid_query contract.
+      expect(tool.errors?.find((entry) => entry.reason === 'invalid_query')?.when).toMatch(
+        /the TV timespan is malformed\.$/,
+      );
+    },
+  );
 });
 
 describe('relative windows on both surfaces', () => {

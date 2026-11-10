@@ -23,6 +23,9 @@ export type MarkdownSlot =
 /** A character entity or numeric reference CommonMark would decode, matched in place. */
 const ENTITY_AT = /&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]{0,31});/y;
 
+/** `www` in any case, matched in place — before a `.`, the opener of a GFM www autolink. */
+const WWW_AT = /www/iy;
+
 /**
  * A character that can follow `<` in a raw HTML tag, comment, declaration, or processing
  * instruction, or in a URI or email autolink. Anything else after `<` is plain text.
@@ -34,10 +37,11 @@ const WHITESPACE_OR_PUNCTUATION = /[\s\p{P}\p{S}]/u;
 
 /**
  * A block marker at the start of a list item's text: an ATX heading opener, a block quote, a
- * bullet, a thematic break of dashes, or an ordered-list number (whose `.`/`)` is escaped).
+ * bullet, a thematic break of dashes, or an ordered-list number (whose `.`/`)` is escaped). A
+ * line break after it counts as the space it is written as.
  */
 const LEADING_BLOCK_MARKER =
-  /^(?:#{1,6}(?=[ \t]|$)|>|[-+](?=[ \t]|$)|-[- \t]*$|\d{1,9}[.)](?=[ \t]|$))/;
+  /^(?:#{1,6}(?=[ \t\r\n]|$)|>|[-+](?=[ \t\r\n]|$)|-[- \t\r\n]*$|\d{1,9}[.)](?=[ \t\r\n]|$))/;
 
 /**
  * Escape `value` so CommonMark/GFM renders it as literal text in `slot`.
@@ -47,10 +51,19 @@ const LEADING_BLOCK_MARKER =
  * a character that can open a tag or autolink; `&` only before a complete entity reference.
  * Line breaks become a space, so a value can never open a new block. `.`, `-`, `(`, `)`, and
  * mid-text `#` pass through, so a value with no markup characters renders byte-identical.
- * Every lookahead is bounded, so the cost stays linear in the value's length.
+ *
+ * GFM links a bare URL or email from the raw source, so an escape inside one would land in the
+ * link's text and href, or end the link early. A run of text between spaces, tabs, and line
+ * breaks that needs an escape also gets its autolink triggers escaped — the first `/` of each
+ * `//`, the `.` of each `www.` in any case, and each `@` — and no renderer links any of it. A run
+ * that needs no escape is left as it is, and a URL or email in it stays a link. No renderer's
+ * link reaches past its run, so where a URL ends never needs deciding.
+ *
+ * Every lookahead is bounded and each trigger is held at most once, so the cost stays linear in
+ * the value's length.
  */
 export function escapeMarkdown(value: string, slot: MarkdownSlot = 'inline'): string {
-  const text = slot === 'line-start' ? value.replace(/^[ \t]+/, '') : value;
+  const text = slot === 'line-start' ? value.replace(/^[ \t\r\n]+/, '') : value;
   const forced =
     slot === 'heading-end'
       ? closingSequenceIndex(text)
@@ -65,10 +78,31 @@ export function escapeMarkdown(value: string, slot: MarkdownSlot = 'inline'): st
     flushed = to;
   };
 
+  /** Autolink triggers seen in the current run while it needed no escape. */
+  const held: number[] = [];
+  let runEscaped = false;
+  const escapeTrigger = (at: number) => replace(at, at + 1, `\\${text[at]}`);
+  const escapeRange = (from: number, to: number, replacement: string) => {
+    if (!runEscaped) {
+      for (const at of held) escapeTrigger(at);
+      held.length = 0;
+      runEscaped = true;
+    }
+    replace(from, to, replacement);
+  };
+  const trigger = (at: number) => {
+    if (runEscaped) escapeTrigger(at);
+    else held.push(at);
+  };
+  const endRun = () => {
+    if (held.length > 0) held.length = 0;
+    runEscaped = false;
+  };
+
   for (let i = 0; i < text.length; ) {
     const ch = text[i] as string;
     if (i === forced) {
-      replace(i, i + 1, `\\${ch}`);
+      escapeRange(i, i + 1, `\\${ch}`);
       i++;
       continue;
     }
@@ -79,26 +113,46 @@ export function escapeMarkdown(value: string, slot: MarkdownSlot = 'inline'): st
       case '[':
       case ']':
       case '~':
-        replace(i, i + 1, `\\${ch}`);
+        escapeRange(i, i + 1, `\\${ch}`);
+        i++;
+        break;
+      case ' ':
+      case '\t':
+        endRun();
         i++;
         break;
       case '\n':
         replace(i, i + 1, ' ');
+        endRun();
         i++;
         break;
       case '\r': {
         const next = text[i + 1] === '\n' ? i + 2 : i + 1;
         replace(i, next, ' ');
+        endRun();
         i = next;
         break;
       }
+      case '/':
+        if (text[i + 1] === '/') trigger(i);
+        i++;
+        break;
+      case '.':
+        WWW_AT.lastIndex = i - 3;
+        if (i >= 3 && WWW_AT.test(text)) trigger(i);
+        i++;
+        break;
+      case '@':
+        trigger(i);
+        i++;
+        break;
       case '<':
-        if (OPENS_TAG_OR_AUTOLINK.test(text[i + 1] ?? '')) replace(i, i + 1, '\\<');
+        if (OPENS_TAG_OR_AUTOLINK.test(text[i + 1] ?? '')) escapeRange(i, i + 1, '\\<');
         i++;
         break;
       case '&':
         ENTITY_AT.lastIndex = i;
-        if (ENTITY_AT.test(text)) replace(i, i + 1, '\\&');
+        if (ENTITY_AT.test(text)) escapeRange(i, i + 1, '\\&');
         i++;
         break;
       case '_': {
@@ -106,7 +160,7 @@ export function escapeMarkdown(value: string, slot: MarkdownSlot = 'inline'): st
         while (text[end] === '_') end++;
         const intraword =
           isWordCodePoint(codePointBefore(text, i)) && isWordCodePoint(text.codePointAt(end));
-        if (!intraword) replace(i, end, '\\_'.repeat(end - i));
+        if (!intraword) escapeRange(i, end, '\\_'.repeat(end - i));
         i = end;
         break;
       }

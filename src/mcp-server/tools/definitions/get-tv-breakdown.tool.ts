@@ -10,6 +10,7 @@ import {
   describeResolvedTimespan,
   describeTvTimespanFault,
   GDELT_DATETIME_PATTERN,
+  resolveEffectiveWindow,
 } from '../date-range.js';
 import {
   clampToCap,
@@ -19,6 +20,7 @@ import {
 } from '../limit-clamp.js';
 import { escapeMarkdown, markdownQuote, renderQueryEcho } from '../markdown-escape.js';
 import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
+import { describeStationRangeMisses, parseStationIds } from '../station-ids.js';
 
 /** TV rankings expose percentages with different denominators, or raw station clip counts. */
 export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
@@ -43,7 +45,7 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
     {
       reason: 'invalid_query',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'GDELT rejected the query or the TV timespan is malformed.',
+      when: 'A stations entry is not a station ID, GDELT rejected the query, or the TV timespan is malformed.',
       recovery:
         'Read the recovery hint for the rejected rule; use gdelt_list_tv_stations for station IDs, networks, and markets.',
       thrownBy: 'service',
@@ -77,7 +79,7 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
       .array(z.string())
       .optional()
       .describe(
-        'Station IDs to select; every supplied ID is forwarded. Alternatively select station:, network:, or quoted market: in query. A selector is required; obtain values from gdelt_list_tv_stations.',
+        'Station IDs to select (e.g. ["CNN", "FOXNEWS"]) — the stationId values gdelt_list_tv_stations returns, not display labels such as "FOX News"; every supplied ID is forwarded. Alternatively select station:, network:, or quoted market: in query. A selector is required; obtain network and market values from gdelt_list_tv_stations.',
       ),
     breakdownBy: z
       .enum(['station', 'show'])
@@ -94,7 +96,7 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
       .string()
       .optional()
       .describe(
-        'Relative time window, such as 1m or 6m. Ignored when both explicit datetimes are supplied. Check per-station archive coverage before selecting a window.',
+        "Relative window counting back from now (a number and unit such as d, m, or y). Now is past the end of most stations' monitoring, so for archived periods set startDatetime/endDatetime inside a station's range from gdelt_list_tv_stations. Ignored when startDatetime/endDatetime are set.",
       ),
     startDatetime: z
       .string()
@@ -162,7 +164,7 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
       .string()
       .optional()
       .describe(
-        'Empty-result guidance, show percentage and selector limitations, or station catalog resolution limitations.',
+        'When no rows matched: the resolved timespan window; for each selected station whose monitoring range the window misses, that range and how to search inside it; and how to check station monitoring ranges. On show rankings, that values are percentages of matching clips and ellipsized labels may not work as show: selectors. On station rankings whose page has rows without a station ID, why: the station catalog did not load, or has no entry for the named labels. Absent on a non-empty station ranking whose rows on the page all carry station IDs.',
       ),
     staleResponse: staleResponseSchema,
   },
@@ -172,6 +174,8 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
     staleResponse: { render: renderStaleResponse },
   },
   async handler(input, ctx) {
+    const startedAt = Date.now();
+    const stationIds = parseStationIds(input.stations);
     const dateRangeFault = describeDateRangeFault(input.startDatetime, input.endDatetime);
     if (dateRangeFault) throw ctx.fail('invalid_date_range', dateRangeFault);
     const timespanFault = describeTvTimespanFault(input);
@@ -180,12 +184,13 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
         recovery: { hint: timespanFault },
       });
     ctx.log.info('gdelt_get_tv_breakdown', { query: input.query, breakdownBy: input.breakdownBy });
-    const result = await getGdeltTvService().getTvBreakdown(
+    const svc = getGdeltTvService();
+    const result = await svc.getTvBreakdown(
       {
         query: input.query,
         breakdownBy: input.breakdownBy,
         normalize: input.normalize,
-        ...(input.stations?.length && { stations: input.stations }),
+        ...(stationIds.length > 0 && { stations: stationIds }),
         ...(input.timespan && { timespan: input.timespan }),
         ...(input.startDatetime && { startDatetime: input.startDatetime }),
         ...(input.endDatetime && { endDatetime: input.endDatetime }),
@@ -210,10 +215,19 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
     const nextOffset =
       input.offset + rows.length < totalRows ? input.offset + rows.length : undefined;
     const notices: string[] = [];
-    if (totalRows === 0)
+    if (totalRows === 0) {
+      // A catalog this call already failed to load is not requested again.
+      const window = resolveEffectiveWindow(input);
+      const ranges =
+        window && stationIds.length > 0 && !result.stationCatalogUnavailable
+          ? await svc.stationRanges(ctx, startedAt)
+          : undefined;
+      const rangeMisses =
+        window && ranges ? describeStationRangeMisses(stationIds, ranges, window) : '';
       notices.push(
-        `No TV rankings for ${markdownQuote(input.query)}.${describeResolvedTimespan(input)} Check station monitoring ranges with gdelt_list_tv_stations or broaden the query.`,
+        `No TV rankings for ${markdownQuote(input.query)}.${describeResolvedTimespan(input)}${rangeMisses} Check station monitoring ranges with gdelt_list_tv_stations or broaden the query.`,
       );
+    }
     if (input.breakdownBy === 'show')
       notices.push(
         'Show values are percentages of matching clips, regardless of normalize. Provider labels may contain ellipses and may not work as exact show: selectors.',

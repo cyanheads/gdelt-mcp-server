@@ -1,15 +1,16 @@
 /**
  * @fileoverview Input validation tests for all tool schemas. Verifies that missing,
  * malformed, and out-of-range inputs are rejected by the Zod schemas before handlers run,
- * that count inputs admit positive safe integers past the per-call cap, plus the cross-field
- * date-range pairing rule the handlers enforce on top.
+ * that count inputs admit positive safe integers past the per-call cap, plus the rules the
+ * handlers enforce on top: the cross-field date-range pairing, and the TV tools' `stations`
+ * entries, cleaned and checked before any request.
  * @module tests/tools/input-validation.test
  */
 
-import type { Context } from '@cyanheads/mcp-ts-core';
+import { type Context, z } from '@cyanheads/mcp-ts-core';
 import { type ErrorContract, JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetCoverageBreakdown } from '@/mcp-server/tools/definitions/get-coverage-breakdown.tool.js';
 import { gdeltGetCoverageTimeline } from '@/mcp-server/tools/definitions/get-coverage-timeline.tool.js';
 import { gdeltGetToneDistribution } from '@/mcp-server/tools/definitions/get-tone-distribution.tool.js';
@@ -20,6 +21,13 @@ import { gdeltListTvStations } from '@/mcp-server/tools/definitions/list-tv-stat
 import { gdeltSearchArticles } from '@/mcp-server/tools/definitions/search-articles.tool.js';
 import { gdeltSearchThemes } from '@/mcp-server/tools/definitions/search-themes.tool.js';
 import { gdeltSearchTv } from '@/mcp-server/tools/definitions/search-tv.tool.js';
+import { disposeGdeltPacer, initGdeltPacer } from '@/services/gdelt/gdelt-pacer.js';
+import {
+  disposeGdeltResponseCache,
+  initGdeltResponseCache,
+} from '@/services/gdelt/gdelt-response-cache.js';
+import * as tvServiceModule from '@/services/gdelt/gdelt-tv-service.js';
+import { contentText, literalHtml, renderMarkdown } from './markdown-render.js';
 
 describe('gdeltSearchArticles input validation', () => {
   it('rejects an empty query string', () => {
@@ -665,6 +673,155 @@ describe('date-range validity — enforced in the handler', () => {
             },
           },
         });
+      });
+    });
+  }
+});
+
+/** The four TV tools that splice `stations` into the query, with the minimum valid input for each. */
+const STATION_TOOLS: ReadonlyArray<{
+  name: string;
+  tool: DateRangeTool;
+  base: Record<string, unknown>;
+}> = [
+  { name: 'gdelt_search_tv', tool: gdeltSearchTv as unknown as DateRangeTool, base: {} },
+  { name: 'gdelt_get_tv_clips', tool: gdeltGetTvClips as unknown as DateRangeTool, base: {} },
+  { name: 'gdelt_get_tv_context', tool: gdeltGetTvContext as unknown as DateRangeTool, base: {} },
+  {
+    name: 'gdelt_get_tv_breakdown',
+    tool: gdeltGetTvBreakdown as unknown as DateRangeTool,
+    base: { breakdownBy: 'station' },
+  },
+];
+
+/**
+ * Wiring only — the full entry table is `tests/tools/station-ids.test.ts`. Each tool runs its real
+ * service and fetch path with only the global `fetch` stubbed, so what a case asserts is the
+ * query GDELT receives, or that no request left at all. A `{}` body is GDELT's zero-match
+ * answer: without both a selected station and a known window it needs no station-catalog
+ * lookup, so a passing call makes exactly one request.
+ */
+describe('stations entries — cleaned and checked in the handler', () => {
+  afterEach(() => {
+    disposeGdeltPacer();
+    disposeGdeltResponseCache();
+    vi.restoreAllMocks();
+  });
+
+  function arrange() {
+    initGdeltPacer(0);
+    initGdeltResponseCache();
+    vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue(
+      new tvServiceModule.GdeltTvService(
+        {} as never,
+        {} as never,
+        {
+          baseUrl: 'https://api.gdeltproject.org/api/v2',
+          requestDelayMs: 0,
+          requestTimeoutMs: 60_000,
+        } as never,
+      ),
+    );
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async () => Response.json({}));
+  }
+
+  /** The `query` parameter of the one request the call made. */
+  function sentQuery(fetch: ReturnType<typeof arrange>): string | null {
+    expect(fetch).toHaveBeenCalledTimes(1);
+    return new URL(String(fetch.mock.calls[0]?.[0])).searchParams.get('query');
+  }
+
+  for (const { name, tool, base } of STATION_TOOLS) {
+    describe(name, () => {
+      it('refuses a display label before any request, with a station-ID recovery on both surfaces', async () => {
+        const fetch = arrange();
+        const result = await callWire(tool, {
+          ...base,
+          query: 'climate',
+          stations: ['CNN', 'FOX News'],
+        });
+
+        expect(fetch).not.toHaveBeenCalled();
+        expect(result).toMatchObject({
+          isError: true,
+          structuredContent: {
+            error: {
+              code: JsonRpcErrorCode.ValidationError,
+              message: expect.stringMatching(
+                /"FOX News".*station IDs such as CNN or FOXNEWS.*gdelt_list_tv_stations/,
+              ),
+              data: {
+                reason: 'invalid_query',
+                recovery: { hint: expect.stringMatching(/gdelt_list_tv_stations.*stationId/) },
+              },
+            },
+          },
+        });
+        const { message, data } = (
+          result.structuredContent as {
+            error: { message: string; data: { recovery: { hint: string } } };
+          }
+        ).error;
+        expect(message).not.toContain('"CNN"');
+        // The wire hint is this throw's own, not the declared one about GDELT's query syntax.
+        const declared = tool.errors.find((entry) => entry.reason === 'invalid_query')?.recovery;
+        expect(declared).toMatch(/^Read the recovery hint for the (specific|rejected) rule/);
+        expect(data.recovery.hint).not.toBe(declared);
+        expect(data.recovery.hint).not.toMatch(/parenthes|syntax|operator/i);
+        const rendered = renderMarkdown(contentText(result));
+        expect(rendered).toContain(literalHtml(message));
+        expect(rendered).toContain(literalHtml(`Recovery: ${data.recovery.hint}`));
+      });
+
+      it('sends every entry trimmed, blanks dropped and case kept, as one complete OR-group', async () => {
+        const ids = ['CNN', 'FoxNews', 'cnn', ...Array.from({ length: 12 }, (_, i) => `S${i}`)];
+        const fetch = arrange();
+        const result = await callWire(tool, {
+          ...base,
+          query: 'climate',
+          stations: ids.flatMap((id, i) => [i % 2 === 0 ? ` ${id}` : `${id}\t`, i % 5 ? '' : '  ']),
+        });
+
+        expect(result.isError).toBeFalsy();
+        expect(sentQuery(fetch)).toBe(`climate (${ids.map((id) => `station:${id}`).join(' OR ')})`);
+      });
+
+      it('sends a lone entry trimmed', async () => {
+        const fetch = arrange();
+        await callWire(tool, { ...base, query: 'climate', stations: ['CNN '] });
+        expect(sentQuery(fetch)).toBe('climate station:CNN');
+      });
+
+      // A known window: an empty answer for selected stations would look their ranges up too.
+      it.each([[[]], [['', '  ']]])('treats stations %j as no stations', async (stations) => {
+        const fetch = arrange();
+        const result = await callWire(tool, {
+          ...base,
+          query: 'climate station:CNN',
+          stations,
+          timespan: '6m',
+        });
+        expect(result.isError).toBeFalsy();
+        expect(sentQuery(fetch)).toBe('climate station:CNN');
+      });
+
+      it('names the stations check in its invalid_query contract', () => {
+        expect(tool.errors.find((entry) => entry.reason === 'invalid_query')?.when).toMatch(
+          /stations entry is not a station ID/,
+        );
+      });
+
+      it('publishes stations as an unconstrained list of strings', () => {
+        const schema = z.toJSONSchema(tool.input as unknown as z.ZodType) as {
+          properties: Record<string, unknown>;
+          required?: string[];
+        };
+        expect(schema.properties.stations).toEqual({
+          type: 'array',
+          items: { type: 'string' },
+          description: expect.any(String),
+        });
+        expect(schema.required ?? []).not.toContain('stations');
       });
     });
   }
