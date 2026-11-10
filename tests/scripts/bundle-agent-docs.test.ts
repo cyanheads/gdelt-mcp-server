@@ -13,6 +13,9 @@ describe('dependency author documentation', () => {
     'node_modules/pkg/.claude/settings.json',
     'node_modules/pkg/.agents/skills/example/SKILL.md',
     'node_modules/pkg/SKILL.md',
+    'node_modules/pkg/dist/SKILL.md',
+    'node_modules/pkg/AGENTS.md',
+    'node_modules/@scope/pkg/CLAUDE.md',
     'node_modules/@outer/pkg/node_modules/@inner/pkg/skills/example/SKILL.md',
     'node_modules/pkg/node_modules/inner/node_modules/deep/.agents/config.json',
   ];
@@ -33,7 +36,7 @@ describe('dependency author documentation', () => {
       'node_modules/pkg/lib/framework-skills/index.js',
       'node_modules/pkg/dist/.claude/runtime.js',
       'node_modules/pkg/dist/.agents/runtime.js',
-      'node_modules/pkg/dist/SKILL.md',
+      'node_modules/pkg/dist/AGENTS.md',
     ];
     expect(filterAgentDocEntries(runtime)).toEqual([]);
     expect(checkBundleEntries(runtime, 'fixture.mcpb')).toEqual([]);

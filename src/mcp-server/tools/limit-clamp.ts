@@ -21,7 +21,11 @@ export function countInputSchema(cap: number, defaultValue: number, description:
     .describe(description);
 }
 
-let clampCounter: ReturnType<typeof createCounter> | undefined;
+/** Resolves its instrument from the running SDK on each record, so module scope is safe. */
+const clampCounter = createCounter(
+  'gdelt.limit_clamps',
+  'Count requests clamped to the per-call cap.',
+);
 
 /** The `limitClamp` enrichment field each clamping tool declares. */
 export const limitClampSchema = z
@@ -58,10 +62,6 @@ export function clampToCap(
   if (requested <= cap) return requested;
   ctx.enrich({ limitClamp: { parameter, requested, applied: cap } satisfies LimitClamp });
   ctx.log.info('Count clamped to its per-call cap.', { parameter, requested, applied: cap });
-  clampCounter ??= createCounter(
-    'gdelt.limit_clamps',
-    'Count requests clamped to the per-call cap.',
-  );
   clampCounter.add(1, { parameter });
   return cap;
 }
