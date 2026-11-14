@@ -4,7 +4,7 @@ description: Investigate recent news spikes and compare historical television co
 license: Apache-2.0
 metadata:
   author: "cyanheads"
-  version: "1.2"
+  version: "1.3"
 ---
 
 ## Scope
