@@ -1,6 +1,6 @@
 # gdelt-mcp-server - Directory Structure
 
-Generated on: 2026-11-10 09:14:41
+Generated on: 2026-11-14 21:16:32
 
 ```text
 gdelt-mcp-server/
@@ -25,6 +25,7 @@ gdelt-mcp-server/
 │   └── settings.json
 ├── changelog/
 │   ├── 0.1.x/
+│   ├── 0.10.x/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
 │   ├── 0.4.x/
@@ -171,18 +172,26 @@ gdelt-mcp-server/
 │   │       │   ├── index.ts
 │   │       │   ├── list-tv-stations.tool.ts
 │   │       │   ├── search-articles.tool.ts
+│   │       │   ├── search-sentences.tool.ts
 │   │       │   ├── search-themes.tool.ts
 │   │       │   └── search-tv.tool.ts
+│   │       ├── context-window.ts
 │   │       ├── date-range.ts
 │   │       ├── limit-clamp.ts
 │   │       ├── markdown-escape.ts
+│   │       ├── peak-of.ts
+│   │       ├── query-input.ts
 │   │       ├── source-provenance.ts
 │   │       ├── stale-response.ts
-│   │       └── station-ids.ts
+│   │       ├── station-ids.ts
+│   │       ├── sum-values.ts
+│   │       ├── tv-covered-window.ts
+│   │       └── window-clamp.ts
 │   ├── services/
 │   │   ├── gdelt/
 │   │   │   ├── date-resolution.ts
 │   │   │   ├── doc-source-router.ts
+│   │   │   ├── gdelt-context-service.ts
 │   │   │   ├── gdelt-doc-service.ts
 │   │   │   ├── gdelt-fetch.ts
 │   │   │   ├── gdelt-pacer.ts
@@ -205,6 +214,10 @@ gdelt-mcp-server/
 │   └── index.ts
 ├── tests/
 │   ├── fixtures/
+│   │   ├── context/
+│   │   │   ├── bird-flu-24h.json
+│   │   │   ├── trump-window-page1.json
+│   │   │   └── trump-window-page2.json
 │   │   ├── gkg/
 │   │   │   ├── domains-by-country.txt
 │   │   │   ├── english-rows.tsv
@@ -218,17 +231,20 @@ gdelt-mcp-server/
 │   │   ├── doc-source-fakes.ts
 │   │   ├── gkg-feed-fixtures.ts
 │   │   ├── gkg-mirror-fixture.ts
-│   │   └── gkg-mirror-test-worker.ts
+│   │   ├── gkg-mirror-test-worker.ts
+│   │   └── linear-cost.ts
 │   ├── prompts/
 │   ├── resources/
 │   ├── scripts/
 │   │   ├── bundle-agent-docs.test.ts
 │   │   └── mirror-context.test.ts
 │   ├── services/
+│   │   ├── countries.test.ts
 │   │   ├── date-resolution.test.ts
 │   │   ├── doc-query-compiler.test.ts
 │   │   ├── doc-source-router-startup.test.ts
 │   │   ├── doc-source-router.test.ts
+│   │   ├── gdelt-context-service.test.ts
 │   │   ├── gdelt-doc-service.test.ts
 │   │   ├── gdelt-fetch-cache.test.ts
 │   │   ├── gdelt-fetch-retry.test.ts
@@ -241,8 +257,10 @@ gdelt-mcp-server/
 │   │   ├── gkg-mirror-queries.test.ts
 │   │   ├── gkg-mirror-startup.test.ts
 │   │   ├── gkg-mirror-store.test.ts
+│   │   ├── languages.test.ts
 │   │   └── request-contract.test.ts
 │   └── tools/
+│       ├── context-window.test.ts
 │       ├── count-limits.test.ts
 │       ├── date-range.test.ts
 │       ├── error-propagation.test.ts
@@ -256,16 +274,22 @@ gdelt-mcp-server/
 │       ├── list-tv-stations.tool.test.ts
 │       ├── markdown-escape.test.ts
 │       ├── markdown-render.ts
+│       ├── peak-of.test.ts
+│       ├── query-input.test.ts
 │       ├── search-articles.tool.test.ts
+│       ├── search-sentences.tool.test.ts
 │       ├── search-themes.tool.test.ts
 │       ├── search-tv.tool.test.ts
 │       ├── security.test.ts
 │       ├── station-ids.test.ts
 │       ├── station-range-fixtures.ts
+│       ├── sum-values.test.ts
 │       ├── theme-operator-hints.test.ts
 │       ├── timespan-contract.test.ts
 │       ├── tool-surface.test.ts
-│       └── tv-analytics-regressions.test.ts
+│       ├── tv-analytics-regressions.test.ts
+│       ├── tv-covered-window.test.ts
+│       └── window-clamp.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes

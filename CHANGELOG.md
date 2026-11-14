@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.10.0](changelog/0.10.x/0.10.0.md) — 2026-11-14
+
+Adds gdelt_search_sentences, sentence-level search of the last 72 hours of English-language coverage. The coverage breakdown pages every ranked series, TV results name the UTC window their values cover, and the DOC tools refuse unusable queries and timespans before any request.
+
 ## [0.9.0](changelog/0.9.x/0.9.0.md) — 2026-11-10 · ⚠️ Breaking
 
 The TV tools refuse stations entries that are not station IDs, and an empty TV result names the selected stations whose monitoring range the window misses. Markdown escaping no longer corrupts bare URLs and emails in GFM renderers. Adopts @cyanheads/mcp-ts-core ^0.13.22.
