@@ -5,6 +5,7 @@
  * @module tests/tools/security.test
  */
 
+import { readFileSync } from 'node:fs';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import {
   afterAll,
@@ -20,12 +21,17 @@ import {
 import { gdeltGetCoverageBreakdown } from '@/mcp-server/tools/definitions/get-coverage-breakdown.tool.js';
 import { gdeltGetCoverageTimeline } from '@/mcp-server/tools/definitions/get-coverage-timeline.tool.js';
 import { gdeltGetToneDistribution } from '@/mcp-server/tools/definitions/get-tone-distribution.tool.js';
+import { gdeltGetTvBreakdown } from '@/mcp-server/tools/definitions/get-tv-breakdown.tool.js';
 import { gdeltGetTvClips } from '@/mcp-server/tools/definitions/get-tv-clips.tool.js';
 import { gdeltGetTvContext } from '@/mcp-server/tools/definitions/get-tv-context.tool.js';
 import { gdeltListTvStations } from '@/mcp-server/tools/definitions/list-tv-stations.tool.js';
 import { gdeltSearchArticles } from '@/mcp-server/tools/definitions/search-articles.tool.js';
+import { gdeltSearchSentences } from '@/mcp-server/tools/definitions/search-sentences.tool.js';
 import { gdeltSearchThemes } from '@/mcp-server/tools/definitions/search-themes.tool.js';
 import { gdeltSearchTv } from '@/mcp-server/tools/definitions/search-tv.tool.js';
+import { escapeMarkdown, quoteText } from '@/mcp-server/tools/markdown-escape.js';
+import * as contextServiceModule from '@/services/gdelt/gdelt-context-service.js';
+import { initGdeltContextService } from '@/services/gdelt/gdelt-context-service.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
 import { initGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
 import { disposeGdeltPacer, initGdeltPacer } from '@/services/gdelt/gdelt-pacer.js';
@@ -36,6 +42,7 @@ import {
 import * as themeServiceModule from '@/services/gdelt/gdelt-theme-service.js';
 import * as tvServiceModule from '@/services/gdelt/gdelt-tv-service.js';
 import { initGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
+import type { RawContextArticle, SentenceMatch } from '@/services/gdelt/types.js';
 import { MAX_PLAN_PREDICATES } from '@/services/gkg-mirror/doc-query-compiler.js';
 import {
   executeMirrorRequest,
@@ -112,6 +119,22 @@ function lineStartingWith(text: string, prefix: string): string {
   const lines = text.split('\n').filter((line) => line.startsWith(prefix));
   expect(lines).toHaveLength(1);
   return lines[0] as string;
+}
+
+/** The first record of a recorded Context answer (bird flu, 24 hours), as the service states it. */
+const SENTENCE: SentenceMatch = (() => {
+  const { articles } = JSON.parse(
+    readFileSync(new URL('../fixtures/context/bird-flu-24h.json', import.meta.url), 'utf8'),
+  ) as { articles: RawContextArticle[] };
+  const { socialimage: _, isquote, ...rest } = articles[0] as RawContextArticle;
+  return { ...rest, isquote: isquote === 1 };
+})();
+
+/** Stand the Context service in with these methods for the rest of the test. */
+function mockContextService(methods: Record<string, unknown>) {
+  vi.spyOn(contextServiceModule, 'getGdeltContextService').mockReturnValue(
+    methods as unknown as contextServiceModule.GdeltContextService,
+  );
 }
 
 beforeEach(() => {
@@ -374,62 +397,99 @@ describe('upstream text rendered into content[]', () => {
     expectInert(htmlOf(result));
   });
 
+  /** Each TV tool that names unresolved station labels in its notice, run on rows labeled `label`. */
+  const UNRESOLVED_LABEL_PATHS: Array<
+    [tool: string, run: (label: string) => Promise<Awaited<ReturnType<typeof runToolContract>>>]
+  > = [
+    [
+      'gdelt_get_tv_clips',
+      (label) => {
+        const { station: _, ...clip } = { ...CLIP, stationName: label };
+        vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+          getTvClips: vi.fn().mockResolvedValue({ clips: [clip] }),
+        } as unknown as tvServiceModule.GdeltTvService);
+        return runToolContract(gdeltGetTvClips, { query: 'x', stations: ['CNN'] });
+      },
+    ],
+    [
+      'gdelt_search_tv',
+      (label) => {
+        vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+          searchTv: vi.fn().mockResolvedValue({
+            ...TV_RESULT,
+            series: [{ stationName: label, data: TV_RESULT.series[0]!.data }],
+          }),
+        } as unknown as tvServiceModule.GdeltTvService);
+        return runToolContract(gdeltSearchTv, { query: 'x', stations: ['CNN'] });
+      },
+    ],
+    [
+      'gdelt_get_tv_breakdown',
+      (label) => {
+        vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+          getTvBreakdown: vi.fn().mockResolvedValue({
+            rows: [{ label, value: 1 }],
+            valueUnit: 'percent_station_airtime',
+          }),
+        } as unknown as tvServiceModule.GdeltTvService);
+        return runToolContract(gdeltGetTvBreakdown, {
+          query: 'x',
+          stations: ['CNN'],
+          breakdownBy: 'station',
+        });
+      },
+    ],
+  ];
+
+  /** Where each tool's notice names the unresolved label, around its quoted form. */
+  const LABEL_FRAMES: Record<string, [string, string]> = {
+    gdelt_get_tv_clips: ['labeled ', ', so station'],
+    gdelt_search_tv: ['labeled ', ', so station'],
+    gdelt_get_tv_breakdown: ['for labels ', '; labels and values are preserved'],
+  };
+
   /**
-   * An unresolved label is also named in the notice, which reaches content[] as written — so the
-   * label is quoted there, while the stationName field keeps it raw.
+   * An unresolved label is also named in the notice: structuredContent quotes it as its JSON
+   * encoding, unescaped, and the notice's content[] line escapes it, so it opens nothing there.
    */
-  it('get-tv-clips and search-tv keep a hostile unresolved station label inert in heading and notice', async () => {
-    const { station: _, ...unresolvedClip } = { ...CLIP, stationName: PAYLOAD };
-    vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-      getTvClips: vi.fn().mockResolvedValue({ clips: [unresolvedClip] }),
-      searchTv: vi.fn().mockResolvedValue({
-        ...TV_RESULT,
-        series: [{ stationName: PAYLOAD, data: TV_RESULT.series[0]!.data }],
-      }),
-    } as unknown as tvServiceModule.GdeltTvService);
-    for (const result of [
-      await runToolContract(gdeltGetTvClips, { query: 'x', stations: ['CNN'] }),
-      await runToolContract(gdeltSearchTv, { query: 'x', stations: ['CNN'] }),
-    ]) {
+  it.each(UNRESOLVED_LABEL_PATHS)(
+    '%s keeps a hostile unresolved station label raw in its notice and inert in content[]',
+    async (tool, run) => {
+      const result = await run(PAYLOAD);
       expect(JSON.stringify(result.structuredContent)).toContain(JSON.stringify(PAYLOAD));
-      expect((result.structuredContent as { notice: string }).notice).toContain(
-        String.raw`labeled "\</b>\<script>alert(1)\</script> \[click\](javascript:alert(1))`,
-      );
+      const notice = (result.structuredContent as { notice: string }).notice;
+      const [pre, post] = LABEL_FRAMES[tool] as [string, string];
+      expect(notice).toContain(`${pre}${JSON.stringify(PAYLOAD)}${post}`);
+      expect(lineStartingWith(contentText(result), '> ')).toBe(`> ${escapeMarkdown(notice)}`);
       // The notice trailer is itself one blockquote; the label must open nothing else.
       const html = htmlOf(result);
       expect(html).not.toMatch(/<script|<img|href="javascript|<h1/);
       expect(html.match(/<blockquote>/g)).toHaveLength(1);
       expect(html).toContain(literalHtml('<script>alert(1)</script>'));
-    }
-  });
+    },
+  );
 
   /**
-   * The notice quotes an unresolved label the way it quotes caller text: JSON-encoded, then
-   * escaped, so a `"` inside the label cannot pose as the closing quote and `*` opens no emphasis.
+   * The notice quotes an unresolved label the way it quotes caller text: JSON-encoded, so a `"`
+   * inside the label cannot pose as the closing quote, and escaped only in content[], where `*`
+   * opens no emphasis.
    */
-  it('get-tv-clips and search-tv quote an unresolved label carrying quotes and asterisks as its JSON encoding', async () => {
-    const label = 'KZZZ "Action" *News* Now';
-    const { station: _, ...unresolvedClip } = { ...CLIP, stationName: label };
-    vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
-      getTvClips: vi.fn().mockResolvedValue({ clips: [unresolvedClip] }),
-      searchTv: vi.fn().mockResolvedValue({
-        ...TV_RESULT,
-        series: [{ stationName: label, data: TV_RESULT.series[0]!.data }],
-      }),
-    } as unknown as tvServiceModule.GdeltTvService);
-    for (const result of [
-      await runToolContract(gdeltGetTvClips, { query: 'x', stations: ['CNN'] }),
-      await runToolContract(gdeltSearchTv, { query: 'x', stations: ['CNN'] }),
-    ]) {
+  it.each(UNRESOLVED_LABEL_PATHS)(
+    '%s quotes an unresolved label carrying quotes and asterisks as its JSON encoding',
+    async (tool, run) => {
+      const label = 'KZZZ "Action" *News* Now';
+      const result = await run(label);
       expect(JSON.stringify(result.structuredContent)).toContain(JSON.stringify(label));
       const notice = (result.structuredContent as { notice: string }).notice;
-      expect(notice).toContain(String.raw`labeled "KZZZ \\"Action\\" \*News\* Now", so station`);
-      expect(contentText(result)).toContain(notice);
-      const html = renderMarkdown(notice);
+      const [pre, post] = LABEL_FRAMES[tool] as [string, string];
+      expect(notice).toContain(`${pre}"KZZZ \\"Action\\" *News* Now"${post}`);
+      const line = lineStartingWith(contentText(result), '> ');
+      expect(line).toBe(`> ${escapeMarkdown(notice)}`);
+      const html = renderMarkdown(line);
       expect(html).not.toMatch(/<em>|<strong>/);
-      expect(html).toContain(`labeled ${literalHtml(JSON.stringify(label))}, so station`);
-    }
-  });
+      expect(html).toContain(`${pre}${literalHtml(JSON.stringify(label))}${post}`);
+    },
+  );
 
   it('get-coverage-timeline renders a hostile article title as an inert link label', async () => {
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
@@ -469,6 +529,18 @@ describe('upstream text rendered into content[]', () => {
     } as unknown as tvServiceModule.GdeltTvService);
     const result = await runToolContract(gdeltListTvStations, {});
     expectInert(htmlOf(result));
+  });
+
+  /** A non-empty page always carries one notice blockquote (how it continues); nothing else opens. */
+  it('search-sentences renders a hostile title, sentence, and context as inert text, keeping them raw in structuredContent', async () => {
+    const match = { ...SENTENCE, title: PAYLOAD, sentence: PAYLOAD, context: PAYLOAD };
+    mockContextService({ searchSentences: vi.fn().mockResolvedValue([match]) });
+    const result = await runToolContract(gdeltSearchSentences, { query: 'bird flu' });
+    expect((result.structuredContent as { matches: unknown[] }).matches).toEqual([match]);
+    const html = htmlOf(result);
+    expect(html).not.toMatch(/<script|<img|href="javascript|<h1/);
+    expect(html.match(/<blockquote>/g)).toHaveLength(1);
+    expect(html.split(literalHtml('<script>alert(1)</script>'))).toHaveLength(4);
   });
 });
 
@@ -587,6 +659,22 @@ describe('caller text quoted into notices, hints, and echoes', () => {
       },
     ],
     [
+      'gdelt_get_tv_breakdown',
+      true,
+      (query) => {
+        mockTv({
+          getTvBreakdown: vi
+            .fn()
+            .mockResolvedValue({ rows: [], valueUnit: 'percent_station_airtime' }),
+        });
+        return runToolContract(gdeltGetTvBreakdown, {
+          query,
+          stations: ['CNN'],
+          breakdownBy: 'station',
+        });
+      },
+    ],
+    [
       'gdelt_list_tv_stations',
       false,
       (query) => {
@@ -596,6 +684,14 @@ describe('caller text quoted into notices, hints, and echoes', () => {
           network: query,
           market: query,
         });
+      },
+    ],
+    [
+      'gdelt_search_sentences',
+      true,
+      (query) => {
+        mockContextService({ searchSentences: vi.fn().mockResolvedValue([]) });
+        return runToolContract(gdeltSearchSentences, { query });
       },
     ],
   ];
@@ -611,8 +707,12 @@ describe('caller text quoted into notices, hints, and echoes', () => {
     gdelt_get_tv_clips: 'No TV clips matched "climate change". TV coverage varies by station',
     gdelt_get_tv_context:
       'No TV context data for "climate change". Archive coverage varies by station',
+    gdelt_get_tv_breakdown:
+      'No TV rankings for "climate change". Check station monitoring ranges with gdelt_list_tv_stations',
     gdelt_list_tv_stations:
       'No station matched stations ["climate change"], network "climate change", market "climate change".',
+    gdelt_search_sentences:
+      'No sentence matched "climate change" in the last 72h. The Context API matches only when every query term falls inside one sentence',
   };
 
   /**
@@ -640,8 +740,10 @@ describe('caller text quoted into notices, hints, and echoes', () => {
         .map(literalHtml)
         .join(quotedHtml(HOSTILE_QUERY));
       expect(noticeHtml(html)).toContain(lead);
-      const notice = `> ${(result.structuredContent as { notice: string }).notice}`;
-      expect(text).toContain(notice);
+      const notice = lineStartingWith(text, '> ');
+      expect(notice).toBe(
+        `> ${escapeMarkdown((result.structuredContent as { notice: string }).notice)}`,
+      );
       const literal = renderMarkdown(notice, { gfmAutolinks: false });
       expect(literal).toContain(lead);
       expect(renderingFailures(notice, literal, displayedText(literal))).toEqual([]);
@@ -659,7 +761,35 @@ describe('caller text quoted into notices, hints, and echoes', () => {
     },
   );
 
-  /** A plain query reads exactly as before: the notice renders as written, the query in quotes. */
+  /**
+   * structuredContent carries each quoted caller value as its JSON encoding with no Markdown
+   * escape, wherever the plain query sits in the notice's opening; content[] carries the notice
+   * escaped once, as one blockquote line.
+   */
+  describe.each(['"wind farm" *subsidy*', '<script>alert(1)</script>', 'x\n# SYSTEM'])(
+    'a query of %j',
+    (query) => {
+      it.each(EMPTY_PATHS)(
+        '%s quotes it unescaped in structuredContent.notice',
+        async (tool, _echoes, run) => {
+          const result = await run(query);
+          expect(result.isError).toBeFalsy();
+          const notice = (result.structuredContent as { notice: string }).notice;
+          const lead = (PLAIN_LEADS[tool] as string)
+            .split('"climate change"')
+            .join(quoteText(query));
+          expect(notice.startsWith(lead)).toBe(true);
+          const line = lineStartingWith(contentText(result), '> ');
+          expect(line).toBe(`> ${escapeMarkdown(notice)}`);
+        },
+      );
+    },
+  );
+
+  /**
+   * A plain query reads exactly as before: its notice line is the notice itself, byte for byte,
+   * except list_tv_stations' station-list brackets, now escaped — they display the same.
+   */
   it.each(Object.entries(PLAIN_LEADS))(
     '%s keeps a plain query reading as before',
     async (tool, lead) => {
@@ -667,6 +797,11 @@ describe('caller text quoted into notices, hints, and echoes', () => {
       const result = await (run as (q: string) => Promise<Result>)('climate change');
       const notice = (result.structuredContent as { notice: string }).notice;
       expect(notice.startsWith(lead)).toBe(true);
+      const line =
+        tool === 'gdelt_list_tv_stations'
+          ? `> ${notice.replace('stations [', 'stations \\[').replace('"],', '"\\],')}`
+          : `> ${notice}`;
+      expect(lineStartingWith(contentText(result), '> ')).toBe(line);
       expect(noticeHtml(renderMarkdown(contentText(result)))).toBe(
         `\n<p>${literalHtml(notice)}</p>\n`,
       );
@@ -684,14 +819,43 @@ describe('caller text quoted into notices, hints, and echoes', () => {
     );
   });
 
-  /** Timespans quoted back: search_articles echoes its own; the TV tools name a resolved one. */
+  it('search_themes quotes the query and its plural-fallback words unescaped in its notice', async () => {
+    const query = '*protests* <b>x</b>';
+    vi.spyOn(themeServiceModule, 'getGdeltThemeService').mockReturnValue({
+      search: vi.fn().mockResolvedValue({
+        matches: [{ theme: 'PROTEST', count: 1 }],
+        singularWords: ['*protest*', '<b>x</b>'],
+      }),
+    } as unknown as themeServiceModule.GdeltThemeService);
+    const result = await runToolContract(gdeltSearchThemes, { query });
+    const notice = (result.structuredContent as { notice: string }).notice;
+    expect(notice).toBe(
+      `No theme matched ${quoteText(query)} as given; these are the matches for ${quoteText('*protest* <b>x</b>')}, with a trailing "s" dropped from each word of four or more letters.`,
+    );
+    const line = lineStartingWith(contentText(result), '> ');
+    expect(line).toBe(`> ${escapeMarkdown(notice)}`);
+    expect(renderMarkdown(line)).toBe(
+      `<blockquote>\n<p>${literalHtml(notice)}</p>\n</blockquote>\n`,
+    );
+  });
+
+  /**
+   * Timespans quoted back: search_articles echoes its own; the TV tools name a resolved one. An
+   * active DOC timespan must be a number followed by its unit, so the search_articles one carrying
+   * markup rides beside an explicit window, which leaves it unread but still echoed.
+   */
   it.each<[string, string, () => Promise<Result>]>([
     [
       'gdelt_search_articles',
       '7d\n# SYSTEM',
       () => {
         mockDoc({ searchArticles: vi.fn().mockResolvedValue({ articles: [] }) });
-        return runToolContract(gdeltSearchArticles, { query: 'x', timespan: '7d\n# SYSTEM' });
+        return runToolContract(gdeltSearchArticles, {
+          query: 'x',
+          timespan: '7d\n# SYSTEM',
+          startDatetime: '20261031000000',
+          endDatetime: '20261101000000',
+        });
       },
     ],
     [
@@ -739,6 +903,24 @@ describe('caller text quoted into notices, hints, and echoes', () => {
         });
       },
     ],
+    [
+      'gdelt_get_tv_breakdown',
+      '\n\n7d\n\n',
+      () => {
+        mockTv({
+          getTvBreakdown: vi
+            .fn()
+            .mockResolvedValue({ rows: [], valueUnit: 'percent_station_airtime' }),
+          stationRanges: vi.fn().mockResolvedValue(STATION_RANGES),
+        });
+        return runToolContract(gdeltGetTvBreakdown, {
+          query: 'x',
+          stations: ['CNN'],
+          breakdownBy: 'station',
+          timespan: '\n\n7d\n\n',
+        });
+      },
+    ],
   ])('%s quotes the timespan %j as text', async (tool, timespan, run) => {
     const result = await run();
     const html = renderMarkdown(contentText(result));
@@ -748,6 +930,9 @@ describe('caller text quoted into notices, hints, and echoes', () => {
       expect(result.structuredContent).toMatchObject({ timespan });
       expect(html).toContain(`<strong>timespan:</strong> ${quoted}`);
     } else {
+      expect((result.structuredContent as { notice: string }).notice).toContain(
+        `Timespan ${quoteText(timespan)} resolved to`,
+      );
       const notice = noticeHtml(html);
       expect(notice).toContain(`Timespan ${quoted} resolved to`);
       // The selected station's range follows it, as plain text.
@@ -826,6 +1011,14 @@ describe('caller text quoted into notices, hints, and echoes', () => {
       },
       [`No timestep at ${quotedHtml(HOSTILE_SELECTOR)}`, `Available: ${UPSTREAM_DISPLAYED}.`],
     ],
+    [
+      'gdelt_search_sentences invalid_query (timespan)',
+      () => {
+        mockContextService({ searchSentences: vi.fn().mockResolvedValue([]) });
+        return runToolContract(gdeltSearchSentences, { query: 'x', timespan: HOSTILE_SELECTOR });
+      },
+      [`Context timespan ${quotedHtml(HOSTILE_SELECTOR)} is not a whole number`],
+    ],
   ])('%s quotes the caller value and escapes upstream text', async (_path, run, displayed) => {
     const result = await run();
     expect(result.isError).toBe(true);
@@ -902,6 +1095,53 @@ describe('upstream text quoted into service error messages', () => {
       const upstream = vi.fn(async () => new Response(body));
       vi.stubGlobal('fetch', upstream);
       const result = await run();
+      expect(result.isError).toBe(true);
+      expect((result.structuredContent as { error: { message: string } }).error.message).toBe(
+        message,
+      );
+      expectInertErrorLine(result);
+      expect(upstream).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  /** The same seam for the Context service: only the global `fetch` is stubbed. */
+  describe('through the real Context service', () => {
+    beforeEach(() => {
+      vi.restoreAllMocks();
+      initGdeltPacer(0);
+      initGdeltResponseCache();
+      initGdeltContextService(
+        {} as never,
+        {} as never,
+        {
+          baseUrl: 'https://api.gdeltproject.org/api/v2',
+          requestDelayMs: 0,
+          requestTimeoutMs: 60_000,
+        } as never,
+      );
+    });
+
+    afterEach(() => {
+      disposeGdeltPacer();
+      disposeGdeltResponseCache();
+      vi.unstubAllGlobals();
+    });
+
+    it.each<[string, string, string]>([
+      [
+        'an unparseable Context body',
+        HOSTILE,
+        String.raw`GDELT Context API returned unparseable response: "x\n# HEAD <img src=x>"`,
+      ],
+      [
+        'a Context rejection',
+        'One or more of your keywords were too short, too long or too common: <img src=x>\n# HEAD',
+        String.raw`GDELT Context API rejected the query: "One or more of your keywords were too short, too long or too common: <img src=x>\n# HEAD"`,
+      ],
+    ])('%s renders as one inert Error line', async (_case, body, message) => {
+      const upstream = vi.fn(async () => new Response(body));
+      vi.stubGlobal('fetch', upstream);
+      const result = await runToolContract(gdeltSearchSentences, { query: 'x' });
       expect(result.isError).toBe(true);
       expect((result.structuredContent as { error: { message: string } }).error.message).toBe(
         message,

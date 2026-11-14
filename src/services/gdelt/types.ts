@@ -162,3 +162,38 @@ export type TvClip = {
   archiveUrl: string;
   thumbnail?: string;
 };
+
+// ─── Context API types ────────────────────────────────────────────────────────
+
+/**
+ * Raw article record from GDELT Context API artlist mode: one matching sentence per article.
+ * Every record measured carries every field; `socialimage` is `""` when the article has none.
+ */
+export type RawContextArticle = {
+  url: string;
+  title: string;
+  /** When GDELT saw the article (YYYYMMDDTHHMMSSZ), not its publication time. */
+  seendate: string;
+  socialimage: string;
+  domain: string;
+  /** Upper-case language name, e.g. `ENGLISH`. */
+  language: string;
+  /** 1 when the sentence holds a quotation mark, 0 otherwise. */
+  isquote: 0 | 1;
+  sentence: string;
+  /** The sentence with the text around it. */
+  context: string;
+};
+
+/** Normalized sentence match for tool output. */
+export type SentenceMatch = {
+  url: string;
+  title: string;
+  seendate: string;
+  domain: string;
+  language: string;
+  isquote: boolean;
+  sentence: string;
+  context: string;
+  socialimage?: string;
+};

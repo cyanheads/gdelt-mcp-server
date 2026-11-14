@@ -63,7 +63,7 @@ afterEach(() => {
 });
 
 describe('src/index.ts mirror wiring', () => {
-  it('never loads the mirror client with GDELT_MIRROR_PATH unset, and registers the same ten tools', async () => {
+  it('never loads the mirror client with GDELT_MIRROR_PATH unset, and registers the same eleven tools', async () => {
     vi.stubEnv('GDELT_MIRROR_PATH', undefined);
     const options = await loadEntry();
 
@@ -77,6 +77,7 @@ describe('src/index.ts mirror wiring', () => {
       'gdelt_get_tv_context',
       'gdelt_list_tv_stations',
       'gdelt_search_articles',
+      'gdelt_search_sentences',
       'gdelt_search_themes',
       'gdelt_search_tv',
     ]);

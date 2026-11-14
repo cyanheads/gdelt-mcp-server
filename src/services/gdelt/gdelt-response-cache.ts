@@ -1,7 +1,7 @@
 /**
- * @fileoverview Process-wide memory of GDELT DOC and TV answers: a byte-charged LRU of stored
- * response bodies, and the fetches in flight that concurrent identical calls share. GDELT data
- * is public and requests carry no credentials, so one cache serves every session and tenant.
+ * @fileoverview Process-wide memory of GDELT DOC, Context, and TV answers: a byte-charged LRU of
+ * stored response bodies, and the fetches in flight that concurrent identical calls share. GDELT
+ * data is public and requests carry no credentials, so one cache serves every session and tenant.
  * @module services/gdelt/gdelt-response-cache
  */
 

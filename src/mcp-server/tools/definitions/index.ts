@@ -11,5 +11,6 @@ export { gdeltGetTvClips } from './get-tv-clips.tool.js';
 export { gdeltGetTvContext } from './get-tv-context.tool.js';
 export { gdeltListTvStations } from './list-tv-stations.tool.js';
 export { gdeltSearchArticles } from './search-articles.tool.js';
+export { gdeltSearchSentences } from './search-sentences.tool.js';
 export { gdeltSearchThemes } from './search-themes.tool.js';
 export { gdeltSearchTv } from './search-tv.tool.js';

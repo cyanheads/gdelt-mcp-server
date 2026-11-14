@@ -1,7 +1,7 @@
 /**
- * @fileoverview Outbound pacer shared by every GDELT API call (DOC and TV) — one request
- * in flight, spaced from the previous response's completion, behind a cooldown gate that an
- * upstream rate limit closes for every queued caller at once.
+ * @fileoverview Outbound pacer shared by every GDELT API call (DOC, Context, and TV) — one
+ * request in flight, spaced from the previous response's completion, behind a cooldown gate that
+ * an upstream rate limit closes for every queued caller at once.
  * @module services/gdelt/gdelt-pacer
  */
 

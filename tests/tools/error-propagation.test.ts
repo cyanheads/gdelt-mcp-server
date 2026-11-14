@@ -20,7 +20,10 @@ import { gdeltGetTvClips } from '@/mcp-server/tools/definitions/get-tv-clips.too
 import { gdeltGetTvContext } from '@/mcp-server/tools/definitions/get-tv-context.tool.js';
 import { gdeltListTvStations } from '@/mcp-server/tools/definitions/list-tv-stations.tool.js';
 import { gdeltSearchArticles } from '@/mcp-server/tools/definitions/search-articles.tool.js';
+import { gdeltSearchSentences } from '@/mcp-server/tools/definitions/search-sentences.tool.js';
 import { gdeltSearchTv } from '@/mcp-server/tools/definitions/search-tv.tool.js';
+import * as contextServiceModule from '@/services/gdelt/gdelt-context-service.js';
+import { initGdeltContextService } from '@/services/gdelt/gdelt-context-service.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
 import { initGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
 import { gdeltFetch, parseGdeltJson } from '@/services/gdelt/gdelt-fetch.js';
@@ -116,6 +119,17 @@ describe('error propagation — tv service tools', () => {
   });
 });
 
+describe('error propagation — context service tool', () => {
+  it('search-sentences propagates network error from service', async () => {
+    vi.spyOn(contextServiceModule, 'getGdeltContextService').mockReturnValue({
+      searchSentences: vi.fn().mockRejectedValue(new Error('Network failure')),
+    } as unknown as contextServiceModule.GdeltContextService);
+    const ctx = createMockContext({ errors: gdeltSearchSentences.errors });
+    const input = gdeltSearchSentences.input.parse({ query: 'test' });
+    await expect(gdeltSearchSentences.handler(input, ctx)).rejects.toThrow('Network failure');
+  });
+});
+
 /**
  * parseGdeltJson raises invalid_query from the service layer, below ctx.fail, so no lint
  * rule proves each tool's declared reason is reachable — these cases stand in for that,
@@ -135,6 +149,11 @@ function gdeltRejection(body: string, apiLabel: string): unknown {
 const DOC_REJECTION = () => gdeltRejection('Your query was too short or too long.', 'GDELT DOC');
 const TV_REJECTION = () =>
   gdeltRejection('Your query must contain at least one station.', 'GDELT TV');
+const CONTEXT_REJECTION = () =>
+  gdeltRejection(
+    'One or more of your keywords were too short, too long or too common: (tone<-5)',
+    'GDELT Context',
+  );
 
 const mockDoc = (impl: Record<string, unknown>) =>
   vi
@@ -145,6 +164,11 @@ const mockTv = (impl: Record<string, unknown>) =>
   vi
     .spyOn(tvServiceModule, 'getGdeltTvService')
     .mockReturnValue(impl as unknown as tvServiceModule.GdeltTvService);
+
+const mockContext = (impl: Record<string, unknown>) =>
+  vi
+    .spyOn(contextServiceModule, 'getGdeltContextService')
+    .mockReturnValue(impl as unknown as contextServiceModule.GdeltContextService);
 
 const REJECTION_CASES: ReadonlyArray<{
   name: string;
@@ -245,6 +269,18 @@ const REJECTION_CASES: ReadonlyArray<{
         gdeltGetTvBreakdown.handler(
           gdeltGetTvBreakdown.input.parse({ query: 'climate', breakdownBy: 'station' }),
           createMockContext({ errors: gdeltGetTvBreakdown.errors }),
+        ),
+      ),
+  },
+  {
+    name: 'gdelt_search_sentences',
+    errors: gdeltSearchSentences.errors!,
+    arrange: () => mockContext({ searchSentences: vi.fn().mockRejectedValue(CONTEXT_REJECTION()) }),
+    run: () =>
+      Promise.resolve(
+        gdeltSearchSentences.handler(
+          gdeltSearchSentences.input.parse({ query: 'x' }),
+          createMockContext({ errors: gdeltSearchSentences.errors }),
         ),
       ),
   },
@@ -350,6 +386,34 @@ describe('gdelt_rate_limited propagates through production-shaped tool contracts
     );
   });
 
+  it('surfaces matching structured and text recovery from the Context tool', async () => {
+    mockContext({
+      searchSentences: vi.fn().mockRejectedValue(await rateLimitFailure('GDELT Context')),
+    });
+
+    const result = await runToolContract(gdeltSearchSentences, { query: 'climate' });
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: JsonRpcErrorCode.RateLimited,
+          data: {
+            reason: 'gdelt_rate_limited',
+            retryable: true,
+            recovery: { hint: expect.stringMatching(/back off/i) },
+          },
+        },
+      },
+    });
+    expect(result.content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          text: expect.stringMatching(/Recovery:.*back off/is),
+        }),
+      ]),
+    );
+  });
+
   it.each([
     gdeltSearchArticles,
     gdeltGetCoverageTimeline,
@@ -360,6 +424,7 @@ describe('gdelt_rate_limited propagates through production-shaped tool contracts
     gdeltGetTvContext,
     gdeltGetTvBreakdown,
     gdeltListTvStations,
+    gdeltSearchSentences,
   ])('$name declares separate rate-limited and unavailable contracts', (tool) => {
     expect(tool.errors).toEqual(
       expect.arrayContaining([
@@ -801,6 +866,37 @@ describe('gdelt_unavailable on an exhausted upstream timeout', () => {
       ]),
     );
   });
+
+  it('carries the contract when the whole call runs out its deadline — Context', async () => {
+    initGdeltContextService({} as never, {} as never, SERVER_CONFIG as never);
+    acceptAndNeverAnswer();
+
+    const result = await callThroughTimeouts(() =>
+      runToolContract(gdeltSearchSentences, { query: 'climate' }),
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: JsonRpcErrorCode.ServiceUnavailable,
+          data: {
+            reason: 'gdelt_unavailable',
+            retryable: true,
+            deadlineMs: 120_000,
+            recovery: { hint: expect.stringMatching(/retry after a short delay/i) },
+          },
+        },
+      },
+    });
+    expect(result.content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          text: expect.stringMatching(/Recovery:.*retry after a short delay/is),
+        }),
+      ]),
+    );
+  });
 });
 
 /**
@@ -852,6 +948,15 @@ describe('gdelt_unavailable on a transient upstream failure', () => {
       () => runToolContract(gdeltGetTvClips, { query: 'climate', stations: ['CNN'] }),
       new Response('upstream trouble', { status: 503 }),
       { status: 503, errorSource: 'FetchHttpError' },
+    ],
+    [
+      'Context — an empty 200 body',
+      () => {
+        initGdeltContextService({} as never, {} as never, SERVER_CONFIG as never);
+        return runToolContract(gdeltSearchSentences, { query: 'climate' });
+      },
+      new Response(''),
+      {},
     ],
   ])('%s carries the contract on both surfaces', async (_, run, response, kept) => {
     const upstream = vi.fn(async () => response.clone());

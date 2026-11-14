@@ -1,13 +1,13 @@
 /**
- * @fileoverview The `staleResponse` enrichment field every DOC and TV tool declares, and its
- * `content[]` trailer line. The fetch layer writes it when it answers with a stored response
+ * @fileoverview The `staleResponse` enrichment field every DOC, Context, and TV tool declares, and
+ * its `content[]` trailer line. The fetch layer writes it when it answers with a stored response
  * after GDELT refused, failed, or answered empty to the refetch.
  * @module mcp-server/tools/stale-response
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
 
-/** The `staleResponse` enrichment field each DOC and TV tool declares. */
+/** The `staleResponse` enrichment field each DOC, Context, and TV tool declares. */
 export const staleResponseSchema = z
   .object({
     fetchedAt: z.string().describe('ISO 8601 time GDELT returned the stored answer.'),
