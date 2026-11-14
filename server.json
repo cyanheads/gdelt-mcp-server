@@ -30,7 +30,7 @@
         },
         {
           "name": "GDELT_BASE_URL",
-          "description": "Override the base URL for the GDELT DOC and TV APIs.",
+          "description": "Override the base URL for the GDELT DOC, Context, and TV APIs.",
           "format": "string",
           "isRequired": false,
           "default": "https://api.gdeltproject.org/api/v2"
@@ -96,7 +96,7 @@
         },
         {
           "name": "GDELT_BASE_URL",
-          "description": "Override the base URL for the GDELT DOC and TV APIs.",
+          "description": "Override the base URL for the GDELT DOC, Context, and TV APIs.",
           "format": "string",
           "isRequired": false,
           "default": "https://api.gdeltproject.org/api/v2"

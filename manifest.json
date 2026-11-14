@@ -47,7 +47,7 @@
     "gdelt_base_url": {
       "type": "string",
       "title": "GDELT Base URL",
-      "description": "Override the base URL for the GDELT DOC and TV APIs.",
+      "description": "Override the base URL for the GDELT DOC, Context, and TV APIs.",
       "required": false,
       "default": ""
     },

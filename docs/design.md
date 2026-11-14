@@ -2,15 +2,16 @@
 
 ## Scope
 
-Expose the GDELT DOC and TV APIs as read-only search and analysis tools. DOC article search and relative `timespan` windows cover the rolling last three months of global news. Explicit `startDatetime`/`endDatetime` windows reach older coverage only in the modes GDELT has answered for such windows: the `volume` and `tone` timelines, the language and country breakdowns, and the tone distribution. `volume_raw` and `volume_with_articles` keep the three-month limit. TV covers monitored television captions, with date ranges that vary by station. Historical television is a separate corpus, not a substitute for historical global newspapers.
+Expose the GDELT DOC, Context, and TV APIs as read-only search and analysis tools. DOC article search and relative `timespan` windows cover the rolling last three months of global news. Explicit `startDatetime`/`endDatetime` windows reach older coverage only in the modes GDELT has answered for such windows: the `volume` and `tone` timelines, the language and country breakdowns, and the tone distribution. `volume_raw` and `volume_with_articles` keep the three-month limit. The Context API answers sentence-level search over the last 72 hours of English-language coverage only. TV covers monitored television captions, with date ranges that vary by station. Historical television is a separate corpus, not a substitute for historical global newspapers.
 
-No API key is required. DOC and TV share an outbound pacer and a response cache; theme lookup uses a separate host. An optional local GKG mirror can answer the DOC tools when the DOC API does not. Tools return the same data through structuredContent and rendered content.
+No API key is required. DOC, Context, and TV share an outbound pacer and a response cache; theme lookup uses a separate host. An optional local GKG mirror can answer the DOC tools when the DOC API does not. Tools return the same data through structuredContent and rendered content.
 
 ## MCP Surface
 
 | Tool | Purpose | Chaining contract |
 |:-----|:--------|:------------------|
 | `gdelt_search_articles` | Recent-news links and sparse metadata | Inspect source URLs for full text; follow provider-cap continuation notices |
+| `gdelt_search_sentences` | Matching sentences with surrounding text, one per article, over the last 72 hours | Read the sentences before assigning a cause to a spike; follow `continuationWindow` for further matches and de-duplicate by `url` |
 | `gdelt_get_coverage_timeline` | Normalized volume, raw matching-article counts, volume with references, or average tone over time | Use returned dates to expand supplied references with `points` |
 | `gdelt_get_tone_distribution` | Tone-bin article counts and representative links | Use returned bins to expand supplied references |
 | `gdelt_get_coverage_breakdown` | Topic intensity by source country or language | Copy exact returned labels into `series`; different source shares are not additive |
@@ -28,19 +29,20 @@ Every tool declares read-only and open-world annotations. No task prompts or dom
 | Service | Upstream | Responsibility |
 |:--------|:---------|:---------------|
 | `GdeltDocService` | `/api/v2/doc/doc` | Article lists, timelines, tone histogram, source breakdowns |
+| `GdeltContextService` | `/api/v2/context/context` | Sentence matches over the last 72 hours; never answered from the mirror |
 | `GdeltTvService` | `/api/v2/tv/tv` | TV timelines, clips, vocabulary, rankings, station metadata and ID resolution |
 | `GdeltThemeService` | `data.gdeltproject.org/api/v2/guides/LOOKUP-GKGTHEMES.TXT` | Process-cached theme index and identifier search |
-| `GdeltResponseCache` | none (process memory) | Stored DOC and TV answers and the fetches in flight, behind `gdeltFetch` |
+| `GdeltResponseCache` | none (process memory) | Stored DOC, Context, and TV answers and the fetches in flight, behind `gdeltFetch` |
 | DOC source router | none | Sends each DOC tool call to the DOC service, then to the mirror when DOC gives no data |
 | `GkgMirrorClient` | `data.gdeltproject.org/gdeltv2` GKG files | Optional: worker thread that owns the mirror store, answers compiled DOC requests, and runs refreshes |
 
-DOC and TV requests share one request slot. The minimum gap starts after the previous response completes, not when it starts. Rate-limit responses close a shared cooldown gate, and requests that cannot start within their queue allowance are shed before network I/O. Theme lookup bypasses this pacer because it uses a different host.
+DOC, Context, and TV requests share one request slot. The minimum gap starts after the previous response completes, not when it starts. Rate-limit responses close a shared cooldown gate, and requests that cannot start within their queue allowance are shed before network I/O. Theme lookup bypasses this pacer because it uses a different host.
 
 Request attempts have a timeout; the whole call, including retries, has a deadline of twice the configured attempt timeout. Caller cancellation propagates unchanged. Rate-limit responses fail fast within the retry loop, including recognized HTTP-200 HTML/text rate-limit bodies; the public `gdelt_rate_limited` error is retryable after that processing. It carries backoff guidance rather than promising recovery after five seconds. Transient upstream failures that exhaust retries become retryable `gdelt_unavailable`; caller input errors and non-retryable upstream failures retain their classification. Error text and recovery hints use the framework's rendering boundary.
 
 ### Response cache and stale serve
 
-`gdeltFetch` keeps a process-wide cache of DOC and TV answers. GDELT data is public and requests carry no credentials, so one cache serves every session and tenant. The key is the exact upstream URL with no normalization: a `timespan` goes upstream verbatim, so its key does not move with the clock, and the freshness window bounds how far its answer drifts. Count-page `offset`/`limit` and `points`, `bins`, or `series` selectors are applied after the fetch, so every page and expansion of one query shares a key.
+`gdeltFetch` keeps a process-wide cache of DOC, Context, and TV answers. GDELT data is public and requests carry no credentials, so one cache serves every session and tenant. The key is the exact upstream URL with no normalization: a `timespan` goes upstream verbatim, so its key does not move with the clock, and the freshness window bounds how far its answer drifts. Count-page `offset`/`limit` and `points`, `bins`, or `series` selectors are applied after the fetch, so every page and expansion of one query shares a key.
 
 - **Fresh hits.** An answer is fresh for 15 minutes, GDELT 2.0's update interval, or for 24 hours when the URL's `enddatetime` fell more than 24 hours before the fetch (TV's documented processing lag is up to 24 hours, and DOC indexes behind each batch). A fresh hit is answered before the retry loop, so it takes no pacer slot, request gap, or cooldown wait. Each hit decodes its own copy of the stored bytes, so callers never share objects.
 - **What is stored.** Only parsed answers with a non-empty top-level array. Refusals, failures, and empty answers (GDELT's `{}` among them) are returned as they came and never stored, so a degraded answer is not pinned. The store is byte-charged against 128 MiB, least recently used first; a body over 32 MiB is returned but not kept. Entries are kept 24 hours after their fetch unless evicted sooner.
@@ -54,7 +56,7 @@ Request attempts have a timeout; the whole call, including retries, has a deadli
 
 | Variable | Default | Meaning |
 |:---------|:--------|:--------|
-| `GDELT_BASE_URL` | `https://api.gdeltproject.org/api/v2` | DOC/TV API root |
+| `GDELT_BASE_URL` | `https://api.gdeltproject.org/api/v2` | DOC, Context, and TV API root |
 | `GDELT_REQUEST_DELAY_MS` | `5300` | Minimum milliseconds after a response before the next request |
 | `GDELT_REQUEST_TIMEOUT_MS` | `60000` | Per-attempt timeout; total call deadline is twice this |
 | `GDELT_CLAMP_LIMITS` | `true` | Clamp oversized count inputs; false restores strict served maxima |
@@ -89,9 +91,11 @@ Article search defaults to 75 records and caps at 250; TV clips default to 50 an
 
 Cap detection uses the upstream count before clipping. A cap-hit notice distinguishes a provider ceiling from a complete result and offers continuation windows when useful. Neither API exposes a record offset/cursor. Returned windows and notices govern continuation; narrowing the time range does not guarantee that all matching records become retrievable.
 
-TV clip requests are answered in whole clock hours. The service sends a compatible widened request, and the tool keeps only records within the caller's exact explicit window. An on-the-hour end is sent one second earlier to avoid spending the provider cap on the following hour. When an hour itself exceeds the 3,000-clip ceiling, narrower windows inside it fetch the same capped set; the remaining clips are unreachable through this API.
+TV clip requests are answered in whole clock hours for a window up to 7 days, whole UTC days under 3×365 days, and whole UTC months beyond. A window under two hours goes out widened to its clock hours, which meets GDELT's 30-minute minimum; a longer one goes out as given, so GDELT picks its period from the caller's own span. The tool keeps only records within the caller's exact explicit window; edge clips from a wider period still spend `maxRecords`. An on-the-hour end is sent one second earlier to avoid spending the provider cap on the following hour. When an hour itself exceeds the 3,000-clip ceiling, narrower windows inside it fetch the same capped set; the remaining clips are unreachable through this API.
 
-Article fields include URL, title, seendate, domain, language, source country, and optional social image. They do not include full article text or author metadata. Clip fields include show, stationName, optional resolved station, date, snippet, archiveUrl, and optional thumbnail.
+Sentence search returns one match per article, newest first by default, and `maxRecords` (default 25, cap 200) counts sentences before GDELT keeps one per article, so a page runs short of it. A page that is not every match carries `continuationWindow`, the window to re-run for the next matches. GDELT reads Context window bounds only to the minute, so the next window's edge sits on the whole minute at or past the page's far-edge match, the matches seen in that minute repeat, and the caller de-duplicates by `url`. The notice distinguishes a page that holds every match in its window from one where no narrower window reaches further and only a larger `maxRecords` can; a page whose matches all fall in one minute is the second kind. At the 200 ceiling that page hands back the window past its minute, ending on the minute's first second under `dateDesc` and starting on the next minute under `dateAsc`: no bound splits the minute, but the rest of the window is still in reach (measured live, a dense-minute `dateAsc` page and then the window from the next minute answered the newer matches), so a broad walk loses that minute's remainder rather than everything after it.
+
+Article fields include URL, title, seendate (when GDELT saw the article, not its publication time), domain, language, source country, and optional social image. They do not include full article text or author metadata. Sentence fields add the matching sentence, its surrounding context, and whether it holds a quotation mark. Clip fields include show, stationName, optional resolved station, date, snippet, archiveUrl, and optional thumbnail.
 
 ### DOC timeline and evidence
 
@@ -110,19 +114,21 @@ Timeline `totalCount`, resolution, series `pointCount` and peak cover the full u
 
 ### Source breakdowns
 
-The overview exposes the top ten country/language series ranked by the sum of values and lists remaining exact labels in `otherSeriesLabels`. Selecting labels returns only those complete series under `selectedSeries`, paged by count. Unknown labels fail with `unknown_series`.
+The overview ranks every country/language series by the sum of values, pages them by count, and lists the exact labels of ranked series not on the page in `otherSeriesLabels`. Selecting labels returns only those complete series under `selectedSeries`, paged by count; a label that several series share selects all of them. Unknown labels fail with `unknown_series`.
 
-Each point is the topic's share of that source's media output. Values from different sources do not add into a global share, and the sum used to rank one series is not an absolute article count. `sourcecountry` describes outlet origin, not event location. Preserve provider labels exactly; operator spellings are not inferred from display labels.
+Each point is the topic's share of that source's media output. Values from different sources do not add into a global share, and the sum used to rank one series is not an absolute article count. `sourcecountry` describes outlet origin, not event location. Preserve provider labels exactly. Each series carries `operator` (`sourcecountry:<FIPS>`, FIPS rather than ISO, or `sourcelang:<name>`), looked up in GDELT's own country and language code tables from the label's name and never inferred from its spelling; a name that maps to no code or to several has none.
 
 ### TV timelines, rankings, and context
 
-Separate-station timeline pages order membership by date then stationName and group the selected points by station. `totalPoints` covers the full result; timeRange and rendered per-station sums/peaks describe the returned page. Normalized values are percentages of station airtime; raw values count matching 15-second clips.
+Separate-station timeline pages order membership by date then stationName and group the selected points by station. `totalPoints` covers the full result, and each series' `pointCount` and `peak` cover its whole series on every page; timeRange and the rendered per-station sum and page peak describe the returned page. Each point counts one whole UTC period (clock hour, day, Sunday–Saturday week, month, or year) and is dated by the period's label: the hour's start, or 12:00:00Z of the first day for longer periods.
+
+GDELT widens an explicit window outward to whole periods, so a timeline, ranking, or word cloud covers more than the window asked for. When an explicit edge falls off a period boundary, the notice names the UTC window the values cover, at the resolution GDELT reported, or the one its window-length rule picks (see Dates and smoothing). A `timespan` is resolved on GDELT's clock and draws no such sentence. Normalized values are percentages of station airtime; raw values count matching 15-second clips.
 
 Combined mode pools matching clips and monitored denominators across selected stations. It is not an arithmetic average of station percentages. Preserve the provider's Combined label without fabricating a station ID or producing an unresolved-station warning; no station-catalog lookup is needed for that pooled series.
 
 Station rankings use percent_station_airtime when normalized and matching_clips when raw. Show rankings always use percent_matching_clips, even when normalize is false. The returned valueUnit is authoritative. Provider-ellipsized show labels are display text and may not work as exact show selectors.
 
-Context returns score-sorted words, totalTerms, offset, nextOffset, and truncated. totalTerms counts vocabulary, never analyzed clips. GDELT does not provide a reliable analyzed-clip count for context, so none is invented.
+Context returns words sorted by score and then exact label, with totalTerms, offset, nextOffset, and truncated; GDELT's own order among tied scores varies between identical calls. totalTerms counts vocabulary, never analyzed clips. GDELT does not provide a reliable analyzed-clip count for context, so none is invented.
 
 Context terms come from a relevance-ranked sample, documented by GDELT as the 200 most relevant matching clips. This is a sampling disclosure, not a server-enforced sample size or an exhaustive corpus count. Scores describe that sample's vocabulary; they do not establish prevalence across all matching coverage or prove editorial stance.
 
@@ -138,9 +144,13 @@ The same catalog load keeps each station's monitoring start and end dates. When 
 
 ### Dates and smoothing
 
-Explicit dates are paired real UTC calendar timestamps in YYYYMMDDHHMMSS form, with start earlier than end. A complete explicit pair takes precedence over timespan. Explicit dates pass to GDELT unchanged, with no age check; which modes answer a window older than three months is stated in Scope. Relative windows the server resolves itself (for out-of-window filtering, continuation windows, and notices) step back in UTC, as GDELT reads `timespan`, so hours, days, and weeks are exact multiples of an hour whatever the host's time zone. Relative parsing handles short and documented long units, weeks, case, and outer whitespace. DOC rejects recognized windows shorter than 15 minutes. TV rejects obvious malformed relative text locally while leaving blanks and unknown numeric-unit syntax to the provider; a provider date rejection receives a specific hint rather than automatically being called a malformed timespan.
+Explicit dates are paired real UTC calendar timestamps in YYYYMMDDHHMMSS form, with start earlier than end. A complete explicit pair takes precedence over timespan. DOC explicit dates pass to GDELT unchanged, with no age check (the TV and Context requests are described with their tools); which modes answer a window older than three months is stated in Scope. Relative windows the server resolves itself (for out-of-window filtering, continuation windows, and notices) step back in UTC, as GDELT reads `timespan`, so hours, days, and weeks are exact multiples of an hour whatever the host's time zone. Relative parsing handles short and documented long units, weeks, case, and outer whitespace. DOC rejects recognized windows shorter than 15 minutes. TV rejects obvious malformed relative text locally while leaving blanks and unknown numeric-unit syntax to the provider; a provider date rejection receives a specific hint rather than automatically being called a malformed timespan.
 
-DOC dates normalize to ISO date/date-time with 15min, hour, or day resolution. TV uses hour, day, week, month, or year; recognized provider metadata wins, then requested resolution, then inference from the smallest positive point interval.
+DOC and TV apply one shape check to a relative `timespan`: a number followed by its unit, with a blank value counted as unset. DOC admits a bare number, as GDELT DOC's answer to one is unmeasured, and TV refuses it. A blank `query` is refused at the schema on the DOC and Context tools. Both refusals happen before any request. The DOC "too short" hint covers an explicit window as well as a timespan, and no local floor is applied to explicit windows because GDELT's is unmeasured. Article search reaches back three months, so a longer `timespan` goes upstream as given, runs on three months, and says so in `windowClamp`; the analytics modes are not clamped.
+
+Context reads its own grammar, measured live: `timespan` is a whole number followed by `min`, `h`, `hours`, `d`, or `days`, from 31 minutes to 72 hours, and anything else is refused as `invalid_query`. A longer timespan runs as 72 hours with `windowClamp`. An explicit window that starts before the 72-hour reach runs from five minutes inside it, with `windowClamp`; one that ends before the reach, or starts in the future, is `invalid_date_range`. A window under 60 minutes goes upstream widened, never past now. Measured live, GDELT reads Context window bounds only to the minute, both ends included (a start of `100134` returned matches seen from `100120`; an end of `100130` returned none of the matches seen at `100120`–`100130`), so an explicit end goes upstream rounded up to the next whole minute. Matches outside the requested window are dropped and counted in the notice.
+
+DOC dates normalize to ISO date/date-time with 15min, hour, or day resolution. TV uses hour, day, week, month, or year; recognized provider metadata wins, then requested resolution, then inference from the smallest positive point interval. Where GDELT reports no resolution (word clouds), the covered-window notice reads the resolution GDELT picks from the window length: hour up to 7 days, day under 3×365 days, month beyond.
 
 Timeline and breakdown smoothing accepts 0–30 timesteps and is sent as TIMELINESMOOTH. Zero and one leave values unsmoothed. Width N requires N source steps; notices explain missing leading moving-average steps and potential lag without inventing an observed loss count or measured peak delay. Notices compose with paging and empty-result guidance.
 
@@ -152,7 +162,7 @@ The parsed lookup is cached once per process, with concurrent initial callers sh
 
 ## GKG mirror
 
-GDELT's DOC API sometimes refuses requests for long stretches and answers `{}` while shedding load. The mirror is a local copy of the Global Knowledge Graph that GDELT publishes as static files, which the four DOC tools can fall back to. It is off unless `GDELT_MIRROR_PATH` is set, and it never serves TV or theme tools.
+GDELT's DOC API sometimes refuses requests for long stretches and answers `{}` while shedding load. The mirror is a local copy of the Global Knowledge Graph that GDELT publishes as static files, which the four DOC tools can fall back to. It is off unless `GDELT_MIRROR_PATH` is set, and it never serves the sentence, TV, or theme tools.
 
 ### Services
 
@@ -182,13 +192,13 @@ Before DOC is asked, the router checks that the mirror could answer: the query c
 
 `invalid_query` and the caller's cancellation never reach the mirror. A stored answer served stale counts as DOC's answer, so the mirror is not consulted. The mirror gets what remains of 55 s after the call started, and a query it has not answered within 30 s; past either it is a `store_error`.
 
-Every mirror answer says that keywords matched titles and entity names rather than article text and that counts and shares are over mirrored articles. A country breakdown also counts matching articles from outlets with no known source country, which it leaves out.
+Mirror-computed shares, tone means, and smoothed values carry four decimals, as DOC's normalized values do; upstream DOC and TV values are never rounded. Every mirror answer says that keywords matched titles and entity names rather than article text and that counts and shares are over mirrored articles. A country breakdown also counts matching articles from outlets with no known source country, which it leaves out.
 
 ## Workflow Analysis
 
 ### Recent-news spike investigation
 
-Resolve a suitable theme with gdelt_search_themes when taxonomy search fits, then run gdelt_get_coverage_timeline with article references. Locate candidate spikes, expand supplied evidence at exact returned dates, and inspect article URLs before explaining the pattern. Use gdelt_search_articles for broader reporting in the same recent window, source breakdowns for outlet-country/language attention, and tone histograms for the distribution behind an average.
+Resolve a suitable theme with gdelt_search_themes when taxonomy search fits, then run gdelt_get_coverage_timeline with article references. Locate candidate spikes, expand supplied evidence at exact returned dates, and inspect article URLs before explaining the pattern. For a spike inside the last 72 hours, gdelt_search_sentences shows what the matching sentences said. Use gdelt_search_articles for broader reporting in the same recent window, source breakdowns for outlet-country/language attention, and tone histograms for the distribution behind an average.
 
 A source breakdown cannot establish where an event began, and representative links cannot prove the cause of a spike. Keep measured attention, tone, and evidence-supported explanations separate.
 
@@ -204,11 +214,20 @@ Do not append a historical TV query to a recent DOC workflow without establishin
 - Consolidate DOC volume/tone timeline modes because they share query and output shape, while keeping tone histograms separate because distributions answer a different question.
 - Use count pages for aggregate outputs and full fetched record lists for article/clip outputs. Provider caps and exact evidence selectors remain explicit; response byte size does not silently choose membership.
 - Resolve station IDs from the live catalog rather than guessing from labels or bundling a parallel identifier map.
-- Preserve source-series labels and units instead of inferring query operators or additive totals.
+- Preserve source-series labels and units instead of inferring additive totals. A breakdown series' `operator` is a lookup in GDELT's own country and language code tables, never inferred from the label's spelling, so a name that maps to no code or to several carries none rather than a guess.
+- Rank and page every breakdown series instead of cutting at ten, with the ranked series not on the page named in `otherSeriesLabels`, so every ranked series is reachable by paging and not only by naming its label.
+- Name the sentence tool `gdelt_search_sentences`: `context` already names the TV word-cloud tool `gdelt_get_tv_context`, and the Context API's unit is the sentence.
+- Offer no relevance order for sentence search. Measured live, GDELT answers every `sort` other than `DateAsc` newest first, so the tool requests `DateDesc` by name and advertises two date orders only.
+- Continue sentence search by date edge: the next window resumes on the whole minute at or past the page's far-edge match, since GDELT reads Context bounds only to the minute and a second-precise edge would skip the rest of that minute. `maxRecords` counts sentences before GDELT keeps one per article, so a page cannot be continued by a record offset, and GDELT has no cursor.
+- Widen an explicit sentence-search window under 60 minutes before sending it and drop the matches outside the requested window, since GDELT refuses a short window and never widens one itself.
+- Read each TV series' `pointCount` and `peak` over the whole series on every page, so a page's figures do not change what the series reports about itself.
+- Break ties between equal context scores by exact label, as TV rankings do, because GDELT's order among tied scores varies between identical calls and a fresh page would otherwise repeat or skip a term.
+- Name the UTC window a TV timeline, ranking, or word cloud covers when GDELT widened an explicit window to whole periods, because the values carry no other sign of it.
+- Refuse a blank `query`, and a `timespan` that is not a number followed by its unit (DOC also takes a bare number), at the schema before any request: neither has one clear reading, and refusing locally spares the call its wait on the shared pacer.
 - Keep workflow gates in one published gdelt-guide, with essential scope and identifier guidance in the concise server instructions.
 - Exclude the GEO API: its endpoint returned 404 during verification. Source-country breakdown describes outlet origin and is not a geographic event heat map.
 - Retire unfiltered TV trending: TV analysis requires a selected station population, rather than silently presenting an undefined global aggregate.
-- Cache DOC and TV answers by exact upstream URL, fresh for 15 minutes (24 hours once an explicit window ended over a day ago), because GDELT refuses requests long after the documented pacing is met and each repeat of a page or evidence expansion would spend a scarce slot. No normalization, since a `timespan` already goes upstream verbatim.
+- Cache DOC, Context, and TV answers by exact upstream URL, fresh for 15 minutes (24 hours once an explicit window ended over a day ago), because GDELT refuses requests long after the documented pacing is met and each repeat of a page or evidence expansion would spend a scarce slot. No normalization, since a `timespan` already goes upstream verbatim.
 - Never store an empty answer, and stale-serve on an empty refetch as well as on refusals: GDELT answers `{}` while shedding load, including to queries that certainly match, so an empty refetch is not evidence that the stored answer is wrong, and a stored empty would pin the degradation.
 - Key mirror rows by URL, not by GKG record ID: record IDs restart within a file and name different articles, while URLs did not collide in sampled rows. A URL that reappears in a newer slot keeps its newer row.
 - Run the mirror store on one worker thread. Both SQLite drivers are synchronous, and a broad filter aggregates hundreds of thousands of rows per call, which would stall the serving event loop.
@@ -221,6 +240,7 @@ Do not append a historical TV query to a recent DOC workflow without establishin
 ## Known Limitations
 
 - DOC's rolling three-month window excludes historical global article retrieval. Bulk historical GDELT data is outside this server.
+- Sentence search reaches back 72 hours, covers English-language coverage only, and sees a subset of what DOC indexes; for older coverage, other languages, or the DOC-only filters (`sourcecountry:`, `sourcelang:`, `theme:`, tone, `domain:`), use `gdelt_search_articles`. The local mirror holds no sentences and never answers it.
 - TV monitoring varies by station, network, and market; consult current catalog dates rather than applying one universal archive boundary. The catalog does not guarantee uninterrupted coverage inside a date range.
 - Provider caps can prevent complete article/clip retrieval, especially dense TV hours. There is no cursor past those caps.
 - GDELT rate limiting and temporary failures can persist beyond minimum spacing; no TV-availability guarantee is made. The response cache serves stored answers only for requests this process has already made, for at most 24 hours, and DOC also answers empty while overloaded, so an empty DOC answer is not by itself evidence of no coverage.
