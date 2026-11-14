@@ -383,6 +383,50 @@ describe('GdeltTvService.getTvBreakdown', () => {
     },
   );
 
+  /**
+   * Both charts rank over whole UTC periods and report their resolution beside the rows
+   * (measured live: `day` on a 31-day window for each), which the covered-window notice reads.
+   */
+  it.each([
+    ['station', { stationchart: [{ station: 'CNN', count: 8293 }] }],
+    ['show', { showchart: [{ show: 'Anderson Cooper 360', count: 6.0928 }] }],
+  ] as const)('returns the resolution a %s chart reports', async (breakdownBy, chart) => {
+    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({
+      query_details: {
+        title: 'impeachment station:CNN',
+        time: 'Daily +00:00: 12/15/2019 - 01/15/2020',
+        date_resolution: 'Day',
+      },
+      ...chart,
+    });
+    const result = await makeService().getTvBreakdown(
+      {
+        query: 'impeachment',
+        stations: ['CNN'],
+        breakdownBy,
+        startDatetime: '20191215180000',
+        endDatetime: '20200115060000',
+      },
+      createMockContext(),
+    );
+    expect(result.dateResolution).toBe('day');
+  });
+
+  it.each([
+    ['names no resolution', { title: 'x' }],
+    ['names one GDELT does not document', { date_resolution: 'fortnight' }],
+  ])('omits the resolution when the chart %s', async (_label, queryDetails) => {
+    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({
+      query_details: queryDetails,
+      showchart: [{ show: 'Anderson Cooper 360', count: 6.0928 }],
+    });
+    const result = await makeService().getTvBreakdown(
+      { query: 'impeachment', breakdownBy: 'show' },
+      createMockContext(),
+    );
+    expect(result).not.toHaveProperty('dateResolution');
+  });
+
   it.each(['station', 'show'] as const)(
     'treats sparse %s response as empty without catalog I/O',
     async (breakdownBy) => {

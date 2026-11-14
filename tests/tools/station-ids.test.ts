@@ -118,7 +118,9 @@ describe('parseStationIds — refused entries', () => {
  * never wall clock. Every sample reads the same number of characters (sixty-four 5k entries, one
  * 320k), so the per-call cost of a linear check grows 64× across the span and a quadratic one
  * 4,096×; the 256× bound sits between them. Sizes double, and the absolute cap is checked at
- * each before the next runs, so a quadratic regression fails at its first oversized step.
+ * each before the next runs, so a quadratic regression fails at its first oversized step. The
+ * timeout is 0: vitest cannot interrupt a synchronous body, so a wall-clock timeout bounds no hang
+ * and only fails linear work on a loaded machine.
  */
 describe('parseStationIds — cost on caller-sized entries', () => {
   const SIZES = [5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 320_000];
@@ -159,19 +161,23 @@ describe('parseStationIds — cost on caller-sized entries', () => {
       (n) => '  \r\n'.repeat(n / 4),
       (entry) => expect(parseStationIds([entry])).toEqual([]),
     ],
-  ])('stays linear for %s', (_shape, build, check) => {
-    const costs: number[] = [];
-    for (const size of SIZES) {
-      const entry = build(size);
-      expect(entry).toHaveLength(size);
-      check(entry);
-      const cost = perCallMicros(entry);
-      expect(cost, `${size} characters`).toBeLessThan(CAP_US_PER_CALL);
-      costs.push(cost);
-    }
-    const [first = 0] = costs;
-    expect(Math.max(costs.at(-1) ?? 0, 1) / Math.max(first, 1)).toBeLessThan(256);
-  });
+  ])(
+    'stays linear for %s',
+    (_shape, build, check) => {
+      const costs: number[] = [];
+      for (const size of SIZES) {
+        const entry = build(size);
+        expect(entry).toHaveLength(size);
+        check(entry);
+        const cost = perCallMicros(entry);
+        expect(cost, `${size} characters`).toBeLessThan(CAP_US_PER_CALL);
+        costs.push(cost);
+      }
+      const [first = 0] = costs;
+      expect(Math.max(costs.at(-1) ?? 0, 1) / Math.max(first, 1)).toBeLessThan(256);
+    },
+    0,
+  );
 });
 
 /**
@@ -277,12 +283,16 @@ describe('describeStationRangeMisses', () => {
     expect(describeStationRangeMisses(['X'], new Map([['X', range]]), AFTER)).toBe('');
   });
 
-  it('escapes the catalog ID it names', () => {
+  /** A notice reaches structuredContent as written; its content[] render escapes the ID there. */
+  it('names the catalog ID as the catalog writes it', () => {
     const ranges = new Map([
-      ['X', { stationId: 'X*', startDate: '2009-07-02', endDate: '2010-01-01', isActive: false }],
+      [
+        'X',
+        { stationId: 'X*_[1]', startDate: '2009-07-02', endDate: '2010-01-01', isActive: false },
+      ],
     ]);
     expect(describeStationRangeMisses(['x'], ranges, AFTER)).toBe(
-      ` X\\* was monitored 2009-07-02 – 2010-01-01; the window starts after that range ends.${ONE_RANGE}`,
+      ` X*_[1] was monitored 2009-07-02 – 2010-01-01; the window starts after that range ends.${ONE_RANGE}`,
     );
   });
 });

@@ -20,7 +20,8 @@ import {
   limitClampSchema,
   renderLimitClamp,
 } from '../limit-clamp.js';
-import { escapeMarkdown, markdownQuote, renderQueryEcho } from '../markdown-escape.js';
+import { escapeMarkdown, quoteText, renderNotice, renderQueryEcho } from '../markdown-escape.js';
+import { peakOf } from '../peak-of.js';
 import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
 import {
   describeStationRangeMisses,
@@ -28,9 +29,15 @@ import {
   parseStationIds,
   stationLabel,
 } from '../station-ids.js';
+import { sumValues } from '../sum-values.js';
+import { describeTvCoveredWindow } from '../tv-covered-window.js';
 
 /** Point pages bound the response without altering the selected station population. */
 const MAX_POINTS_PER_PAGE = 20_000;
+
+/** A point's `date`, a data point's or the peak's: GDELT labels a period, never an instant. */
+const POINT_DATE_DESCRIPTION =
+  "Label of the UTC period the point covers, in ISO 8601: the hour's start for hourly points, and 12:00:00Z of the period's first day for day, week, month, and year points.";
 
 export const gdeltSearchTv = tool('gdelt_search_tv', {
   title: 'Search GDELT TV News',
@@ -112,16 +119,14 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       .regex(GDELT_DATETIME_PATTERN, 'startDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
       .optional()
       .describe(
-        'Start datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-          '(e.g. 20200101000000). Must pair with endDatetime; supplying only one of the two is rejected.',
+        'Start datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators (e.g. 20200101000000). Must pair with endDatetime; supplying only one of the two is rejected. GDELT widens it back to the start of its UTC period at the response resolution; notice then names the window the values cover.',
       ),
     endDatetime: z
       .string()
       .regex(GDELT_DATETIME_PATTERN, 'endDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
       .optional()
       .describe(
-        'End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-          '(e.g. 20200131235959). Must pair with startDatetime; supplying only one of the two is rejected.',
+        'End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators (e.g. 20200131235959). Must pair with startDatetime; supplying only one of the two is rejected. GDELT extends it through the end of its UTC period at the response resolution; notice then names the window the values cover.',
       ),
     smoothing: z
       .number()
@@ -149,8 +154,7 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       .enum(['hour', 'day', 'week', 'month', 'year'])
       .optional()
       .describe(
-        'Optional GDELT aggregation resolution. Omit to let GDELT choose from the query window; ' +
-          'the effective recognized or inferred resolution is returned as dateResolution.',
+        'Optional GDELT aggregation resolution. Omit to let GDELT choose from the window length — hourly up to 7 days, daily under 3 years, monthly beyond; the effective recognized or inferred resolution is returned as dateResolution. Each point counts one whole UTC period: a clock hour, day, Sunday–Saturday week, month, or year.',
       ),
     offset: z
       .number()
@@ -208,7 +212,7 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
               .array(
                 z
                   .object({
-                    date: z.string().describe('Timestep in ISO 8601 format.'),
+                    date: z.string().describe(POINT_DATE_DESCRIPTION),
                     value: z
                       .number()
                       .describe(
@@ -217,7 +221,18 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
                   })
                   .describe('A single coverage data point.'),
               )
-              .describe('Time-ordered coverage data for this station.'),
+              .describe('Time-ordered coverage data for this station on this page.'),
+            pointCount: z
+              .number()
+              .describe('Points in the whole series, across every page — not only those in data.'),
+            peak: z
+              .object({
+                date: z.string().describe(POINT_DATE_DESCRIPTION),
+                value: z.number().describe('Value at the peak.'),
+              })
+              .describe(
+                'The point of the whole series with the largest absolute value, the earliest timestep on a tie, across every page — it may lie outside data.',
+              ),
           })
           .describe('Coverage time series for a single station.'),
       )
@@ -251,7 +266,7 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       .string()
       .optional()
       .describe(
-        'When smoothing is above 1, that leading steps without a full window have no values and peaks may lag. When the query matched no TV coverage: the resolved timespan window; for each selected station whose monitoring range the window misses, that range and how to search inside it; and how to check station coverage. When a returned series has no station ID, why: GDELT returned it without a station label, or its station catalog did not load or has no entry for the named label — with how to look the ID up. Absent when coverage was returned, smoothing is at most 1, and every series carries its station ID or combined is true.',
+        'When smoothing is above 1, that leading steps without a full window have no values and peaks may lag. When the query matched no TV coverage: the resolved timespan window; for each selected station whose monitoring range the window misses, that range and how to search inside it; and how to check station coverage. When an explicit startDatetime or endDatetime falls inside a UTC period of the response resolution: the resolution and the UTC window the values cover. When a returned series has no station ID, why: GDELT returned it without a station label, or its station catalog did not load or has no entry for the named label — with how to look the ID up. Absent when coverage was returned, smoothing is at most 1, the window is a timespan or sits on period boundaries, and every series carries its station ID or combined is true.',
       ),
     staleResponse: staleResponseSchema,
   },
@@ -259,6 +274,7 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
   enrichmentTrailer: {
     effectiveQuery: { render: renderQueryEcho },
     limitClamp: { render: renderLimitClamp },
+    notice: { render: renderNotice },
     staleResponse: { render: renderStaleResponse },
   },
 
@@ -339,8 +355,13 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       const rangeMisses =
         window && ranges ? describeStationRangeMisses(stationIds, ranges, window) : '';
       notices.push(
-        `No TV coverage for ${markdownQuote(input.query)}.${describeResolvedTimespan(input)}${rangeMisses} Archive coverage varies by station — verify monitoring dates with gdelt_list_tv_stations and choose a matching window, or broaden the query.`,
+        `No TV coverage for ${quoteText(input.query)}.${describeResolvedTimespan(input)}${rangeMisses} Archive coverage varies by station — verify monitoring dates with gdelt_list_tv_stations and choose a matching window, or broaden the query.`,
       );
+    } else {
+      // The resolution GDELT answered in: the one it reported, else dateres, else the one
+      // inferred from the points.
+      const covered = describeTvCoveredWindow('Values', input, result.dateResolution);
+      if (covered) notices.push(covered);
     }
     const unresolved = input.combined
       ? undefined
@@ -384,20 +405,21 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
         : `**Points:** 0 of ${result.totalPoints}`,
     );
     if (result.nextOffset != null) lines.push(`**Next offset:** ${result.nextOffset}`);
-    // Each station's summary covers only its points on this page — a longer timeline has a
-    // different sum and peak on every page, so the labels say so.
+    // Each station's point count and peak cover the whole series, the same on every page; its
+    // sum and page peak cover only its points on this page, and the labels say which is which.
     for (const s of result.series) {
-      const peak = s.data.reduce(
-        (max, d) => (d.value > max.value ? d : max),
-        s.data[0] ?? { date: '', value: 0 },
-      );
-      const sum = s.data.reduce((total, d) => total + d.value, 0);
       lines.push(
         `\n### ${escapeMarkdown(result.combined ? s.stationName : stationLabel(s), 'heading-end')}`,
       );
-      lines.push(`Points on this page: ${s.data.length} | Sum on this page: ${sum}`);
-      if (peak.date) {
-        lines.push(`Page peak: ${peak.value} at ${escapeMarkdown(peak.date)}`);
+      lines.push(
+        `Points in the whole series: ${s.pointCount} | Whole-series peak: ${s.peak.value} at ${escapeMarkdown(s.peak.date)}`,
+      );
+      lines.push(
+        `Points on this page: ${s.data.length} | Sum on this page: ${sumValues(s.data.map((d) => d.value))}`,
+      );
+      const pagePeak = peakOf(s.data);
+      if (pagePeak) {
+        lines.push(`Page peak: ${pagePeak.value} at ${escapeMarkdown(pagePeak.date)}`);
       }
       for (const point of s.data) {
         lines.push(`- ${escapeMarkdown(point.date, 'line-start')}: ${point.value}`);
@@ -407,16 +429,23 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
   },
 });
 
+type TvPoint = TvSearchSeries['data'][number];
+
+/** A series on one point page, carrying its whole series' point count and peak. */
+type TvPageSeries = TvSearchSeries & { pointCount: number; peak: TvPoint };
+
 /**
  * Select a stable date-then-station-name page, then group it in the original series order.
  * The name, not the ID, breaks date ties: the ID is absent when it did not resolve, and the
- * name order is the one pages have always had.
+ * name order is the one pages have always had. Each series' point count and peak are read off
+ * the same date order across the whole series, so a tied peak is its earliest timestep whatever
+ * order GDELT sent the points in.
  */
 function paginateTvSeries(
   series: TvSearchSeries[],
   offset: number,
   limit: number,
-): { series: TvSearchSeries[]; totalPoints: number } {
+): { series: TvPageSeries[]; totalPoints: number } {
   const orderedPoints = series
     .flatMap(({ data, ...identity }, seriesIndex) =>
       data.map((point, pointIndex) => ({ seriesIndex, identity, pointIndex, point })),
@@ -428,15 +457,36 @@ function paginateTvSeries(
         a.seriesIndex - b.seriesIndex ||
         a.pointIndex - b.pointIndex,
     );
-  const selected = orderedPoints.slice(offset, offset + limit);
-  const bySeries = new Map<number, TvSearchSeries>();
-  for (const item of selected) {
-    const pageSeries = bySeries.get(item.seriesIndex) ?? { ...item.identity, data: [] };
-    pageSeries.data.push(item.point);
-    bySeries.set(item.seriesIndex, pageSeries);
-  }
+  const bySeries = new Map<
+    number,
+    { identity: Omit<TvSearchSeries, 'data'>; whole: TvPoint[]; page: TvPoint[] }
+  >();
+  orderedPoints.forEach((item, rank) => {
+    let entry = bySeries.get(item.seriesIndex);
+    if (!entry) {
+      entry = { identity: item.identity, whole: [], page: [] };
+      bySeries.set(item.seriesIndex, entry);
+    }
+    entry.whole.push(item.point);
+    if (rank >= offset && rank < offset + limit) entry.page.push(item.point);
+  });
   return {
-    series: [...bySeries.entries()].sort(([a], [b]) => a - b).map(([, pageSeries]) => pageSeries),
+    series: [...bySeries.entries()]
+      .sort(([a], [b]) => a - b)
+      .flatMap(([, { identity, whole, page }]) => {
+        const peak = peakOf(whole);
+        // A page carries only the series with points on it.
+        return page.length > 0 && peak
+          ? [
+              {
+                ...identity,
+                data: page,
+                pointCount: whole.length,
+                peak: { date: peak.date, value: peak.value },
+              },
+            ]
+          : [];
+      }),
     totalPoints: orderedPoints.length,
   };
 }

@@ -403,4 +403,143 @@ describe('gdeltGetTvContext', () => {
       for (const w of words) expect(html).toContain(`<strong>${literalHtml(w.label)}</strong>`);
     });
   });
+
+  /**
+   * GDELT's order among tied scores varies between identical calls (measured live: the same 360
+   * terms and scores, with 309 positions differing among ties), so the label breaks a score tie
+   * as it does in gdelt_get_tv_breakdown — an offset page fetched fresh neither repeats nor skips
+   * a tied term.
+   */
+  describe('tied scores', () => {
+    const TIED = [
+      { label: 'Recognized', score: 15.2482 },
+      { label: 'Impeachment', score: 100 },
+      { label: 'trump', score: 15.2482 },
+      { label: 'Process', score: 15.2482 },
+      { label: 'Trump', score: 15.2482 },
+      { label: 'Gentleman', score: 41.844 },
+    ];
+    const ORDER = ['Impeachment', 'Gentleman', 'Process', 'Recognized', 'Trump', 'trump'];
+
+    function mockContext(words: unknown[]) {
+      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+        getTvContext: vi.fn().mockResolvedValue({ words }),
+      } as unknown as tvServiceModule.GdeltTvService);
+    }
+
+    it('breaks a score tie by exact label, whatever order GDELT sent the terms in', async () => {
+      for (const words of [TIED, TIED.toReversed()]) {
+        mockContext(words);
+        const result = await runToolContract(gdeltGetTvContext, { query: 'impeachment' });
+        expect(
+          (result.structuredContent as { words: Array<{ label: string }> }).words.map(
+            (w) => w.label,
+          ),
+        ).toEqual(ORDER);
+      }
+    });
+
+    it('pages tied terms without a repeat or a gap when each page is fetched fresh', async () => {
+      const seen: string[] = [];
+      for (const [offset, words] of [
+        [0, TIED],
+        [3, TIED.toReversed()],
+      ] as const) {
+        mockContext(words);
+        const result = await runToolContract(gdeltGetTvContext, {
+          query: 'impeachment',
+          limit: 3,
+          offset,
+        });
+        seen.push(
+          ...(result.structuredContent as { words: Array<{ label: string }> }).words.map(
+            (w) => w.label,
+          ),
+        );
+      }
+      expect(seen).toEqual(ORDER);
+    });
+
+    it('describes the order on the offset and words fields', () => {
+      expect(gdeltGetTvContext.input.shape.offset.description).toMatch(
+        /descending score order, ties broken by exact label/,
+      );
+      expect(gdeltGetTvContext.output.shape.words.description).toMatch(
+        /sorted by score descending, ties broken by exact label/,
+      );
+    });
+  });
+
+  /**
+   * GDELT computes the word cloud over whole UTC periods at the resolution it picks from the
+   * window length, widening an explicit window outward to them (measured live: the same terms
+   * and scores for 20:30–22:30 as for 20:00–22:59:59). Its answer reports no resolution, so the
+   * notice names the documented default. Boundary rules are tabled in tv-covered-window.test.ts.
+   */
+  describe('covered window', () => {
+    const SAMPLING =
+      "Terms and scores come from GDELT's relevance-ranked sample of matching clips, documented as the 200 most relevant, not all matching coverage — compare windows or stations with a separate, narrower call for each.";
+
+    function mockContext(words: unknown[]) {
+      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+        getTvContext: vi.fn().mockResolvedValue({ words }),
+        stationRanges: vi.fn().mockResolvedValue(CNN_RANGE),
+      } as unknown as tvServiceModule.GdeltTvService);
+    }
+
+    it('names the window after the sampling notice', async () => {
+      mockContext(CONTEXT_RESULT.words);
+      const result = await runToolContract(gdeltGetTvContext, {
+        query: 'impeachment',
+        stations: ['FOXNEWS'],
+        startDatetime: '20191218203000',
+        endDatetime: '20191218223000',
+      });
+      expectNotice(
+        result,
+        `${SAMPLING} Terms and scores cover whole clock hours, 2019-12-18T20:00:00Z – 2019-12-18T22:59:59Z, wider than the requested 20191218203000–20191218223000.`,
+      );
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      [
+        'both edges sit on period boundaries',
+        { startDatetime: '20191218200000', endDatetime: '20191218225959' },
+      ],
+      ['the call ran on a timespan', { timespan: '1m' }],
+    ])('adds nothing when %s', async (_label, window) => {
+      mockContext(CONTEXT_RESULT.words);
+      const result = await runToolContract(gdeltGetTvContext, {
+        query: 'impeachment',
+        stations: ['FOXNEWS'],
+        ...window,
+      });
+      expectNotice(result, SAMPLING);
+    });
+
+    it('adds nothing on an empty result', async () => {
+      mockContext([]);
+      const result = await runToolContract(gdeltGetTvContext, {
+        query: 'impeachment',
+        stations: ['CNN'],
+        startDatetime: '20191218203000',
+        endDatetime: '20191218223000',
+      });
+      const notice = (result.structuredContent as { notice: string }).notice;
+      expect(notice).toMatch(/^No TV context data for "impeachment"\./);
+      expect(notice).not.toMatch(/cover whole/);
+    });
+
+    it('states the rule on the window and notice descriptions', () => {
+      const shape = gdeltGetTvContext.input.shape;
+      for (const field of [shape.startDatetime, shape.endDatetime]) {
+        expect(field.description).toMatch(
+          /whole UTC periods at the resolution GDELT picks from the window length — clock hours up to 7 days, days under 3 years, months beyond/,
+        );
+      }
+      expect(gdeltGetTvContext.enrichment?.notice?.description).toMatch(
+        /the resolution and the UTC window the terms and scores cover/,
+      );
+    });
+  });
 });

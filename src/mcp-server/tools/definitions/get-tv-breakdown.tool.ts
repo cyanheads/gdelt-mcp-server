@@ -18,9 +18,14 @@ import {
   limitClampSchema,
   renderLimitClamp,
 } from '../limit-clamp.js';
-import { escapeMarkdown, markdownQuote, renderQueryEcho } from '../markdown-escape.js';
+import { escapeMarkdown, quoteText, renderNotice, renderQueryEcho } from '../markdown-escape.js';
 import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
 import { describeStationRangeMisses, parseStationIds } from '../station-ids.js';
+import { describeTvCoveredWindow } from '../tv-covered-window.js';
+
+/** How the window fields state GDELT's widening. */
+const WINDOW_RULE =
+  'Rankings count whole UTC periods at the resolution GDELT picks from the window length — clock hours up to 7 days, days under 3 years, months beyond — so GDELT widens the window outward to them; notice then names the window the values cover.';
 
 /** TV rankings expose percentages with different denominators, or raw station clip counts. */
 export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
@@ -102,12 +107,16 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
       .string()
       .regex(GDELT_DATETIME_PATTERN, 'startDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
       .optional()
-      .describe('UTC start in YYYYMMDDHHMMSS format. Must pair with a later endDatetime.'),
+      .describe(
+        `UTC start in YYYYMMDDHHMMSS format. Must pair with a later endDatetime. ${WINDOW_RULE}`,
+      ),
     endDatetime: z
       .string()
       .regex(GDELT_DATETIME_PATTERN, 'endDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
       .optional()
-      .describe('UTC end in YYYYMMDDHHMMSS format. Must pair with an earlier startDatetime.'),
+      .describe(
+        `UTC end in YYYYMMDDHHMMSS format. Must pair with an earlier startDatetime. ${WINDOW_RULE}`,
+      ),
     limit: countInputSchema(
       10_000,
       25,
@@ -164,13 +173,14 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
       .string()
       .optional()
       .describe(
-        'When no rows matched: the resolved timespan window; for each selected station whose monitoring range the window misses, that range and how to search inside it; and how to check station monitoring ranges. On show rankings, that values are percentages of matching clips and ellipsized labels may not work as show: selectors. On station rankings whose page has rows without a station ID, why: the station catalog did not load, or has no entry for the named labels. Absent on a non-empty station ranking whose rows on the page all carry station IDs.',
+        'When no rows matched: the resolved timespan window; for each selected station whose monitoring range the window misses, that range and how to search inside it; and how to check station monitoring ranges. When an explicit startDatetime or endDatetime falls inside a UTC period of the ranking resolution: the resolution and the UTC window the values cover. On show rankings, that values are percentages of matching clips and ellipsized labels may not work as show: selectors. On station rankings whose page has rows without a station ID, why: the station catalog did not load, or has no entry for the named labels. Absent on a non-empty station ranking whose rows on the page all carry station IDs and whose window is a timespan or sits on period boundaries.',
       ),
     staleResponse: staleResponseSchema,
   },
   enrichmentTrailer: {
     effectiveQuery: { render: renderQueryEcho },
     limitClamp: { render: renderLimitClamp },
+    notice: { render: renderNotice },
     staleResponse: { render: renderStaleResponse },
   },
   async handler(input, ctx) {
@@ -225,8 +235,11 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
       const rangeMisses =
         window && ranges ? describeStationRangeMisses(stationIds, ranges, window) : '';
       notices.push(
-        `No TV rankings for ${markdownQuote(input.query)}.${describeResolvedTimespan(input)}${rangeMisses} Check station monitoring ranges with gdelt_list_tv_stations or broaden the query.`,
+        `No TV rankings for ${quoteText(input.query)}.${describeResolvedTimespan(input)}${rangeMisses} Check station monitoring ranges with gdelt_list_tv_stations or broaden the query.`,
       );
+    } else {
+      const covered = describeTvCoveredWindow('Ranking values', input, result.dateResolution);
+      if (covered) notices.push(covered);
     }
     if (input.breakdownBy === 'show')
       notices.push(
@@ -238,7 +251,7 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
         notices.push(
           result.stationCatalogUnavailable
             ? 'Station IDs could not be resolved because the station catalog did not load; labels and values are preserved. Find IDs with gdelt_list_tv_stations; the next call loads the catalog again.'
-            : `Station IDs could not be resolved for labels ${unresolved.map((row) => markdownQuote(row.label)).join(', ')}; labels and values are preserved. Find IDs with gdelt_list_tv_stations.`,
+            : `Station IDs could not be resolved for labels ${unresolved.map((row) => quoteText(row.label)).join(', ')}; labels and values are preserved. Find IDs with gdelt_list_tv_stations.`,
         );
     }
     ctx.enrich.echo(input.query);

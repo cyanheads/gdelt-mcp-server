@@ -421,7 +421,11 @@ describe('gdeltSearchTv', () => {
       combined: false,
       dateResolution: 'day' as const,
       timeRange: { start: '2024-01-01', end: '2024-01-02' },
-      series: TV_RESULT.series,
+      series: TV_RESULT.series.map((s) => ({
+        ...s,
+        pointCount: 2,
+        peak: { date: '2024-01-02', value: 0.8 },
+      })),
       normalized: true,
       totalPoints: 2,
       offset: 0,
@@ -596,17 +600,22 @@ describe('gdeltSearchTv', () => {
               { date: '2024-01-15', value: 0.5 },
               { date: '2024-01-16', value: 0.25 },
             ],
+            pointCount: 3,
+            peak: { date: '2024-01-17', value: 0.75 },
           },
         ],
         normalized: true,
-        totalPoints: 2,
+        totalPoints: 3,
         offset: 0,
-        limit: 500,
+        limit: 2,
+        nextOffset: 2,
       });
       expect((blocks[0] as { text: string }).text).toBe(
         '## GDELT TV News Coverage\n**Date Resolution:** day\n**Time Range:** 2024-01-15 to 2024-01-16\n' +
-          '**Normalized:** Yes (% of airtime)\n**Combined:** false\n**Stations:** 1\n**Point page:** offset 0, limit 500\n' +
-          '**Points 1–2 of 2**\n\n### CNN (CNN)\nPoints on this page: 2 | Sum on this page: 0.75\n' +
+          '**Normalized:** Yes (% of airtime)\n**Combined:** false\n**Stations:** 1\n**Point page:** offset 0, limit 2\n' +
+          '**Points 1–2 of 3**\n**Next offset:** 2\n\n### CNN (CNN)\n' +
+          'Points in the whole series: 3 | Whole-series peak: 0.75 at 2024-01-17\n' +
+          'Points on this page: 2 | Sum on this page: 0.75\n' +
           'Page peak: 0.5 at 2024-01-15\n- 2024-01-15: 0.5\n- 2024-01-16: 0.25',
       );
     });
@@ -620,7 +629,9 @@ describe('gdeltSearchTv', () => {
         searchTv: vi.fn().mockResolvedValue({ series, dateResolution: 'day', normalized: true }),
       } as unknown as tvServiceModule.GdeltTvService);
       const result = await runToolContract(gdeltSearchTv, { query: 'x', stations: ['KGO'] });
-      expect((result.structuredContent as { series: unknown }).series).toEqual(series);
+      expect((result.structuredContent as { series: unknown }).series).toEqual(
+        series.map((s) => ({ ...s, pointCount: 1, peak: s.data[0] })),
+      );
       const text = (result.content[0] as { text: string }).text;
       expect(text).toContain(String.raw`### KGO \<b> (KGO)`);
       expect(text).toContain(String.raw`### WABC \*x\* (no station ID)`);
@@ -719,8 +730,14 @@ describe('gdeltSearchTv', () => {
       const result = await runToolContract(gdeltSearchTv, { query: 'x', stations: ['FOXNEWS'] });
       const sc = result.structuredContent as { series: unknown[]; notice: string };
       expect(sc.series).toEqual([
-        { station: 'FOXNEWS', stationName: 'FOX News', data: [point('2024-01-01')] },
-        unmapped,
+        {
+          station: 'FOXNEWS',
+          stationName: 'FOX News',
+          data: [point('2024-01-01')],
+          pointCount: 1,
+          peak: point('2024-01-01'),
+        },
+        { ...unmapped, pointCount: 1, peak: point('2024-01-01', 2) },
       ]);
       expect(sc.notice).toMatch(/labeled "KZZZ Local News".*gdelt_list_tv_stations/);
       expect(contentText(result)).toContain(sc.notice);
@@ -762,7 +779,14 @@ describe('gdeltSearchTv', () => {
         limit: 20001,
       });
       const sc = result.structuredContent as Record<string, unknown>;
-      expect(sc.series).toEqual([{ stationName: 'FOX News', data: [point('2024-01-01')] }]);
+      expect(sc.series).toEqual([
+        {
+          stationName: 'FOX News',
+          data: [point('2024-01-01')],
+          pointCount: 1,
+          peak: point('2024-01-01'),
+        },
+      ]);
       expect(sc.notice).toMatch(/Station IDs could not be resolved.*gdelt_list_tv_stations/);
       expect(sc.limitClamp).toEqual({ parameter: 'limit', requested: 20001, applied: 20000 });
       expect(contentText(result)).toContain(sc.notice as string);
@@ -904,6 +928,367 @@ describe('gdeltSearchTv', () => {
       expect(text).toContain('Points on this page: 3 | Sum on this page: 6');
       expect(text).toContain('Page peak: 3 at 2024-01-01T02:00:00Z');
       expect(text).not.toMatch(/Total:/);
+    });
+
+    /** Normalized values carry decimals; their page sum prints exactly, the values unrounded. */
+    it('prints the exact sum of normalized values, which pass through as given', async () => {
+      const values = [0.1, 0.2, 0.2837, 0.19291234];
+      const normalized = {
+        series: [
+          {
+            station: 'CNN',
+            stationName: 'CNN',
+            data: values.map((value, d) => ({ date: `2020-01-0${d + 1}`, value })),
+          },
+        ],
+        dateResolution: 'day' as const,
+        normalized: true,
+      };
+      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+        searchTv: vi.fn().mockResolvedValue(normalized),
+      } as unknown as tvServiceModule.GdeltTvService);
+      const result = await runToolContract(gdeltSearchTv, { query: 'x', stations: ['CNN'] });
+      expect(result.structuredContent).toMatchObject({ series: normalized.series });
+      const text = contentText(result);
+      expect(text).toContain('Points on this page: 4 | Sum on this page: 0.77661234\n');
+      expect(text).toContain('- 2020-01-04: 0.19291234');
+      expect(text).toContain('Page peak: 0.2837 at 2020-01-03\n');
+    });
+  });
+
+  /**
+   * Each series carries its whole-series point count and peak on every page, as
+   * gdelt_get_coverage_timeline's series do: the peak is the point with the largest absolute
+   * value, the earliest timestep on a tie. The rule itself is tabled in peak-of.test.ts.
+   */
+  describe('whole-series point count and peak', () => {
+    const hour = (h: number) =>
+      new Date(Date.UTC(2024, 0, 1, h)).toISOString().replace('.000Z', 'Z');
+    // One station, 600 hourly points valued 1..600: the peak, 600, is the last point, on page 2.
+    const LONG = {
+      series: [
+        {
+          station: 'CNN',
+          stationName: 'CNN',
+          data: Array.from({ length: 600 }, (_, h) => ({ date: hour(h), value: h + 1 })),
+        },
+      ],
+      dateResolution: 'hour' as const,
+      normalized: false,
+    };
+
+    function mockSearch(result: unknown) {
+      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
+        searchTv: vi.fn().mockResolvedValue(result),
+      } as unknown as tvServiceModule.GdeltTvService);
+    }
+
+    type Page = {
+      series: Array<{
+        station?: string;
+        stationName: string;
+        data: Array<{ date: string; value: number }>;
+        pointCount: number;
+        peak: { date: string; value: number };
+      }>;
+      totalPoints: number;
+      nextOffset?: number;
+    };
+
+    it('reports the same pointCount and peak on both pages of a two-page timeline', async () => {
+      mockSearch(LONG);
+      const first = await runToolContract(gdeltSearchTv, {
+        query: 'x',
+        stations: ['CNN'],
+        limit: 500,
+      });
+      const second = await runToolContract(gdeltSearchTv, {
+        query: 'x',
+        stations: ['CNN'],
+        limit: 500,
+        offset: 500,
+      });
+      const peak = { date: '2024-01-25T23:00:00Z', value: 600 };
+      for (const [result, points] of [
+        [first, 500],
+        [second, 100],
+      ] as const) {
+        const sc = result.structuredContent as Page;
+        expect(sc.series).toHaveLength(1);
+        expect(sc.series[0]?.pointCount).toBe(600);
+        expect(sc.series[0]?.peak).toEqual(peak);
+        expect(sc.series[0]?.data).toHaveLength(points);
+        expect(sc.totalPoints).toBe(600);
+      }
+      expect((first.structuredContent as Page).nextOffset).toBe(500);
+      expect(second.structuredContent).not.toHaveProperty('nextOffset');
+      expect((first.structuredContent as Page).series[0]?.data.at(-1)).toEqual({
+        date: '2024-01-21T19:00:00Z',
+        value: 500,
+      });
+    });
+
+    it('renders the whole-series values beside the page-scoped lines, labeled as such', async () => {
+      mockSearch(LONG);
+      const first = contentText(
+        await runToolContract(gdeltSearchTv, { query: 'x', stations: ['CNN'], limit: 500 }),
+      );
+      const second = contentText(
+        await runToolContract(gdeltSearchTv, {
+          query: 'x',
+          stations: ['CNN'],
+          limit: 500,
+          offset: 500,
+        }),
+      );
+      expect(first).toContain(
+        '### CNN (CNN)\nPoints in the whole series: 600 | Whole-series peak: 600 at 2024-01-25T23:00:00Z\n' +
+          'Points on this page: 500 | Sum on this page: 125250\nPage peak: 500 at 2024-01-21T19:00:00Z\n' +
+          '- 2024-01-01T00:00:00Z: 1\n',
+      );
+      expect(second).toContain(
+        '### CNN (CNN)\nPoints in the whole series: 600 | Whole-series peak: 600 at 2024-01-25T23:00:00Z\n' +
+          'Points on this page: 100 | Sum on this page: 55050\nPage peak: 600 at 2024-01-25T23:00:00Z\n' +
+          '- 2024-01-21T20:00:00Z: 501\n',
+      );
+    });
+
+    it('reports the earliest timestep on a tie, whatever order GDELT sent the points in', async () => {
+      mockSearch({
+        series: [
+          {
+            station: 'CNN',
+            stationName: 'CNN',
+            data: [
+              { date: '2024-01-03', value: 5 },
+              { date: '2024-01-01', value: 1 },
+              { date: '2024-01-02', value: 5 },
+            ],
+          },
+        ],
+        dateResolution: 'day',
+        normalized: false,
+      });
+      const result = await runToolContract(gdeltSearchTv, { query: 'x', stations: ['CNN'] });
+      expect((result.structuredContent as Page).series[0]?.peak).toEqual({
+        date: '2024-01-02',
+        value: 5,
+      });
+      expect(contentText(result)).toContain('Whole-series peak: 5 at 2024-01-02\n');
+      expect(contentText(result)).toContain('Page peak: 5 at 2024-01-02\n');
+    });
+
+    it("reports each station's own values on a three-station timeline", async () => {
+      const days = ['2024-01-01', '2024-01-02', '2024-01-03'];
+      const station = (id: string, name: string, values: number[]) => ({
+        station: id,
+        stationName: name,
+        data: values.map((value, d) => ({ date: days[d] as string, value })),
+      });
+      mockSearch({
+        series: [
+          station('CNN', 'CNN', [1, 2, 9]),
+          station('FOXNEWS', 'FOX News', [7, 3, 4]),
+          station('MSNBC', 'MSNBC', [2, 8, 5]),
+        ],
+        dateResolution: 'day',
+        normalized: false,
+      });
+      // Date-then-name order: page 1 holds the first day for all three, then CNN's second day.
+      const result = await runToolContract(gdeltSearchTv, { query: 'x', limit: 4 });
+      const sc = result.structuredContent as Page;
+      expect(
+        sc.series.map((s) => [s.station, s.data.length, s.pointCount, s.peak.date, s.peak.value]),
+      ).toEqual([
+        ['CNN', 2, 3, '2024-01-03', 9],
+        ['FOXNEWS', 1, 3, '2024-01-01', 7],
+        ['MSNBC', 1, 3, '2024-01-02', 8],
+      ]);
+    });
+
+    it('reports them on the Combined series', async () => {
+      mockSearch({
+        series: [
+          {
+            stationName: 'Combined',
+            data: [
+              { date: '2020-01-30T12:00:00Z', value: 0.1987 },
+              { date: '2020-01-31T12:00:00Z', value: 0.2837 },
+            ],
+          },
+        ],
+        dateResolution: 'day',
+        normalized: true,
+      });
+      const result = await runToolContract(gdeltSearchTv, {
+        query: 'x market:"National"',
+        combined: true,
+        limit: 1,
+      });
+      expect((result.structuredContent as Page).series).toEqual([
+        {
+          stationName: 'Combined',
+          data: [{ date: '2020-01-30T12:00:00Z', value: 0.1987 }],
+          pointCount: 2,
+          peak: { date: '2020-01-31T12:00:00Z', value: 0.2837 },
+        },
+      ]);
+      expect(contentText(result)).toContain(
+        '### Combined\nPoints in the whole series: 2 | Whole-series peak: 0.2837 at 2020-01-31T12:00:00Z\n',
+      );
+    });
+
+    it('describes both fields as whole-series values, and point dates as period labels', () => {
+      const shape = gdeltSearchTv.output.shape.series.element.shape;
+      expect(shape.pointCount.description).toMatch(/whole series, across every page/);
+      expect(shape.peak.description).toMatch(/whole series.*earliest timestep on a tie/);
+      for (const date of [shape.data.element.shape.date, shape.peak.shape.date]) {
+        expect(date.description).toMatch(
+          /the hour's start for hourly points, and 12:00:00Z of the period's first day for day, week, month, and year points/,
+        );
+      }
+    });
+  });
+
+  /**
+   * GDELT widens an explicit window outward to whole UTC periods of the response's resolution,
+   * and the notice names the window the values cover. The boundary rules are tabled in
+   * tv-covered-window.test.ts; these cases prove the wiring, one per side of each branch.
+   */
+  describe('covered window', () => {
+    const POINTS = {
+      series: [
+        {
+          station: 'CNN',
+          stationName: 'CNN',
+          data: [
+            { date: '2019-12-15T12:00:00Z', value: 353 },
+            { date: '2019-12-16T12:00:00Z', value: 407 },
+          ],
+        },
+      ],
+      normalized: false,
+    };
+
+    function mockSearch(result: unknown) {
+      const svc = {
+        searchTv: vi.fn().mockResolvedValue(result),
+        stationRanges: vi.fn().mockResolvedValue(CNN_RANGE),
+      };
+      vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue(
+        svc as unknown as tvServiceModule.GdeltTvService,
+      );
+    }
+
+    it('names the window at the resolution GDELT reported', async () => {
+      mockSearch({ ...POINTS, dateResolution: 'day' });
+      const result = await runToolContract(gdeltSearchTv, {
+        query: 'impeachment',
+        stations: ['CNN'],
+        normalize: false,
+        startDatetime: '20191215180000',
+        endDatetime: '20200115060000',
+      });
+      expectNotice(
+        result,
+        'Values cover whole UTC days, 2019-12-15T00:00:00Z – 2020-01-15T23:59:59Z, wider than the requested 20191215180000–20200115060000.',
+      );
+    });
+
+    it("names it at GDELT's window-length default when no resolution was established", async () => {
+      mockSearch({
+        series: [
+          {
+            station: 'CNN',
+            stationName: 'CNN',
+            data: [{ date: '2019-12-18T20:00:00Z', value: 55 }],
+          },
+        ],
+        normalized: false,
+      });
+      const result = await runToolContract(gdeltSearchTv, {
+        query: 'impeachment',
+        stations: ['CNN'],
+        startDatetime: '20191218203000',
+        endDatetime: '20191218223000',
+      });
+      expectNotice(
+        result,
+        'Values cover whole clock hours, 2019-12-18T20:00:00Z – 2019-12-18T22:59:59Z, wider than the requested 20191218203000–20191218223000.',
+      );
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      [
+        'both edges sit on period boundaries',
+        { startDatetime: '20191215000000', endDatetime: '20200115235959' },
+      ],
+      ['the call ran on a timespan', { timespan: '1m' }],
+    ])('adds nothing when %s', async (_label, window) => {
+      mockSearch({ ...POINTS, dateResolution: 'day' });
+      const result = await runToolContract(gdeltSearchTv, {
+        query: 'impeachment',
+        stations: ['CNN'],
+        ...window,
+      });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).not.toHaveProperty('notice');
+    });
+
+    it('adds nothing on an empty result', async () => {
+      mockSearch({ series: [], dateResolution: 'day', normalized: false });
+      const result = await runToolContract(gdeltSearchTv, {
+        query: 'impeachment',
+        stations: ['CNN'],
+        startDatetime: '20191215180000',
+        endDatetime: '20200115060000',
+      });
+      const notice = (result.structuredContent as { notice: string }).notice;
+      expect(notice).toMatch(/^No TV coverage for "impeachment"\./);
+      expect(notice).not.toMatch(/cover whole/);
+    });
+
+    it('sits between the smoothing and unresolved-station segments, at the dateres sent', async () => {
+      mockSearch({
+        series: [
+          {
+            stationName: 'KZZZ Local News',
+            data: [
+              { date: '2019-12-15T12:00:00Z', value: 3229 },
+              { date: '2020-01-12T12:00:00Z', value: 2329 },
+            ],
+          },
+        ],
+        dateResolution: 'week',
+        normalized: false,
+      });
+      const result = await runToolContract(gdeltSearchTv, {
+        query: 'impeachment',
+        dateres: 'week',
+        smoothing: 5,
+        startDatetime: '20191218000000',
+        endDatetime: '20200115235959',
+      });
+      const notice = (result.structuredContent as { notice: string }).notice;
+      expect(notice).toMatch(
+        /^Trailing moving average width 5 .*peaks may lag\. Values cover whole UTC weeks \(Sunday–Saturday\), 2019-12-15T00:00:00Z – 2020-01-18T23:59:59Z, wider than the requested 20191218000000–20200115235959\. .*"KZZZ Local News"/,
+      );
+      expect(contentText(result)).toContain(
+        'Values cover whole UTC weeks (Sunday–Saturday), 2019-12-15T00:00:00Z – 2020-01-18T23:59:59Z, wider than the requested 20191218000000–20200115235959.',
+      );
+    });
+
+    it('states the rule on the dateres, window, and notice descriptions', () => {
+      const shape = gdeltSearchTv.input.shape;
+      expect(shape.dateres.description).toMatch(
+        /hourly up to 7 days, daily under 3 years, monthly beyond/,
+      );
+      expect(shape.dateres.description).toMatch(/Sunday–Saturday week/);
+      expect(shape.startDatetime.description).toMatch(/back to the start of its UTC period/);
+      expect(shape.endDatetime.description).toMatch(/through the end of its UTC period/);
+      expect(gdeltSearchTv.enrichment?.notice?.description).toMatch(
+        /the resolution and the UTC window the values cover/,
+      );
     });
   });
 });

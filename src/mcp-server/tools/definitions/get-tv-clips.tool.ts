@@ -25,7 +25,13 @@ import {
   limitClampSchema,
   renderLimitClamp,
 } from '../limit-clamp.js';
-import { escapeMarkdown, markdownQuote, markdownUrl, renderQueryEcho } from '../markdown-escape.js';
+import {
+  escapeMarkdown,
+  markdownUrl,
+  quoteText,
+  renderNotice,
+  renderQueryEcho,
+} from '../markdown-escape.js';
 import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
 import {
   describeStationRangeMisses,
@@ -33,6 +39,14 @@ import {
   parseStationIds,
   stationLabel,
 } from '../station-ids.js';
+import { defaultTvResolution, TV_PERIOD_NAMES } from '../tv-covered-window.js';
+
+/** Where a window edge has to fall for GDELT's whole-period answer to reach nothing past it. */
+const PERIOD_EDGES = {
+  hour: 'on the hour',
+  day: 'at midnight UTC',
+  month: 'at the start of a UTC month',
+} as const satisfies Record<ReturnType<typeof defaultTvResolution>, string>;
 
 /**
  * Hard ceiling GDELT's TV API serves in one clip request. Past it there is no offset or
@@ -97,15 +111,7 @@ function renderClip(c: z.infer<typeof clipSchema>): string {
 export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
   title: 'Get GDELT TV Clips',
   description:
-    "Retrieve the top matching TV news clips for a query from the Internet Archive's " +
-    'Television News Archive: returns every fetched in-window clip, up to 3,000. Each clip includes show ' +
-    "name, the station's display name — with its station ID when that name resolves to one — air " +
-    'timestamp, a 15-second transcript excerpt, and a direct link to view the full one-minute clip. Use after gdelt_search_tv to read the actual transcript content ' +
-    "driving a coverage spike — pass a series' station value as stations here. " +
-    'GDELT answers TV windows in whole clock hours; clips it returns from outside an explicit startDatetime/endDatetime ' +
-    'window are dropped. ' +
-    '3,000 is a hard per-call ceiling and GDELT offers no cursor: when a query fills it, re-query narrower startDatetime/endDatetime windows — the response hands back the exact windows to use. ' +
-    'Archive coverage varies by station; use gdelt_list_tv_stations for station IDs and monitoring date ranges.',
+    "Retrieve the top matching TV news clips for a query from the Internet Archive's Television News Archive: returns every fetched in-window clip, up to 3,000. Each clip includes show name, the station's display name — with its station ID when that name resolves to one — air timestamp, a 15-second transcript excerpt, and a direct link to view the full one-minute clip. Use after gdelt_search_tv to read the actual transcript content driving a coverage spike — pass a series' station value as stations here. GDELT answers a TV window in whole clock hours when it spans up to 7 days, whole UTC days when shorter than 3 years, and whole UTC months beyond, so clips it returns from outside an explicit startDatetime/endDatetime window are dropped — though they still spend maxRecords. 3,000 is a hard per-call ceiling and GDELT offers no cursor: when a query fills it, re-query narrower startDatetime/endDatetime windows — the response hands back the exact windows to use. Archive coverage varies by station; use gdelt_list_tv_stations for station IDs and monitoring date ranges.",
   annotations: { readOnlyHint: true, openWorldHint: true },
 
   errors: [
@@ -228,6 +234,7 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
   enrichmentTrailer: {
     effectiveQuery: { render: renderQueryEcho },
     limitClamp: { render: renderLimitClamp },
+    notice: { render: renderNotice },
     continuationWindows: { render: renderContinuationWindows },
     staleResponse: { render: renderStaleResponse },
   },
@@ -250,9 +257,14 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
     ctx.log.info('gdelt_get_tv_clips', { query: input.query, maxRecords });
     const svc = getGdeltTvService();
 
-    // GDELT TV answers whole clock hours — the start floored to the hour, the end's hour
-    // included in full — and rejects a window under 30 minutes. An explicit window goes out
-    // widened to those whole hours, so any width is accepted and the same clips come back.
+    /**
+     * GDELT TV answers whole UTC periods — clock hours up to 7 days, days under 3 years, months
+     * beyond, the start floored to its period and the end's period included in full — picked from
+     * the span it is sent, and rejects a window under 30 minutes. An explicit window under two
+     * hours goes out with its start floored to the clock hour and at least an hour long; a longer
+     * one goes out as given (an on-the-hour end a second early), so its span, and the period GDELT
+     * answers it in, stay the caller's. Any width is accepted and the same clips come back.
+     */
     const requested =
       input.startDatetime && input.endDatetime
         ? tvRequestWindow({ startDatetime: input.startDatetime, endDatetime: input.endDatetime })
@@ -269,8 +281,8 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
       ctx,
     );
 
-    // That hour-granular answer carries clips from outside an explicit window at any edge not on
-    // the hour, so they are dropped — the echoed window stays exact and
+    // That whole-period answer carries clips from outside an explicit window at any edge not on a
+    // period boundary, so they are dropped — the echoed window stays exact and
     // continuation windows stay disjoint. A timespan is resolved by GDELT on its own clock,
     // which this server cannot observe, so a timespan call drops nothing. The cap is still
     // judged on the upstream count: GDELT filled maxRecords whatever it filled it with.
@@ -304,7 +316,7 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
     const notices: string[] = [];
     if (upstream.length === 0) {
       notices.push(
-        `No TV clips matched ${markdownQuote(input.query)}.${describeResolvedTimespan(input)}${rangeMisses} ${noClipGuidance(input)}`,
+        `No TV clips matched ${quoteText(input.query)}.${describeResolvedTimespan(input)}${rangeMisses} ${noClipGuidance(input)}`,
       );
     } else if (capHit) {
       if (belowCeiling) {
@@ -321,17 +333,14 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
         );
       }
     }
-    if (pinned && dropped > 0) {
-      const droppedClips =
-        `GDELT answers TV windows in whole clock hours, so it also returned ${dropped} ` +
-        `${dropped === 1 ? 'clip' : 'clips'} aired outside ${pinned.startDatetime}–${pinned.endDatetime}; ` +
-        `${dropped === 1 ? 'it was' : 'they were'} dropped.`;
+    if (pinned && requested && dropped > 0) {
+      // GDELT picks the periods from the length of the window it was sent.
+      const periods = defaultTvResolution(requested);
+      const droppedClips = `GDELT answers this window in whole ${TV_PERIOD_NAMES[periods]}, so it also returned ${dropped} ${dropped === 1 ? 'clip' : 'clips'} aired outside ${pinned.startDatetime}–${pinned.endDatetime}; ${dropped === 1 ? 'it was' : 'they were'} dropped.`;
       notices.push(
         capHit
-          ? `${droppedClips} ${dropped === 1 ? 'It' : 'They'} took ${dropped} of the ${maxRecords} ` +
-              'maxRecords slots, so in-window clips past them were not fetched.'
-          : `${droppedClips} That is expected at any window edge not on the hour — including the edges ` +
-              'continuationWindows hands back — and not a sign of missing results.',
+          ? `${droppedClips} ${dropped === 1 ? 'It' : 'They'} took ${dropped} of the ${maxRecords} maxRecords slots, so in-window clips past them were not fetched.`
+          : `${droppedClips} That is expected at any window edge not ${PERIOD_EDGES[periods]} — including the edges continuationWindows hands back — and not a sign of missing results.`,
       );
       if (fetched.length === 0) {
         notices.push(

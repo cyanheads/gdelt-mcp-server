@@ -186,6 +186,7 @@ describe('TV analytics regression contracts', () => {
     expect(contentText(response)).toContain('25001 → 25000');
   });
 
+  /** Every score ties, so the terms run in exact-label order: `term9999` sorts last. */
   it('returns exactly 25000 terms at the cap and retrieves the final term', async () => {
     const words = Array.from({ length: 25001 }, (_, i) => ({ label: `term${i}`, score: 1 }));
     vi.spyOn(service, 'getGdeltTvService').mockReturnValue({
@@ -194,18 +195,19 @@ describe('TV analytics regression contracts', () => {
     const response = await runToolContract(gdeltGetTvContext, { query: 'x', limit: 25000 });
     expect(response.structuredContent).toMatchObject({ totalTerms: 25001, nextOffset: 25000 });
     expect((response.structuredContent as { words: unknown[] }).words).toHaveLength(25000);
-    expect(contentText(response)).toContain('**term24999**');
-    expect(contentText(response)).not.toContain('**term25000**');
+    expect(contentText(response)).toContain('**term9998**');
+    expect(contentText(response)).toContain('**term25000**');
+    expect(contentText(response)).not.toContain('**term9999**');
     const final = await runToolContract(gdeltGetTvContext, {
       query: 'x',
       limit: 25000,
       offset: 25000,
     });
     expect(final.structuredContent).toMatchObject({
-      words: [{ label: 'term25000', score: 1 }],
+      words: [{ label: 'term9999', score: 1 }],
       totalTerms: 25001,
     });
     expect(final.structuredContent).not.toHaveProperty('nextOffset');
-    expect(contentText(final)).toContain('**term25000**');
+    expect(contentText(final)).toContain('**term9999**');
   });
 });

@@ -9,7 +9,7 @@
 import { validationError } from '@cyanheads/mcp-ts-core/errors';
 import type { StationRanges, TvStationRange } from '@/services/gdelt/gdelt-tv-service.js';
 import type { GdeltWindow } from './date-range.js';
-import { escapeMarkdown, markdownQuote, quoteText } from './markdown-escape.js';
+import { quoteText } from './markdown-escape.js';
 
 /** Every ID in GDELT's station catalog is letters and digits. */
 const STATION_ID = /^[A-Za-z0-9]+$/;
@@ -76,9 +76,8 @@ export function stationLabel(row: StationRow): string {
  * The notice segments for the returned rows that carry no station ID, or `undefined` when every
  * one does. Rows GDELT sent without a label are counted as such — there was nothing to resolve.
  * For labeled rows: when the catalog did not load, none resolved and the segment says so;
- * otherwise it names each label the catalog has no entry for. A notice reaches content[] as
- * written, so each label is quoted with `markdownQuote`, as caller text is; a plain label reads as
- * `"FOX News"`.
+ * otherwise it names each label the catalog has no entry for, quoted with `quoteText` as caller
+ * text is — a plain label reads as `"FOX News"` — and escaped by the notice's `content[]` render.
  */
 export function describeUnresolvedStations(
   rows: readonly StationRow[],
@@ -110,12 +109,13 @@ export function describeUnresolvedStations(
  * when none does. Each sentence opens with a space, to follow the sentence before it.
  *
  * Each of `stationIds` is matched against the catalog in any case, as GDELT matches IDs, and named
- * once, by the catalog's own ID, escaped as upstream text in a notice is. Days compare whole — a
- * range runs from the start of its first day through the end of its last — so a window touching
- * either day overlaps it. The catalog promises no coverage inside a range, so an overlapping range
- * is never named; neither is a station the catalog lacks, or one whose dates are not `YYYY-MM-DD`.
- * A station active when the catalog was read is never said to have ended — its end date has moved
- * on since — so only a window ending before its start is named for it.
+ * once, by the catalog's own ID as the catalog writes it — the notice's `content[]` render escapes
+ * it. Days compare whole — a range runs from the start of its first day through the end of its
+ * last — so a window touching either day overlaps it. The catalog promises no coverage inside a
+ * range, so an overlapping range is never named; neither is a station the catalog lacks, or one
+ * whose dates are not `YYYY-MM-DD`. A station active when the catalog was read is never said to
+ * have ended — its end date has moved on since — so only a window ending before its start is named
+ * for it.
  */
 export function describeStationRangeMisses(
   stationIds: readonly string[],
@@ -128,7 +128,7 @@ export function describeStationRangeMisses(
     const miss = rangeMiss(range, window);
     return miss
       ? [
-          ` ${escapeMarkdown(range.stationId)} was monitored ${range.startDate} – ${range.endDate}; the window ${miss}.`,
+          ` ${range.stationId} was monitored ${range.startDate} – ${range.endDate}; the window ${miss}.`,
         ]
       : [];
   });
@@ -161,7 +161,7 @@ function describeUnresolvedLabels(labels: readonly string[], catalogUnavailable:
       'The next call loads the catalog again.'
     );
   }
-  const quoted = labels.map(markdownQuote).join(', ');
+  const quoted = labels.map(quoteText).join(', ');
   return labels.length === 1
     ? `No station in GDELT's station catalog is labeled ${quoted}, so station is absent where ` +
         `stationName is ${quoted}; find its ID with gdelt_list_tv_stations.`

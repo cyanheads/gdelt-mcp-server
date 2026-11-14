@@ -181,12 +181,10 @@ export class GdeltTvService {
 
     const allDates = series.flatMap((s) => s.data.map((d) => d.date));
 
-    const observedResolution = raw.query_details?.date_resolution?.toLowerCase();
-    const recognizedResolution = isTvDateResolution(observedResolution)
-      ? observedResolution
-      : undefined;
     const dateResolution =
-      recognizedResolution ?? params.dateres ?? inferDateResolution(allDates, 'tv');
+      reportedResolution(raw.query_details) ??
+      params.dateres ??
+      inferDateResolution(allDates, 'tv');
 
     return {
       series,
@@ -252,13 +250,18 @@ export class GdeltTvService {
     return { words };
   }
 
-  /** Fetch complete provider rankings; show values remain percentages even with normalize=false. */
+  /**
+   * Fetch complete provider rankings; show values remain percentages even with normalize=false.
+   * `dateResolution` is the resolution GDELT reports it ranked over — the whole UTC periods the
+   * values count — and is omitted when the answer names none.
+   */
   async getTvBreakdown(
     params: TvBreakdownParams,
     ctx: Context,
   ): Promise<{
     rows: TvBreakdownRow[];
     valueUnit: TvBreakdownValueUnit;
+    dateResolution?: TvDateResolution;
     stationCatalogUnavailable?: true;
   }> {
     const catalogWaitUntil = Date.now() + this.catalogWaitMs;
@@ -269,11 +272,14 @@ export class GdeltTvService {
     const raw = await this.fetch<{
       stationchart?: RawTvStationChartRow[];
       showchart?: RawTvShowChartRow[];
+      query_details?: { date_resolution?: string };
     }>(urlParams, ctx);
+    const dateResolution = reportedResolution(raw.query_details);
     if (params.breakdownBy === 'show') {
       return {
         rows: (raw.showchart ?? []).map((row) => ({ label: row.show, value: row.count })),
         valueUnit: 'percent_matching_clips',
+        ...(dateResolution && { dateResolution }),
       };
     }
     const chart = raw.stationchart ?? [];
@@ -288,6 +294,7 @@ export class GdeltTvService {
         return { label: row.station, value: row.count, ...(station !== undefined && { station }) };
       }),
       valueUnit: params.normalize !== false ? 'percent_station_airtime' : 'matching_clips',
+      ...(dateResolution && { dateResolution }),
       ...(ids === undefined && { stationCatalogUnavailable: true as const }),
     };
   }
@@ -522,6 +529,17 @@ function isTvDateResolution(value: string | undefined): value is TvDateResolutio
   return (
     value === 'hour' || value === 'day' || value === 'week' || value === 'month' || value === 'year'
   );
+}
+
+/**
+ * The resolution a timeline or ranking answer reports in `query_details.date_resolution`, or
+ * `undefined` when it names none GDELT documents. The word cloud's `query_details` carries none.
+ */
+function reportedResolution(
+  queryDetails: { date_resolution?: string } | undefined,
+): TvDateResolution | undefined {
+  const reported = queryDetails?.date_resolution?.toLowerCase();
+  return isTvDateResolution(reported) ? reported : undefined;
 }
 
 /** Parse a GDELT date string (YYYYMMDDHHMMSS or YYYYMMDD) to the ms epoch of its UTC day. Returns undefined on failure. */

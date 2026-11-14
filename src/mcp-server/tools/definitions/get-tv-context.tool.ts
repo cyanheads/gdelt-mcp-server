@@ -20,9 +20,14 @@ import {
   limitClampSchema,
   renderLimitClamp,
 } from '../limit-clamp.js';
-import { escapeMarkdown, markdownQuote, renderQueryEcho } from '../markdown-escape.js';
+import { escapeMarkdown, quoteText, renderNotice, renderQueryEcho } from '../markdown-escape.js';
 import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
 import { describeStationRangeMisses, parseStationIds } from '../station-ids.js';
+import { describeTvCoveredWindow } from '../tv-covered-window.js';
+
+/** How the window fields state GDELT's widening. */
+const WINDOW_RULE =
+  'Terms and scores count whole UTC periods at the resolution GDELT picks from the window length — clock hours up to 7 days, days under 3 years, months beyond — so GDELT widens the window outward to them; notice then names the window the terms and scores cover.';
 
 /**
  * The population GDELT computes the word cloud from. Its TV API documentation names the 200
@@ -116,7 +121,7 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       .min(0)
       .default(0)
       .describe(
-        'Zero-based term offset in descending score order. Use nextOffset with the same query inputs for the next page.',
+        'Zero-based term offset in descending score order, ties broken by exact label. Use nextOffset with the same query inputs for the next page.',
       ),
     timespan: z
       .string()
@@ -129,17 +134,14 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       .regex(GDELT_DATETIME_PATTERN, 'startDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
       .optional()
       .describe(
-        'Start datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-          '(e.g. 20200101000000). Must pair with endDatetime; supplying only one of the two is rejected. ' +
-          'Check station monitoring dates with gdelt_list_tv_stations.',
+        `Start datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators (e.g. 20200101000000). Must pair with endDatetime; supplying only one of the two is rejected. Check station monitoring dates with gdelt_list_tv_stations. ${WINDOW_RULE}`,
       ),
     endDatetime: z
       .string()
       .regex(GDELT_DATETIME_PATTERN, 'endDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
       .optional()
       .describe(
-        'End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-          '(e.g. 20200131235959). Must pair with startDatetime; supplying only one of the two is rejected.',
+        `End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators (e.g. 20200131235959). Must pair with startDatetime; supplying only one of the two is rejected. ${WINDOW_RULE}`,
       ),
   }),
 
@@ -169,7 +171,9 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
           })
           .describe('A co-occurring term with its relative frequency score.'),
       )
-      .describe(`Co-occurring terms from ${SAMPLE_SCOPE}, sorted by score descending.`),
+      .describe(
+        `Co-occurring terms from ${SAMPLE_SCOPE}, sorted by score descending, ties broken by exact label.`,
+      ),
   }),
 
   // Agent-facing context — query echo, count clamp, and sampling or no-data notice.
@@ -181,7 +185,7 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       .string()
       .optional()
       .describe(
-        `On every non-empty result, that terms and scores come from ${SAMPLE_SCOPE} — compare windows or stations with a separate, narrower call for each. When no clips matched, so there is no vocabulary to report: the resolved timespan window; for each selected station whose monitoring range the window misses, that range and how to search inside it; and how to broaden the query or check station monitoring dates.`,
+        `On every non-empty result, that terms and scores come from ${SAMPLE_SCOPE} — compare windows or stations with a separate, narrower call for each — and, when an explicit startDatetime or endDatetime falls inside a UTC period of the resolution GDELT picks from the window length, the resolution and the UTC window the terms and scores cover. When no clips matched, so there is no vocabulary to report: the resolved timespan window; for each selected station whose monitoring range the window misses, that range and how to search inside it; and how to broaden the query or check station monitoring dates.`,
       ),
     staleResponse: staleResponseSchema,
   },
@@ -189,6 +193,7 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
   enrichmentTrailer: {
     effectiveQuery: { render: renderQueryEcho },
     limitClamp: { render: renderLimitClamp },
+    notice: { render: renderNotice },
     staleResponse: { render: renderStaleResponse },
   },
 
@@ -232,24 +237,33 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
         },
       });
     }
+    // GDELT's order among tied scores varies between identical calls, so the exact label breaks a
+    // tie — as in gdelt_get_tv_breakdown — and a page fetched fresh neither repeats nor skips one.
     const words = result.words
-      .toSorted((a, b) => b.score - a.score)
+      .toSorted((a, b) => b.score - a.score || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0))
       .slice(input.offset, input.offset + limit);
     const nextOffset =
       input.offset + words.length < totalTerms ? input.offset + words.length : undefined;
 
+    // Every notice segment for this response accumulates here and is flushed once —
+    // ctx.enrich.notice is last-wins, so a second call would silently drop the first.
+    const notices: string[] = [];
     if (result.words.length === 0) {
       const window = resolveEffectiveWindow(input);
       const ranges =
         window && stationIds.length > 0 ? await svc.stationRanges(ctx, startedAt) : undefined;
       const rangeMisses =
         window && ranges ? describeStationRangeMisses(stationIds, ranges, window) : '';
-      ctx.enrich.notice(
-        `No TV context data for ${markdownQuote(input.query)}.${describeResolvedTimespan(input)}${rangeMisses} Archive coverage varies by station — verify monitoring dates with gdelt_list_tv_stations and choose a matching window, or broaden the query.`,
+      notices.push(
+        `No TV context data for ${quoteText(input.query)}.${describeResolvedTimespan(input)}${rangeMisses} Archive coverage varies by station — verify monitoring dates with gdelt_list_tv_stations and choose a matching window, or broaden the query.`,
       );
     } else {
-      ctx.enrich.notice(SAMPLING_NOTICE);
+      notices.push(SAMPLING_NOTICE);
+      // The word cloud reports no resolution: the one GDELT picks from the window length applies.
+      const covered = describeTvCoveredWindow('Terms and scores', input);
+      if (covered) notices.push(covered);
     }
+    ctx.enrich.notice(notices.join(' '));
 
     ctx.log.info('gdelt_get_tv_context completed', { wordCount: result.words.length });
     return {

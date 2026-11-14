@@ -286,7 +286,7 @@ describe('gdeltGetTvClips', () => {
         { startDatetime: '20200101000000', endDatetime: '20200101235959' },
         { startDatetime: '20200102000000', endDatetime: '20200103000000' },
       ]);
-      expect(enrichment.notice).toMatch(/whole clock hours/);
+      expect(enrichment.notice).toMatch(/whole UTC periods/);
     });
 
     it('returns all same-hour clips at the ceiling and explains why narrower windows cannot reach more', async () => {
@@ -492,14 +492,16 @@ describe('gdeltGetTvClips', () => {
 
   /**
    * GDELT TV answers a window in whole clock hours — the start floored to the hour, the end's
-   * hour included in full — and rejects a window under 30 minutes. The request goes out widened
-   * to whole hours; the caller's exact window is what the drop keeps.
+   * hour included in full — and rejects a window under 30 minutes. A window under two hours goes
+   * out widened to whole hours; a longer one goes out as given, so a 7-day window is not pushed
+   * into GDELT's daily answer. The caller's exact window is what the drop keeps.
    */
   describe('the window sent to GDELT', () => {
     it.each([
       ['20240116010500', '20240116012000', '20240116010000', '20240116015959'],
-      ['20240116010500', '20240116031000', '20240116010000', '20240116031000'],
+      ['20240116010500', '20240116031000', '20240116010500', '20240116031000'],
       ['20240116010000', '20240116020000', '20240116010000', '20240116015959'],
+      ['20191215003000', '20191222003000', '20191215003000', '20191222003000'],
     ])('requests %s–%s as %s–%s', async (start, end, sentStart, sentEnd) => {
       const upstream = vi.fn().mockResolvedValue({ clips: [] });
       vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
@@ -592,12 +594,41 @@ describe('gdeltGetTvClips', () => {
       expect(sc.totalCount).toBe(2);
       expect(sc).not.toHaveProperty('withheldCount');
       expect(sc.notice).toMatch(
-        /GDELT answers TV windows in whole clock hours, so it also returned 2 clips aired outside 20240701000000–20240701120000; they were dropped/,
+        /GDELT answers this window in whole clock hours, so it also returned 2 clips aired outside 20240701000000–20240701120000; they were dropped/,
       );
       // A caller following a continuation window must not read its own seam as a fault.
       expect(sc.notice).toMatch(/not a sign of missing results/);
       const text = contentText(result);
       expect(text).not.toContain('12:49:08');
+    });
+
+    /**
+     * Measured live: GDELT answers a window over 7 days in whole UTC days — a 31-day window
+     * starting 18:00 returned clips from 00:00:32 of its first day and 23:51:17 of its last.
+     */
+    it('names whole UTC days for a window over 7 days', async () => {
+      const inside = [CLIP_AT('2020-01-15T05:59:00Z', 1), CLIP_AT('2019-12-15T18:00:00Z', 2)];
+      const outside = [CLIP_AT('2020-01-15T23:51:17Z', 3), CLIP_AT('2019-12-15T00:00:32Z', 4)];
+      mockClips([outside[0], ...inside, outside[1]]);
+      const result = await runToolContract(gdeltGetTvClips, {
+        query: 'impeachment',
+        stations: ['CNN'],
+        sort: 'dateDesc',
+        startDatetime: '20191215180000',
+        endDatetime: '20200115060000',
+      });
+      const sc = result.structuredContent as ClipPage;
+      expect(sc.clips).toEqual(inside);
+      expect(sc.notice).toBe(
+        'GDELT answers this window in whole UTC days, so it also returned 2 clips aired outside 20191215180000–20200115060000; they were dropped. That is expected at any window edge not at midnight UTC — including the edges continuationWindows hands back — and not a sign of missing results.',
+      );
+    });
+
+    it('states the resolution rule in the tool description', () => {
+      expect(gdeltGetTvClips.description).toMatch(
+        /whole clock hours when it spans up to 7 days, whole UTC days when shorter than 3 years, and whole UTC months beyond/,
+      );
+      expect(gdeltGetTvClips.description).toMatch(/still spend maxRecords/);
     });
 
     it('still detects the maxRecords cap from the upstream count before the drop', async () => {
@@ -699,7 +730,7 @@ describe('gdelt_get_tv_clips maxRecords clamp', () => {
     },
   );
 
-  // Not on the hour, so the whole-hour request returns clips from before the window too.
+  // Not on the hour, so GDELT's whole-hour answer returns clips from before the window too.
   const WINDOW = { startDatetime: '20240116010500', endDatetime: '20240116045959' };
 
   type Run = { result: Awaited<ReturnType<typeof runToolContract>>; sent: unknown };
@@ -1055,7 +1086,7 @@ describe('gdelt_get_tv_clips selected stations outside the window', () => {
     expect((result.structuredContent as ClipPage).clips).toEqual([]);
     expectNotice(
       result,
-      `GDELT answers TV windows in whole clock hours, so it also returned 2 clips aired outside 20250101000500–20250101005000; they were dropped. That is expected at any window edge not on the hour — including the edges continuationWindows hands back — and not a sign of missing results. No clip aired inside the window. ${NAMED} TV coverage varies by station — check that 20250101000500–20250101005000 falls inside the selected stations' monitoring dates with gdelt_list_tv_stations, or broaden the query.`,
+      `GDELT answers this window in whole clock hours, so it also returned 2 clips aired outside 20250101000500–20250101005000; they were dropped. That is expected at any window edge not on the hour — including the edges continuationWindows hands back — and not a sign of missing results. No clip aired inside the window. ${NAMED} TV coverage varies by station — check that 20250101000500–20250101005000 falls inside the selected stations' monitoring dates with gdelt_list_tv_stations, or broaden the query.`,
     );
     expect(svc.stationRanges).toHaveBeenCalledTimes(1);
   });

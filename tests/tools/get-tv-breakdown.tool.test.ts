@@ -389,3 +389,135 @@ describe('gdeltGetTvBreakdown selected stations outside the window', () => {
     );
   });
 });
+
+/**
+ * GDELT ranks over whole UTC periods at the resolution it picks from the window length, widening
+ * an explicit window outward to them; the notice names the window the values cover. The boundary
+ * rules are tabled in tv-covered-window.test.ts; these cases prove the wiring.
+ */
+describe('gdeltGetTvBreakdown covered window', () => {
+  const CNN_DAY =
+    'Ranking values cover whole UTC days, 2019-12-15T00:00:00Z – 2020-01-15T23:59:59Z, wider than the requested 20191215180000–20200115060000.';
+  const SHOW_NOTE =
+    'Show values are percentages of matching clips, regardless of normalize. Provider labels may contain ellipses and may not work as exact show: selectors.';
+
+  it('names the window at the resolution a station chart reports', async () => {
+    mockService({
+      rows: [{ label: 'CNN', value: 8293, station: 'CNN' }],
+      valueUnit: 'matching_clips',
+      dateResolution: 'day',
+    });
+    const result = await runToolContract(gdeltGetTvBreakdown, {
+      query: 'impeachment',
+      breakdownBy: 'station',
+      stations: ['CNN'],
+      normalize: false,
+      startDatetime: '20191215180000',
+      endDatetime: '20200115060000',
+    });
+    expectNotice(result, CNN_DAY);
+  });
+
+  it("takes the chart's reported resolution over the window-length default", async () => {
+    mockService({
+      rows: [{ label: 'CNN', value: 8293, station: 'CNN' }],
+      valueUnit: 'matching_clips',
+      dateResolution: 'month',
+    });
+    const result = await runToolContract(gdeltGetTvBreakdown, {
+      query: 'impeachment',
+      breakdownBy: 'station',
+      stations: ['CNN'],
+      normalize: false,
+      startDatetime: '20191215180000',
+      endDatetime: '20200115060000',
+    });
+    expectNotice(
+      result,
+      'Ranking values cover whole UTC months, 2019-12-01T00:00:00Z – 2020-01-31T23:59:59Z, wider than the requested 20191215180000–20200115060000.',
+    );
+  });
+
+  it('puts it ahead of the show notice on a show chart', async () => {
+    mockService({
+      rows: [{ label: 'Anderson Cooper 360', value: 6.0928 }],
+      valueUnit: 'percent_matching_clips',
+      dateResolution: 'day',
+    });
+    const result = await runToolContract(gdeltGetTvBreakdown, {
+      query: 'impeachment',
+      breakdownBy: 'show',
+      stations: ['CNN'],
+      startDatetime: '20191215180000',
+      endDatetime: '20200115060000',
+    });
+    expectNotice(result, `${CNN_DAY} ${SHOW_NOTE}`);
+  });
+
+  it("names it at GDELT's window-length default when the chart reports none", async () => {
+    mockService({
+      rows: [{ label: 'FOX News', value: 154, station: 'FOXNEWS' }],
+      valueUnit: 'matching_clips',
+    });
+    const result = await runToolContract(gdeltGetTvBreakdown, {
+      query: 'impeachment',
+      breakdownBy: 'station',
+      stations: ['FOXNEWS'],
+      normalize: false,
+      startDatetime: '20191218203000',
+      endDatetime: '20191218223000',
+    });
+    expectNotice(
+      result,
+      'Ranking values cover whole clock hours, 2019-12-18T20:00:00Z – 2019-12-18T22:59:59Z, wider than the requested 20191218203000–20191218223000.',
+    );
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    [
+      'both edges sit on period boundaries',
+      { startDatetime: '20191215000000', endDatetime: '20200115235959' },
+    ],
+    ['the call ran on a timespan', { timespan: '1m' }],
+  ])('adds nothing when %s', async (_label, window) => {
+    mockService({
+      rows: [{ label: 'CNN', value: 8293, station: 'CNN' }],
+      valueUnit: 'matching_clips',
+      dateResolution: 'day',
+    });
+    const result = await runToolContract(gdeltGetTvBreakdown, {
+      query: 'impeachment',
+      breakdownBy: 'station',
+      stations: ['CNN'],
+      ...window,
+    } as never);
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).not.toHaveProperty('notice');
+  });
+
+  it('adds nothing on an empty ranking', async () => {
+    mockService({ rows: [], valueUnit: 'matching_clips', dateResolution: 'day' });
+    const result = await runToolContract(gdeltGetTvBreakdown, {
+      query: 'impeachment',
+      breakdownBy: 'station',
+      stations: ['CNN'],
+      startDatetime: '20191215180000',
+      endDatetime: '20200115060000',
+    });
+    const notice = (result.structuredContent as { notice: string }).notice;
+    expect(notice).toMatch(/^No TV rankings for "impeachment"\./);
+    expect(notice).not.toMatch(/cover whole/);
+  });
+
+  it('states the rule on the window and notice descriptions', () => {
+    const shape = gdeltGetTvBreakdown.input.shape;
+    for (const field of [shape.startDatetime, shape.endDatetime]) {
+      expect(field.description).toMatch(
+        /whole UTC periods at the resolution GDELT picks from the window length — clock hours up to 7 days, days under 3 years, months beyond/,
+      );
+    }
+    expect(gdeltGetTvBreakdown.enrichment?.notice?.description).toMatch(
+      /the resolution and the UTC window the values cover/,
+    );
+  });
+});
