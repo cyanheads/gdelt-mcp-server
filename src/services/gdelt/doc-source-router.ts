@@ -16,7 +16,7 @@
 import type { Context } from '@cyanheads/mcp-ts-core';
 import { McpError } from '@cyanheads/mcp-ts-core/errors';
 import { logger, requestContextService } from '@cyanheads/mcp-ts-core/utils';
-import { resolveEffectiveWindow } from '@/mcp-server/tools/date-range.js';
+import { articleSearchTimespan, resolveEffectiveWindow } from '@/mcp-server/tools/date-range.js';
 import { quoteText } from '@/mcp-server/tools/markdown-escape.js';
 import { compileDocQuery } from '../gkg-mirror/doc-query-compiler.js';
 import type { GkgMirrorClient } from '../gkg-mirror/gkg-mirror-client.js';
@@ -76,12 +76,19 @@ export function disposeDocSourceRouter(): void {
 
 // ─── The four DOC calls ───────────────────────────────────────────────────────
 
-/** Search articles (artlist). The tool always supplies `maxRecords` and `sort`. */
+/**
+ * Search articles (artlist). The tool always supplies `maxRecords` and `sort`. DOC is sent the
+ * caller's `timespan`; the mirror is asked for the window artlist searches, which a longer
+ * timespan does not widen past three months.
+ */
 export function routeArticleSearch(
   params: DocSearchParams & Required<Pick<DocSearchParams, 'maxRecords' | 'sort'>>,
   ctx: Context,
 ): Promise<DocRouted<ArticleSearchResult>> {
-  return route(ctx, params, {
+  const searched = params.timespan
+    ? { ...params, timespan: articleSearchTimespan(params.timespan) }
+    : params;
+  return route(ctx, searched, {
     doc: (...options) => getGdeltDocService().searchArticles(params, ctx, ...options),
     isEmpty: (result) => result.articles.length === 0,
     mirrorRequest: (plan, window) => ({

@@ -21,9 +21,11 @@ import {
 import {
   escapeMarkdown,
   markdownLinkDestination,
-  markdownQuote,
+  quoteText,
+  renderNotice,
   renderQueryEcho,
 } from '../markdown-escape.js';
+import { queryInputSchema } from '../query-input.js';
 import {
   DOC_EMPTY_RETRY_NOTE,
   docProvenanceEnrichment,
@@ -138,20 +140,14 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
 
   input: z
     .object({
-      query: z
-        .string()
-        .min(1)
-        .describe(
-          'Search query using GDELT syntax. Same operators as gdelt_search_articles: ' +
-            'phrases, boolean OR, sourcecountry:, sourcelang:, domain:, theme: (GKG theme identifiers ' +
-            'come from gdelt_search_themes).',
-        ),
+      query: queryInputSchema(
+        'Search query using GDELT syntax. Same operators as gdelt_search_articles: phrases, boolean OR, sourcecountry:, sourcelang:, domain:, theme: (GKG theme identifiers come from gdelt_search_themes).',
+      ),
       timespan: z
         .string()
         .optional()
         .describe(
-          'Time window relative to now, minimum "15min"; other examples: "24h", "7d", "1m". ' +
-            'Ignored when startDatetime/endDatetime are set. Maximum 3 months.',
+          'Time window relative to now, a number followed by its unit, minimum "15min"; other examples: "24h", "7d", "1m". Ignored when startDatetime/endDatetime are set. Maximum 3 months.',
         ),
       startDatetime: z
         .string()
@@ -292,6 +288,7 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
   enrichmentTrailer: {
     limitClamp: { render: renderLimitClamp },
     effectiveQuery: { render: renderQueryEcho },
+    notice: { render: renderNotice },
     ...docProvenanceTrailer,
   },
 
@@ -386,8 +383,7 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
     const notices: string[] = [];
     if (isEmpty) {
       notices.push(
-        `No tone data for ${markdownQuote(input.query)}. Broaden the query or extend the time range to include ` +
-          'more matching articles.',
+        `No tone data for ${quoteText(input.query)}. Broaden the query or extend the time range to include more matching articles.`,
       );
       if (!standIn) notices.push(DOC_EMPTY_RETRY_NOTE);
       if (input.bins?.length) {

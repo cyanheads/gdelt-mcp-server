@@ -8,6 +8,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { routeArticleSearch } from '@/services/gdelt/doc-source-router.js';
 import {
+  articleSearchTimespan,
   describeDateRangeFault,
   describeResolvedTimespan,
   GDELT_DATETIME_PATTERN,
@@ -24,13 +25,27 @@ import {
   limitClampSchema,
   renderLimitClamp,
 } from '../limit-clamp.js';
-import { escapeMarkdown, markdownQuote, markdownUrl, renderQueryEcho } from '../markdown-escape.js';
+import {
+  escapeMarkdown,
+  markdownQuote,
+  markdownUrl,
+  quoteText,
+  renderNotice,
+  renderQueryEcho,
+} from '../markdown-escape.js';
+import { queryInputSchema } from '../query-input.js';
 import {
   DOC_EMPTY_RETRY_NOTE,
   docProvenanceEnrichment,
   docProvenanceTrailer,
   mirrorAnswerNotice,
 } from '../source-provenance.js';
+import {
+  discloseWindowClamp,
+  renderWindowClamp,
+  type WindowClamp,
+  windowClampSchema,
+} from '../window-clamp.js';
 
 /**
  * Hard ceiling GDELT's DOC API serves in one article request. Past it there is no offset or
@@ -44,7 +59,11 @@ const articleSchema = z
   .object({
     url: z.string().describe('Article URL.'),
     title: z.string().describe('Article title.'),
-    seendate: z.string().describe('Publication datetime in GDELT format (YYYYMMDDTHHMMSSZ).'),
+    seendate: z
+      .string()
+      .describe(
+        'When GDELT saw the article, in GDELT format (YYYYMMDDTHHMMSSZ) — not its publication time; an old article can carry a recent seendate.',
+      ),
     domain: z.string().describe('Source domain (e.g. "nytimes.com").'),
     language: z.string().describe('Article language (e.g. "English", "Spanish").'),
     sourcecountry: z.string().describe('Country of the source outlet (e.g. "United States").'),
@@ -68,19 +87,24 @@ function renderArticle(a: z.infer<typeof articleSchema>): string {
   return lines.join('\n');
 }
 
+/**
+ * The clamp an article search's timespan takes when DOC searches less than it asks for, or
+ * `undefined` when the timespan runs as sent or an explicit window leaves it unread.
+ */
+function articleTimespanClamp(input: {
+  timespan?: string | undefined;
+  startDatetime?: string | undefined;
+}): WindowClamp | undefined {
+  if (!input.timespan || input.startDatetime) return;
+  const applied = articleSearchTimespan(input.timespan);
+  if (applied === input.timespan) return;
+  return { parameter: 'timespan', requested: input.timespan, applied };
+}
+
 export const gdeltSearchArticles = tool('gdelt_search_articles', {
   title: 'Search GDELT Articles',
   description:
-    'Search the last 3 months of global news coverage (65+ languages) using the GDELT DOC API. ' +
-    'Fetches up to 250 articles with URL, title, source domain, language, country, publication date, and social image URL, ' +
-    'and returns every fetched article inside the requested window. ' +
-    'Query supports full GDELT syntax: phrases ("bird flu"), boolean OR ((flu OR pandemic)), source country (sourcecountry:china), ' +
-    'source language (sourcelang:spanish), domain (domain:who.int), GKG theme (theme:TAX_DISEASE_OUTBREAK — ' +
-    'find identifiers with gdelt_search_themes), ' +
-    'tone filter (tone<-5 for negative), proximity (near20:"flu virus"), and repeat (repeat3:"outbreak"). ' +
-    '250 is a hard per-call ceiling and GDELT offers no cursor: when a query fills it, ' +
-    're-query narrower startDatetime/endDatetime windows — the response hands back the exact windows to use. ' +
-    'Note: this API covers only the most recent 3 months — use gdelt_search_tv for historical TV transcripts back to 2009.',
+    'Search the last 3 months of global news coverage (65+ languages) using the GDELT DOC API. Fetches up to 250 articles with URL, title, source domain, language, country, the date GDELT saw each one, and social image URL, and returns every fetched article inside the requested window. Query supports full GDELT syntax: phrases ("bird flu"), boolean OR ((flu OR pandemic)), source country (sourcecountry:china), source language (sourcelang:spanish), domain (domain:who.int), GKG theme (theme:TAX_DISEASE_OUTBREAK — find identifiers with gdelt_search_themes), tone filter (tone<-5 for negative), proximity (near20:"flu virus"), and repeat (repeat3:"outbreak"). 250 is a hard per-call ceiling and GDELT offers no cursor: when a query fills it, re-query narrower startDatetime/endDatetime windows — the response hands back the exact windows to use. Note: this API covers only the most recent 3 months — use gdelt_search_tv for historical TV transcripts back to 2009.',
   annotations: { readOnlyHint: true, openWorldHint: true },
 
   errors: [
@@ -120,20 +144,14 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
 
   input: z
     .object({
-      query: z
-        .string()
-        .min(1)
-        .describe(
-          'Search query. Supports GDELT operators: phrases ("bird flu"), boolean OR ((flu OR pandemic)), ' +
-            'sourcecountry:china, sourcelang:spanish, domain:who.int, theme:TAX_DISEASE_OUTBREAK (GKG ' +
-            'theme identifiers come from gdelt_search_themes), tone<-5, near20:"flu virus", repeat3:"outbreak".',
-        ),
+      query: queryInputSchema(
+        'Search query. Supports GDELT operators: phrases ("bird flu"), boolean OR ((flu OR pandemic)), sourcecountry:china, sourcelang:spanish, domain:who.int, theme:TAX_DISEASE_OUTBREAK (GKG theme identifiers come from gdelt_search_themes), tone<-5, near20:"flu virus", repeat3:"outbreak".',
+      ),
       timespan: z
         .string()
         .optional()
         .describe(
-          'Time window relative to now, minimum "15min"; other examples: "24h", "7d", "1m". Ignored when startDatetime/endDatetime are set. ' +
-            'Maximum is 3 months (the full DOC API window). Defaults to the full 3-month window.',
+          'Time window relative to now, a number followed by its unit, minimum "15min"; other examples: "24h", "7d", "1m". Ignored when startDatetime/endDatetime are set. Article search reaches back 3 months, the full DOC API window: a longer timespan is sent as given and runs on 3 months, disclosed in windowClamp. Defaults to the full 3-month window.',
         ),
       startDatetime: z
         .string()
@@ -177,6 +195,7 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
     effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
     totalCount: z.number().describe('Number of articles returned in this response.'),
     timespan: z.string().optional().describe('Echoed timespan parameter when provided.'),
+    windowClamp: windowClampSchema,
     limitClamp: limitClampSchema,
     notice: z
       .string()
@@ -205,7 +224,9 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
   enrichmentTrailer: {
     effectiveQuery: { render: renderQueryEcho },
     timespan: { render: (timespan = '') => `**timespan:** ${markdownQuote(timespan)}` },
+    windowClamp: { render: renderWindowClamp },
     limitClamp: { render: renderLimitClamp },
+    notice: { render: renderNotice },
     continuationWindows: { render: renderContinuationWindows },
     ...docProvenanceTrailer,
   },
@@ -234,9 +255,11 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
     // dropped: the drop never removes an article inside the caller's window,
     // and it keeps a continuation walk convergent whatever DOC does at the edge. A timespan
     // window is resolved by GDELT against its own clock and is left alone. The cap is judged on
-    // the upstream count.
+    // the upstream count. A timespan longer than DOC's reach resolves as the reach it ran on.
     const upstream = result.articles;
-    const window = resolveEffectiveWindow(input);
+    const clamp = articleTimespanClamp(input);
+    const searched = clamp ? { ...input, timespan: clamp.applied } : input;
+    const window = resolveEffectiveWindow(searched);
     const pinned = input.startDatetime && input.endDatetime ? window : undefined;
     const fetched = pinned
       ? upstream.filter((a) => {
@@ -249,18 +272,21 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
     const capHit = upstream.length >= maxRecords;
     const broaden = pinned
       ? `Broaden the query, remove operators, widen the ${pinned.startDatetime}–${pinned.endDatetime} window, or try synonym terms.`
-      : 'Broaden the query, remove operators, extend the timespan, or try synonym terms.';
+      : clamp
+        ? 'Broaden the query, remove operators, or try synonym terms; article search reaches back no further than 3 months.'
+        : 'Broaden the query, remove operators, extend the timespan, or try synonym terms.';
 
     ctx.enrich.echo(input.query);
     ctx.enrich.total(articles.length);
     if (input.timespan) ctx.enrich({ timespan: input.timespan });
+    if (clamp) discloseWindowClamp(ctx, clamp);
 
     // Every notice segment for this response accumulates here and is flushed once —
     // ctx.enrich.notice is last-wins, so a second call would silently drop the first.
     const notices: string[] = [];
     if (upstream.length === 0) {
       notices.push(
-        `No articles matched ${markdownQuote(input.query)}.${describeResolvedTimespan(input)} ${broaden}`,
+        `No articles matched ${quoteText(input.query)}.${describeResolvedTimespan(searched)} ${broaden}`,
       );
       if (!standIn) notices.push(DOC_EMPTY_RETRY_NOTE);
     } else if (capHit) {
@@ -286,7 +312,7 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
           'not a sign of missing results.',
       );
       if (fetched.length === 0)
-        notices.push(`No article was published inside the window. ${broaden}`);
+        notices.push(`No returned article is dated inside the window. ${broaden}`);
     }
     if (standIn) notices.push(mirrorAnswerNotice(standIn));
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));

@@ -483,7 +483,7 @@ const DOC_TIMESPAN_TOOLS = [
   },
 ] as const;
 
-describe('DOC timespan minimum — enforced at the schema edge', () => {
+describe('DOC timespan minimum and shape — enforced at the schema edge', () => {
   for (const { name, tool, base } of DOC_TIMESPAN_TOOLS) {
     describe(name, () => {
       it.each(['1min', '14min', '0h', '0d', '0m', '0y'])(
@@ -502,6 +502,59 @@ describe('DOC timespan minimum — enforced at the schema edge', () => {
 
       it('preserves unparsed syntax for the upstream classifier fallback', () => {
         expect(() => tool.input.parse({ ...base, timespan: '15mins' })).not.toThrow();
+      });
+
+      /** Wiring only — the shape table is `refineDocTimespan` in `tests/tools/date-range.test.ts`. */
+      it('refuses an active timespan that is not a number followed by a unit', () => {
+        expect(() => tool.input.parse({ ...base, timespan: 'banana' })).toThrow(
+          /numeric timespan followed by its unit/,
+        );
+      });
+
+      it('keeps a bare number for GDELT to read', () => {
+        expect(tool.input.parse({ ...base, timespan: '60' }).timespan).toBe('60');
+      });
+    });
+  }
+});
+
+/**
+ * Wiring only — the blank-query table is `tests/tools/query-input.test.ts`. A refused call never
+ * reaches the handler, whose DOC service is uninitialized here: a regression surfaces as a
+ * different error, never as the -32602 these cases expect.
+ */
+describe('DOC query — a blank one refused at the schema edge', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  for (const { name, tool, base } of DOC_TIMESPAN_TOOLS) {
+    describe(name, () => {
+      it('refuses a whitespace-only query before any request', async () => {
+        const fetch = vi.spyOn(globalThis, 'fetch');
+        const result = await runToolContract(
+          tool as unknown as Parameters<typeof runToolContract>[0],
+          { ...base, query: ' \n ' } as never,
+        );
+        expect(result).toMatchObject({
+          isError: true,
+          structuredContent: { error: { code: -32602, data: { reason: 'invalid_arguments' } } },
+        });
+        expect(contentText(result)).toContain(
+          'query must contain at least one non-whitespace character.',
+        );
+        expect(fetch).not.toHaveBeenCalled();
+      });
+
+      it('keeps a padded query unchanged', () => {
+        expect(tool.input.parse({ ...base, query: ' climate ' }).query).toBe(' climate ');
+      });
+
+      it('advertises the rule as a pattern on query', () => {
+        expect(z.toJSONSchema(tool.input).properties?.query).toMatchObject({
+          type: 'string',
+          pattern: '\\S',
+        });
       });
     });
   }

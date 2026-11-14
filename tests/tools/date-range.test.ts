@@ -5,19 +5,26 @@
  * @module tests/tools/date-range.test
  */
 
-import { describe, expect, it } from 'vitest';
+import { z } from '@cyanheads/mcp-ts-core';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  articleSearchTimespan,
   describeDateRangeFault,
+  describeResolvedTimespan,
+  describeTvTimespanFault,
   isUnpairedDateRange,
   isWithinWindow,
   parseRecordTimestamp,
   planTvWindowContinuation,
   planWindowContinuation,
+  refineDocTimespan,
   resolveEffectiveWindow,
   splitWindow,
   toGdeltDatetime,
   tvRequestWindow,
 } from '@/mcp-server/tools/date-range.js';
+import { defaultTvResolution } from '@/mcp-server/tools/tv-covered-window.js';
+import { expectLinearCost, fill, REGEX_SAFE_SIZES } from '../helpers/linear-cost.js';
 
 /** Seconds covered by a window, per GDELT's documented exclusive boundaries. */
 function coveredSeconds({
@@ -141,6 +148,195 @@ describe('resolveEffectiveWindow', () => {
     // A lone boundary is rejected upstream by isUnpairedDateRange; never treat it as a window.
     expect(resolveEffectiveWindow({ startDatetime: '20240101000000' })).toBeUndefined();
   });
+
+  /**
+   * The helpers every TV tool's empty-result notice and the DOC router's mirror window run on: a
+   * timespan reaching back past what a Date holds resolves to no window and no sentence.
+   */
+  it('resolves no window and no notice sentence for a start no Date holds', () => {
+    expect(resolveEffectiveWindow({ timespan: '99999999999d' })).toBeUndefined();
+    expect(describeResolvedTimespan({ timespan: '99999999999d' })).toBe('');
+  });
+});
+
+/**
+ * The relative timespan forms every tool sends upstream verbatim: blank (unset), the documented DOC
+ * forms, the TV-only `y` unit, any case, outer whitespace, zero-padding, and number-plus-unit syntax
+ * this server does not resolve, which stays GDELT's to read.
+ */
+const NUMBER_THEN_UNIT = [
+  '',
+  '   ',
+  '15min',
+  '1h',
+  '1H',
+  '24hours',
+  '1d',
+  '1D',
+  '7days',
+  '1w',
+  '1week',
+  '2weeks',
+  '1m',
+  '3months',
+  '1y',
+  ' 1d ',
+  '01d',
+  '15mins',
+  '1hour',
+  '1.5d',
+  '-1d',
+  '+1d',
+  '1 d',
+] as const;
+
+/** Text with no leading number — no relative window any GDELT API reads. */
+const NOT_A_TIMESPAN = ['banana', 'd', 'garbage', 'min15'] as const;
+
+/** A number and a unit with more text after them: the shape is anchored at both ends. */
+const TEXT_AFTER_UNIT = ['7d foo', '24h!', '1d x', '15min;', '1d\nx'] as const;
+
+describe('describeTvTimespanFault', () => {
+  it.each(NUMBER_THEN_UNIT)('passes %j', (timespan) => {
+    expect(describeTvTimespanFault({ timespan })).toBeUndefined();
+  });
+
+  it.each([...NOT_A_TIMESPAN, ...TEXT_AFTER_UNIT, '60', '0'])(
+    'refuses %j while relative time is used',
+    (timespan) => {
+      expect(describeTvTimespanFault({ timespan })).toBe(
+        'Use a numeric timespan followed by its unit, such as "24hours", "7d" or "1m", or supply startDatetime and endDatetime together.',
+      );
+    },
+  );
+
+  it('ignores any timespan once both explicit boundaries are set', () => {
+    expect(
+      describeTvTimespanFault({
+        timespan: 'banana',
+        startDatetime: '20240101000000',
+        endDatetime: '20240102000000',
+      }),
+    ).toBeUndefined();
+  });
+});
+
+/** `refineDocTimespan` as every DOC tool's input schema applies it. */
+const docWindowSchema = z
+  .object({
+    timespan: z.string().optional(),
+    startDatetime: z.string().optional(),
+    endDatetime: z.string().optional(),
+  })
+  .superRefine(refineDocTimespan);
+
+/** The issue messages a DOC window input draws, or `[]` when it parses. */
+function docTimespanIssues(input: Record<string, string>): string[] {
+  const parsed = docWindowSchema.safeParse(input);
+  return parsed.success ? [] : parsed.error.issues.map((issue) => issue.message);
+}
+
+describe('refineDocTimespan', () => {
+  it.each([...NUMBER_THEN_UNIT, '60', '0060'])('passes active %j', (timespan) => {
+    expect(docTimespanIssues({ timespan })).toEqual([]);
+  });
+
+  it.each([...NOT_A_TIMESPAN, ...TEXT_AFTER_UNIT])(
+    'refuses active %j as not a number followed by a unit',
+    (timespan) => {
+      expect(docTimespanIssues({ timespan })).toEqual([
+        'Use a numeric timespan followed by its unit, such as "24hours", "7d" or "1m", or supply startDatetime and endDatetime together.',
+      ]);
+    },
+  );
+
+  it.each(['0d', '14min', '0y'])('refuses active %j under the 15-minute minimum', (timespan) => {
+    expect(docTimespanIssues({ timespan })).toEqual([
+      'DOC timespan must be at least 15 minutes; use "15min" or a longer window.',
+    ]);
+  });
+
+  /** A lone boundary leaves the timespan unread too: the handler's date-range guard owns that call. */
+  it.each([
+    { startDatetime: '20240101000000', endDatetime: '20240102000000' },
+    { startDatetime: '20240101000000' },
+    { endDatetime: '20240102000000' },
+  ])('ignores banana and 0d beside %j', (dates) => {
+    expect(docTimespanIssues({ timespan: 'banana', ...dates })).toEqual([]);
+    expect(docTimespanIssues({ timespan: '0d', ...dates })).toEqual([]);
+  });
+});
+
+/**
+ * One trim and one anchored shape match per check, then — for DOC — the unit parse: each gives
+ * back a run it matched at most once, so the cost grows with the timespan's length, never its
+ * square. The digit run passes DOC's check as a bare number and is refused by TV's.
+ */
+describe('timespan shape checks — cost on caller-sized values', () => {
+  it('stays linear in the timespan length', () => {
+    expectLinearCost(
+      [
+        ['a long digit run', (n) => '1'.repeat(n)],
+        [
+          'digits, then spaces, then a stray mark',
+          (n) => `${fill('1', n / 2)}${fill(' ', n / 2 - 1)}!`,
+          REGEX_SAFE_SIZES,
+        ],
+        ['one long line ending in a break', (n) => `${fill('§1 x', n - 2)}\ny`],
+        ['breaks throughout', (n) => fill('  \r\n', n), REGEX_SAFE_SIZES],
+      ],
+      (timespan) => {
+        docWindowSchema.safeParse({ timespan });
+        describeTvTimespanFault({ timespan });
+      },
+    );
+  }, 0);
+});
+
+/**
+ * Three UTC months before 2026-11-14T12:00:00Z is 2026-08-14T12:00:00Z: 92 days, 13 weeks and a
+ * day, 2208 hours.
+ */
+describe('articleSearchTimespan', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-14T12:00:00Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it.each(['1y', '1Y', ' 1y ', '2years', '6m', '4months', '93d', '14w', '2209h'])(
+    'runs %j on three months',
+    (timespan) => {
+      expect(articleSearchTimespan(timespan)).toBe('3months');
+    },
+  );
+
+  /** `99999999999d` reaches back past what a Date holds, so like `1year` it resolves to no window. */
+  it.each([
+    '3months',
+    '3m',
+    '92d',
+    '13w',
+    '2208h',
+    '1m',
+    '24h',
+    '15min',
+    '15mins',
+    '1year',
+    '1.5d',
+    '99999999999d',
+  ])('runs %j as sent', (timespan) => {
+    expect(articleSearchTimespan(timespan)).toBe(timespan);
+  });
+
+  /** The calendar decides: on 2026-03-31 three months back is 2025-12-31, 90 days. */
+  it('measures three months on the calendar at now', () => {
+    vi.setSystemTime(new Date('2026-03-31T00:00:00Z'));
+    expect(articleSearchTimespan('90d')).toBe('90d');
+    expect(articleSearchTimespan('91d')).toBe('3months');
+  });
 });
 
 describe('splitWindow', () => {
@@ -248,25 +444,42 @@ describe('isWithinWindow', () => {
 
 /**
  * Measured live: GDELT TV floors a window's start to the clock hour, includes the end's hour
- * in full, and rejects a window spanning under 30 minutes (20 rejected, 30 accepted).
+ * in full, and rejects a window spanning under 30 minutes (20 rejected, 30 accepted). It picks
+ * the period from the span it is sent — 7 days answered hourly, 7 days and a second daily — so
+ * a floored start that lengthens the span past a threshold coarsens the whole answer.
  */
 describe('tvRequestWindow', () => {
   it.each([
     ['20240116010500', '20240116012000', '20240116010000', '20240116015959'],
     ['20240116011900', '20240116013800', '20240116010000', '20240116015959'],
+    // Just under 30 minutes.
+    ['20240116010500', '20240116013459', '20240116010000', '20240116015959'],
     ['20240116015959', '20240116020001', '20240116010000', '20240116020001'],
-    ['20240116010500', '20240116031000', '20240116010000', '20240116031000'],
+    // Just under two hours, still floored; two hours and longer go out as given.
+    ['20240116010500', '20240116030459', '20240116010000', '20240116030459'],
+    ['20240116010500', '20240116030500', '20240116010500', '20240116030500'],
+    ['20240116010500', '20240116031000', '20240116010500', '20240116031000'],
     // An end exactly on the hour would pull in that whole next hour for one second: it is
     // sent a second earlier, and that second — excluded, as GDELT documents ENDDATETIME — goes.
     ['20240116010000', '20240116020000', '20240116010000', '20240116015959'],
     ['20240116000000', '20240116010000', '20240116000000', '20240116005959'],
     ['20240116003000', '20240116020000', '20240116000000', '20240116015959'],
+    ['20240116003000', '20240116030000', '20240116003000', '20240116025959'],
+    // Exactly 7 days, on and off the hour: both answered hourly.
+    ['20191215000000', '20191222000000', '20191215000000', '20191221235959'],
+    ['20191215003000', '20191222003000', '20191215003000', '20191222003000'],
+    // Ten minutes short of 3 × 365 days: answered daily, as the caller's span is.
+    ['20170101003000', '20200101002000', '20170101003000', '20200101002000'],
   ])('sends %s–%s as %s–%s', (start, end, sentStart, sentEnd) => {
     const sent = tvRequestWindow({ startDatetime: start, endDatetime: end });
     expect(sent).toEqual({ startDatetime: sentStart, endDatetime: sentEnd });
-    // Always a span GDELT accepts, and never an hour the caller's window does not reach.
+    // Always a span GDELT accepts, never an hour the caller's window does not reach, and
+    // never a span answered at a coarser period than the caller's own.
     expect(spanOf(sent)).toBeGreaterThanOrEqual(30 * 60);
     expect(hoursOf(sent)).toEqual(hoursOf({ startDatetime: start, endDatetime: lastSecond(end) }));
+    expect(defaultTvResolution(sent)).toBe(
+      defaultTvResolution({ startDatetime: start, endDatetime: end }),
+    );
   });
 });
 
@@ -280,6 +493,21 @@ describe('planTvWindowContinuation', () => {
       { startDatetime: '20240116011500', endDatetime: '20240116025959' },
       { startDatetime: '20240116030000', endDatetime: '20240116045000' },
     ]);
+  });
+
+  /** A half over 7 days is answered in whole UTC days, so the guidance names no single period. */
+  it('tells the halves of a window over 7 days they are answered in whole UTC periods', () => {
+    const plan = planTvWindowContinuation({
+      startDatetime: '20191201000000',
+      endDatetime: '20191215000000',
+    });
+    expect(plan.windows).toEqual([
+      { startDatetime: '20191201000000', endDatetime: '20191207235959' },
+      { startDatetime: '20191208000000', endDatetime: '20191215000000' },
+    ]);
+    expect(plan.guidance).toBe(
+      'GDELT exposes no offset or cursor. Re-run this query unchanged against each half of the current window — 20191201000000–20191207235959, then 20191208000000–20191215000000 (both echoed in continuationWindows) — and split a half again if it also hits the cap. The TV API answers in whole UTC periods and each response keeps only its own window, so the halves share no second and no clip.',
+    );
   });
 
   it('gives disjoint hour sets to the two halves, so a capped hour is never fetched twice', () => {
@@ -297,8 +525,9 @@ describe('planTvWindowContinuation', () => {
       endDatetime: '20240116013800',
     });
     expect(plan.windows).toBeUndefined();
-    expect(plan.guidance).toMatch(/whole clock hours/);
-    expect(plan.guidance).toMatch(/not retrievable/);
+    expect(plan.guidance).toBe(
+      'No clock hour falls inside the window 20240116010000–20240116013800, and the TV API answers in whole clock hours, so every narrower window inside it fetches the same capped set — the remaining clips are not retrievable through this API.',
+    );
   });
 
   /** `[00:00, 01:00:00]` is sent as hour 00 alone, so it is a single-hour window. */

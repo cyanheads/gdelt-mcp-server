@@ -1107,4 +1107,62 @@ describe('each DOC call', () => {
 
     expect(mirror.execute.mock.calls[0]?.[0].window).toEqual(window);
   });
+
+  /** Artlist searches three months, whatever timespan it is sent; DOC still gets the caller's value. */
+  it('asks the mirror for three months on an article search with a longer timespan', async () => {
+    const mirror = attachMirror();
+    answerDoc(() => refused);
+
+    await settle(routeArticleSearch({ ...SEARCH, timespan: '1y' }, createMockContext()));
+
+    expect(mirror.execute.mock.calls[0]?.[0].window).toEqual({
+      startDatetime: '20260801120000',
+      endDatetime: '20261101120000',
+    });
+    expect(new URL(String(upstream.mock.calls[0]?.[0])).searchParams.get('timespan')).toBe('1y');
+  });
+
+  it('asks the mirror for the whole longer timespan on a timeline call', async () => {
+    const mirror = attachMirror({ respond: answered({ kind: 'timeline', result: [] }, 0) });
+    answerDoc(() => refused);
+
+    await settle(
+      routeTimeline({ query: 'climate', mode: 'timelinevol', timespan: '1y' }, createMockContext()),
+    );
+
+    expect(mirror.execute.mock.calls[0]?.[0].window).toEqual({
+      startDatetime: '20251101120000',
+      endDatetime: '20261101120000',
+    });
+  });
+
+  /** A window reaching back past what a Date holds has no window to ask the mirror for. */
+  it("keeps DOC's refusal for a timespan whose start no Date holds", async () => {
+    const mirror = attachMirror();
+    answerDoc(() => refused);
+
+    const { error } = await settle(
+      routeTimeline(
+        { query: 'climate', mode: 'timelinevol', timespan: '99999999999d' },
+        createMockContext(),
+      ),
+    );
+
+    expect(error).toBeInstanceOf(McpError);
+    expect(error?.data).toMatchObject({
+      reason: 'gdelt_rate_limited',
+      attempts: [
+        { source: 'doc_api', outcome: 'rate_limited' },
+        {
+          source: 'gkg_mirror',
+          outcome: 'not_compiled',
+          detail: 'It cannot resolve timespan "99999999999d" to a window.',
+        },
+      ],
+    });
+    expect(new URL(String(upstream.mock.calls[0]?.[0])).searchParams.get('timespan')).toBe(
+      '99999999999d',
+    );
+    expect(mirror.execute).not.toHaveBeenCalled();
+  });
 });

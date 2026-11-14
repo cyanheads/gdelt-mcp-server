@@ -117,6 +117,27 @@ describe('resolveTimespan', () => {
     expect(resolveTimespan('1futureunit')).toBeUndefined();
     expect(resolveTimespan('')).toBeUndefined();
   });
+
+  /**
+   * A Date holds 8.64e15 ms either side of the epoch: a window reaching back past that, or an
+   * amount too long for a number, has no start to resolve. A day count that still fits resolves
+   * as before.
+   */
+  it.each([
+    ['99999999999d', '99999999999d'],
+    ['1000000y', '1000000y'],
+    ['999999999999min', '999999999999min'],
+    ['a 401-digit hour count', `1${'0'.repeat(400)}h`],
+  ])('returns undefined for %s, whose start no Date holds', (_label, timespan) => {
+    expect(resolveTimespan(timespan)).toBeUndefined();
+  });
+
+  it('still resolves a day count a Date holds', () => {
+    expect(resolveTimespan('100000000d')).toEqual({
+      start: new Date(Date.parse(NOW) - 100_000_000 * 86_400_000),
+      end: new Date(NOW),
+    });
+  });
 });
 
 describe('formatDateShort', () => {
@@ -235,10 +256,14 @@ describe('parseGdeltJson', () => {
         hint: /double quotes/i,
       },
       {
-        trigger: 'timespan below the DOC minimum',
+        /**
+         * DOC answers a sub-15-minute timespan and a short explicit window (16 minutes) with the
+         * same body, so the one hint names both and keeps "15min" off the explicit-window branch.
+         */
+        trigger: 'a timespan or explicit window below the DOC minimum',
         body: 'Timespan is too short.',
         apiLabel: 'GDELT DOC',
-        hint: /^The GDELT DOC API.*at least 15 minutes/,
+        hint: /^The GDELT DOC API rejects a relative timespan under 15 minutes and an explicit window it considers too short\. Lengthen the window the call set: a timespan of at least 15 minutes, or a startDatetime\/endDatetime window of an hour or more\.$/,
       },
       {
         trigger: 'window below the TV minimum (a 20-minute explicit window, measured live)',
@@ -257,6 +282,42 @@ describe('parseGdeltJson', () => {
         body: 'Invalid Station: telemundo\n',
         apiLabel: 'GDELT TV',
         hint: /gdelt_list_tv_stations/,
+      },
+      {
+        trigger: 'a DOC-only operator on Context (sourcecountry:, measured live)',
+        body: 'One or more of your keywords were too short, too long or too common: (sourcecountry:france)\n',
+        apiLabel: 'GDELT Context',
+        hint: /^The Context API refuses the DOC-only operators sourcecountry:, theme:, and tone filters with this message: run those on gdelt_search_articles\. Otherwise remove or replace/,
+      },
+      {
+        trigger: 'the same keywords rejection on DOC',
+        body: 'One or more of your keywords were too short, too long or too common: (sourcecountry:france)\n',
+        apiLabel: 'GDELT DOC',
+        hint: /^Remove or replace the overly short, overly long, or overly common keyword, then retry the original query structure\.$/,
+      },
+      {
+        trigger: 'a start older than the 72-hour reach on Context (measured live)',
+        body: 'Invalid query start date.\n',
+        apiLabel: 'GDELT Context',
+        hint: /^The Context API reaches back only 72 hours\. .*gdelt_search_articles for older coverage\.$/,
+      },
+      {
+        trigger: 'a start before the archive on DOC',
+        body: 'Invalid query start date.\n',
+        apiLabel: 'GDELT DOC',
+        hint: /^Check the requested date window and timespan syntax\./,
+      },
+      {
+        trigger: 'sourcelang: on Context (measured live)',
+        body: 'Invalid/Unsupported Language.\n',
+        apiLabel: 'GDELT Context',
+        hint: /^The Context API returns English-language coverage and refuses sourcelang:\. .*gdelt_search_articles/,
+      },
+      {
+        trigger: 'an unknown source language on DOC',
+        body: 'Invalid/Unsupported Language.\n',
+        apiLabel: 'GDELT DOC',
+        hint: /^GDELT does not recognize the language in sourcelang:\. Spell the language name out in English, such as sourcelang:spanish\.$/,
       },
     ] as const;
 

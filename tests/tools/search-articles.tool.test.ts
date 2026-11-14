@@ -5,7 +5,7 @@
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltSearchArticles } from '@/mcp-server/tools/definitions/search-articles.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
 import { initGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
@@ -573,7 +573,7 @@ describe('gdeltSearchArticles', () => {
       const sc = result.structuredContent as ArticlePage;
       expect(sc.articles).toEqual([]);
       expect(sc.notice).toMatch(/returned 1 article dated outside/);
-      expect(sc.notice).toMatch(/No article was published inside the window/);
+      expect(sc.notice).toMatch(/No returned article is dated inside the window\./);
       expect(sc.notice).toMatch(/[Bb]roaden the query/);
     });
 
@@ -964,6 +964,119 @@ describe('gdelt_search_articles DOC source routing', () => {
       },
     });
     expect(contentText(result)).toContain(`Recovery: ${hint}`);
+  });
+});
+
+/**
+ * DOC's article search reaches back three months whatever timespan it is sent. Wiring only: the
+ * timespan table is `articleSearchTimespan` in `tests/tools/date-range.test.ts`. The real DOC
+ * service runs with `fetch` stubbed; only `Date` is faked, at 2026-11-14T12:00:00Z, three UTC
+ * months after 2026-08-14T12:00:00Z.
+ */
+describe('gdelt_search_articles timespan past the three-month reach', () => {
+  const doc = useRoutedDoc();
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-14T12:00:00Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const CLAMP = { parameter: 'timespan', requested: '1y', applied: '3months' } as const;
+  const CLAMP_LINE = `**Window clamped:** timespan "1y" → "3months" (beyond the API's reach)`;
+  const sent = () => new URL(String(vi.mocked(globalThis.fetch).mock.calls[0]?.[0])).searchParams;
+
+  it('resolves an empty answer over three months, disclosing the clamp on both surfaces', async () => {
+    doc.answerDoc({ body: {} });
+
+    const result = await runToolContract(gdeltSearchArticles, { query: 'climate', timespan: '1y' });
+
+    const notice = `No articles matched "climate". Timespan "3months" resolved to 2026-08-14 – 2026-11-14. Broaden the query, remove operators, or try synonym terms; article search reaches back no further than 3 months. ${OVERLOAD_RETRY_SENTENCE}`;
+    expect(result.structuredContent).toEqual({
+      articles: [],
+      effectiveQuery: 'climate',
+      totalCount: 0,
+      timespan: '1y',
+      windowClamp: CLAMP,
+      notice,
+    });
+    const text = contentText(result);
+    expect(text).toContain(CLAMP_LINE);
+    expect(text).toContain('**timespan:** "1y"');
+    expect(text).toContain(`> ${notice}`);
+    expect(sent().get('timespan')).toBe('1y');
+  });
+
+  it('halves three months for continuation at the 250 ceiling', async () => {
+    doc.answerDoc({
+      body: {
+        articles: Array.from({ length: 250 }, (_, i) => ({ ...ARTICLE, url: `https://e.co/${i}` })),
+      },
+    });
+
+    const result = await runToolContract(gdeltSearchArticles, {
+      query: 'climate',
+      timespan: '1y',
+      maxRecords: 250,
+    });
+
+    const sc = result.structuredContent as Record<string, unknown>;
+    expect(sc.windowClamp).toEqual(CLAMP);
+    expect(sc.continuationWindows).toEqual([
+      { startDatetime: '20260814120000', endDatetime: '20260929120000' },
+      { startDatetime: '20260929115959', endDatetime: '20261114120000' },
+    ]);
+    const text = contentText(result);
+    expect(text).toContain(CLAMP_LINE);
+    expect(text).toContain('- startDatetime: 20260814120000, endDatetime: 20260929120000');
+    expect(sent().get('timespan')).toBe('1y');
+  });
+
+  it.each([
+    ['a three-month timespan', { timespan: '3months' }],
+    ['a longer timespan beside an explicit window', { timespan: '1y', ...ROUTED_WINDOW }],
+  ])('discloses no clamp for %s', async (_label, window) => {
+    doc.answerDoc({ body: {} });
+
+    const result = await runToolContract(gdeltSearchArticles, { query: 'climate', ...window });
+
+    expect(result.structuredContent).not.toHaveProperty('windowClamp');
+    expect(contentText(result)).not.toContain('Window clamped');
+  });
+
+  it('keeps the timespan guidance on an empty three-month answer', async () => {
+    doc.answerDoc({ body: {} });
+
+    const result = await runToolContract(gdeltSearchArticles, {
+      query: 'climate',
+      timespan: '3months',
+    });
+
+    expect((result.structuredContent as { notice?: string }).notice).toBe(
+      `No articles matched "climate". Timespan "3months" resolved to 2026-08-14 – 2026-11-14. Broaden the query, remove operators, extend the timespan, or try synonym terms. ${OVERLOAD_RETRY_SENTENCE}`,
+    );
+  });
+
+  it('declares windowClamp and names the reach in the timespan description', () => {
+    expect(gdeltSearchArticles.enrichment?.windowClamp).toBeDefined();
+    const timespan = (gdeltSearchArticles.input.shape as { timespan: { description?: string } })
+      .timespan.description;
+    expect(timespan).toMatch(/longer timespan is sent as given and runs on 3 months.*windowClamp/);
+  });
+
+  /** The caller's timespan goes upstream here, so windowClamp names the window searched, not the wire value. */
+  it('describes applied as the window the search ran on', () => {
+    const field = gdeltSearchArticles.enrichment?.windowClamp as unknown as {
+      description?: string;
+      unwrap(): { shape: { applied: { description?: string } } };
+    };
+    expect(field.description).toBe(
+      'Present only when the requested window reached further back than the API searches: the search ran on the applied window instead, and every count, notice, and continuation in this response reflects it. Absent when the search ran on the window requested.',
+    );
+    expect(field.unwrap().shape.applied.description).toBe(
+      'The window the search ran on, in the form of the requested value.',
+    );
   });
 });
 

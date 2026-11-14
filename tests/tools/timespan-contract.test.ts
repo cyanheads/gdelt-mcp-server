@@ -52,7 +52,7 @@ describe('DOC explicit-window precedence', () => {
         ...(tool === gdeltGetCoverageTimeline ? { mode: 'volume' as const } : {}),
         ...(tool === gdeltGetCoverageBreakdown ? { breakdownBy: 'country' as const } : {}),
       };
-      it.each(['1min', '0d', '0days', '0hours', '0weeks', '0months', '0years'])(
+      it.each(['1min', '0d', '0days', '0hours', '0weeks', '0months', '0years', 'banana', 'd'])(
         'ignores unused %s and makes one request',
         async (timespan) => {
           const fetch = arrange();
@@ -80,6 +80,25 @@ describe('DOC explicit-window precedence', () => {
         });
         expect(contentText(result)).toMatch(/15 minutes/);
         expect(fetch).not.toHaveBeenCalled();
+      });
+      it('rejects active banana before I/O', async () => {
+        const fetch = arrange();
+        const result = await runToolContract(tool, { ...base, timespan: 'banana' });
+        expect(result).toMatchObject({
+          isError: true,
+          structuredContent: { error: { code: -32602, data: { reason: 'invalid_arguments' } } },
+        });
+        expect(contentText(result)).toMatch(/numeric timespan followed by its unit/);
+        expect(fetch).not.toHaveBeenCalled();
+      });
+      it.each(['60', ' 1d '])('sends active %j upstream verbatim', async (timespan) => {
+        const fetch = arrange();
+        const result = await runToolContract(tool, { ...base, timespan });
+        expect(result.isError).not.toBe(true);
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(new URL(String(fetch.mock.calls[0]?.[0])).searchParams.get('timespan')).toBe(
+          timespan,
+        );
       });
       it.each([
         { startDatetime: '20261015000000' },

@@ -12,7 +12,7 @@ import {
   parseGdeltTimespan,
   resolveTimespan,
 } from '@/services/gdelt/gdelt-fetch.js';
-import { markdownQuote } from './markdown-escape.js';
+import { quoteText } from './markdown-escape.js';
 
 /**
  * GDELT's datetime wire format: exactly 14 digits, YYYYMMDDHHMMSS, no separators.
@@ -36,9 +36,37 @@ const TIMESPAN_UNIT_MINUTES = {
 } as const;
 
 /**
+ * The shape of a relative timespan on the DOC and TV APIs, applied to the trimmed value: a number,
+ * then its unit. The unit is captured, not checked, so number-plus-unit syntax this server does not
+ * resolve (`15mins`, `1.5d`) stays GDELT's to read.
+ */
+const TIMESPAN_SHAPE = /^[+-]?\d+(?:\.\d+)?\s*([a-z]*)$/i;
+
+const TIMESPAN_SHAPE_FAULT =
+  'Use a numeric timespan followed by its unit, such as "24hours", "7d" or "1m", or supply startDatetime and endDatetime together.';
+
+/**
+ * The fault in a relative timespan's shape, or `undefined` when it has none: text with no leading
+ * number is no window either API reads, and a bare number is refused unless `bareNumber` admits it.
+ * A blank value is unset.
+ */
+function describeTimespanShapeFault(
+  timespan: string | undefined,
+  bareNumber: 'admit' | 'refuse',
+): string | undefined {
+  const value = timespan?.trim();
+  if (!value) return;
+  const unit = TIMESPAN_SHAPE.exec(value)?.[1];
+  if (unit === undefined || (unit === '' && bareNumber === 'refuse')) return TIMESPAN_SHAPE_FAULT;
+  return;
+}
+
+/**
  * Validate only an active DOC relative window. Explicit boundaries are handled by the
  * date-range guard, so an unused timespan cannot reject a valid pair or hide a date fault.
- * Unknown syntax remains available to GDELT and its response classifier.
+ * Text that is not a number followed by a unit is refused by the shape TV applies; a bare number
+ * goes upstream, as GDELT DOC's answer to one is unmeasured. Unknown number-plus-unit syntax
+ * remains available to GDELT and its response classifier.
  */
 export function refineDocTimespan(
   input: {
@@ -49,6 +77,11 @@ export function refineDocTimespan(
   ctx: z.RefinementCtx,
 ): void {
   if (input.startDatetime || input.endDatetime || !input.timespan) return;
+  const shapeFault = describeTimespanShapeFault(input.timespan, 'admit');
+  if (shapeFault) {
+    ctx.addIssue({ code: 'custom', path: ['timespan'], message: shapeFault });
+    return;
+  }
   const parsed = parseGdeltTimespan(input.timespan);
   if (!parsed) return;
   if (parsed.amount * TIMESPAN_UNIT_MINUTES[parsed.unit] < GDELT_DOC_MIN_TIMESPAN_MINUTES) {
@@ -67,9 +100,30 @@ export function describeTvTimespanFault(args: {
   endDatetime?: string | undefined;
 }): string | undefined {
   if (args.startDatetime && args.endDatetime) return;
-  const value = args.timespan?.trim();
-  if (!value || /^[+-]?\d+(?:\.\d+)?\s*[a-z]+$/i.test(value)) return;
-  return 'Use a numeric timespan followed by its unit, such as "24hours", "7d" or "1m", or supply startDatetime and endDatetime together.';
+  return describeTimespanShapeFault(args.timespan, 'refuse');
+}
+
+/** How far back DOC's article search reaches, in UTC calendar months — its default and its longest. */
+const DOC_ARTICLE_REACH_MONTHS = 3;
+
+/** {@link DOC_ARTICLE_REACH_MONTHS} as a timespan. */
+const DOC_ARTICLE_REACH = `${DOC_ARTICLE_REACH_MONTHS}months`;
+
+/**
+ * The timespan DOC's article search runs on: `timespan` itself, or `3months` when it resolves to
+ * a longer window. GDELT documents three months as the DOC window, and artlist answered `1y`
+ * sorted oldest first with nothing older than three months. The analytics modes are not clamped:
+ * they answer explicit windows years old, and a longer `timespan` there is unmeasured. A timespan
+ * this server cannot resolve runs as sent.
+ *
+ * The reach is counted back from the resolved window's own end, so both read one clock.
+ */
+export function articleSearchTimespan(timespan: string): string {
+  const range = resolveTimespan(timespan);
+  if (!range) return timespan;
+  const reachStart = new Date(range.end);
+  reachStart.setUTCMonth(reachStart.getUTCMonth() - DOC_ARTICLE_REACH_MONTHS);
+  return range.start < reachStart ? DOC_ARTICLE_REACH : timespan;
 }
 
 /** A GDELT query window, both boundaries in the 14-digit YYYYMMDDHHMMSS wire format. */
@@ -125,7 +179,8 @@ export function resolveEffectiveWindow(args: {
  * The ` Timespan "…" resolved to <start> – <end>.` sentence an empty-result notice carries when
  * a call ran on a relative timespan, so the caller sees which dates it actually covered; `''`
  * when an explicit window was pinned or the timespan does not parse. The timespan is quoted as
- * the caller sent it, whitespace around the unit included.
+ * the caller sent it, whitespace around the unit included, with `quoteText`: the notice's
+ * `content[]` render escapes it.
  */
 export function describeResolvedTimespan(args: {
   timespan?: string | undefined;
@@ -135,7 +190,7 @@ export function describeResolvedTimespan(args: {
   if (!args.timespan || args.startDatetime || args.endDatetime) return '';
   const range = resolveTimespan(args.timespan);
   return range
-    ? ` Timespan ${markdownQuote(args.timespan)} resolved to ${formatDateShort(range.start)} – ${formatDateShort(range.end)}.`
+    ? ` Timespan ${quoteText(args.timespan)} resolved to ${formatDateShort(range.start)} – ${formatDateShort(range.end)}.`
     : '';
 }
 
@@ -224,18 +279,36 @@ export function planWindowContinuation(window: GdeltWindow | undefined): WindowC
 }
 
 /**
- * One clock hour. Measured live against GDELT TV: a `startdatetime`/`enddatetime` window is
- * answered on clip air time from `floor_hour(start)` through the end of `enddatetime`'s hour,
- * and a window spanning under 30 minutes is rejected ("Timespan is too short." — 20 minutes
- * rejected, 30 accepted).
+ * One clock hour. Measured live against GDELT TV: a `startdatetime`/`enddatetime` window of up
+ * to 7 days is answered on clip air time from `floor_hour(start)` through the end of
+ * `enddatetime`'s hour — a longer one in whole UTC days, and from 3 years in whole UTC months
+ * (`tv-covered-window.ts`) — and a window spanning under 30 minutes is rejected ("Timespan is too
+ * short." — 20 minutes rejected, 30 accepted).
  */
 const HOUR_MS = 3_600_000;
 
 /**
- * The window to send GDELT TV for a caller's window: the start floored to the clock hour and
- * the end kept, or stretched to the end of that first hour when the window is shorter. GDELT
- * answers the same whole hours either way — this never adds an hour the caller's window does
- * not reach — but the widened span is one GDELT accepts, so a window of any width works. The
+ * The shortest window sent to GDELT TV with its start as given. Measured live, GDELT answers an
+ * off-the-hour start from its clock hour itself, in full: at 30 minutes (FOX News,
+ * `20191218201500–20191218204500`), 2 hours (`20191218203000–20191218223000` counted hours 20
+ * through 22), and 7 days (`20191215003000–20191222003000` counted the same as
+ * `20191215000000–20191222000000`). A shorter window keeps the floor and stretch below, which
+ * changes nothing inside GDELT's hourly answer and is how a window under 30 minutes still meets
+ * GDELT's minimum; the period thresholds this cut keeps a sent span from crossing (7 days,
+ * 3 × 365 days) lie far above it.
+ */
+const TV_KEPT_START_MIN_MS = 2 * HOUR_MS;
+
+/**
+ * The window to send GDELT TV for a caller's window. GDELT picks its answer's period from the span
+ * it is sent, so a window of at least {@link TV_KEPT_START_MIN_MS} goes out as given: GDELT floors
+ * its start to the hour itself, and flooring it here would lengthen the span — carrying a 7-day
+ * window into a daily answer, or one just under 3 × 365 days into a monthly one. A shorter window
+ * goes out with its start floored to the clock hour, and its end stretched to the end of that
+ * hour when it ends inside it: within GDELT's hourly answer this adds no hour the caller's window
+ * does not reach, and the widened span is one GDELT accepts, so a window of any width works. A
+ * window over 7 days is answered in whole UTC days whatever its hours, so its edge clips can
+ * reach back to its first day's midnight and on to its last day's end, spending maxRecords. The
  * caller's exact window is what the out-of-window drop then keeps.
  *
  * An end exactly on the clock hour is sent one second earlier: sent as is, it would have GDELT
@@ -244,11 +317,15 @@ const HOUR_MS = 3_600_000;
  * end is exclusive there.
  */
 export function tvRequestWindow(window: GdeltWindow): GdeltWindow {
-  const start = Math.floor(parseGdeltDatetime(window.startDatetime).getTime() / HOUR_MS) * HOUR_MS;
-  const end = Math.max(lastTvSecond(window), start + HOUR_MS - GDELT_RESOLUTION_MS);
+  const start = parseGdeltDatetime(window.startDatetime).getTime();
+  const end = lastTvSecond(window);
+  if (end - start >= TV_KEPT_START_MIN_MS) {
+    return { startDatetime: window.startDatetime, endDatetime: toGdeltDatetime(new Date(end)) };
+  }
+  const hour = Math.floor(start / HOUR_MS) * HOUR_MS;
   return {
-    startDatetime: toGdeltDatetime(new Date(start)),
-    endDatetime: toGdeltDatetime(new Date(end)),
+    startDatetime: toGdeltDatetime(new Date(hour)),
+    endDatetime: toGdeltDatetime(new Date(Math.max(end, hour + HOUR_MS - GDELT_RESOLUTION_MS))),
   };
 }
 
@@ -259,14 +336,18 @@ function lastTvSecond(window: GdeltWindow): number {
 }
 
 /**
- * The TV counterpart of {@link planWindowContinuation}. GDELT TV answers whole clock hours and
- * the handler trims its answer to the requested window, so halves need no overlapping second:
- * they share no second and cover the window exactly.
+ * The TV counterpart of {@link planWindowContinuation}. GDELT TV answers whole UTC periods —
+ * clock hours for a window up to 7 days, days beyond — and the handler trims its answer to the
+ * requested window, so halves need no overlapping second: they share no second and cover the
+ * window exactly.
  *
  * The split falls on the clock hour nearest the middle whenever one lies inside the window,
- * which gives the two halves disjoint hour sets — the split that helps when the cap left
- * records behind, since any window inside one hour fetches that same capped hour. A page
- * capped at the ceiling with no hour inside has nothing a narrower window can add.
+ * which gives two hourly-answered halves disjoint hour sets — the split that helps when the cap
+ * left records behind, since any window inside one hour fetches that same capped hour. A half
+ * over 7 days is answered in whole UTC days, so both halves fetch the day the split falls in and
+ * its edge clips spend maxRecords; halving again reaches halves of 7 days or less, answered
+ * hourly, which the split separates. A page capped at the ceiling with no hour inside has nothing
+ * a narrower window can add.
  */
 export function planTvWindowContinuation(window: GdeltWindow | undefined): WindowContinuation {
   if (!window) return planWindowContinuation(undefined);
@@ -281,10 +362,7 @@ export function planTvWindowContinuation(window: GdeltWindow | undefined): Windo
 
   if (hourInside === undefined) {
     return {
-      guidance:
-        `No clock hour falls inside the window ${window.startDatetime}–${window.endDatetime}, and the TV API ` +
-        'answers in whole clock hours, so every narrower window inside it fetches the same capped set — the ' +
-        'remaining clips are not retrievable through this API.',
+      guidance: `No clock hour falls inside the window ${window.startDatetime}–${window.endDatetime}, and the TV API answers in whole clock hours, so every narrower window inside it fetches the same capped set — the remaining clips are not retrievable through this API.`,
     };
   }
 
@@ -298,12 +376,7 @@ export function planTvWindowContinuation(window: GdeltWindow | undefined): Windo
   const [first, second] = windows;
   return {
     windows,
-    guidance:
-      'GDELT exposes no offset or cursor. Re-run this query unchanged against each half of the current window — ' +
-      `${first.startDatetime}–${first.endDatetime}, then ${second.startDatetime}–${second.endDatetime} ` +
-      '(both echoed in continuationWindows) — and split a half again if it also hits the cap. ' +
-      'The TV API answers in whole clock hours and each response keeps only its own window, so the halves ' +
-      'share no second and no clip.',
+    guidance: `GDELT exposes no offset or cursor. Re-run this query unchanged against each half of the current window — ${first.startDatetime}–${first.endDatetime}, then ${second.startDatetime}–${second.endDatetime} (both echoed in continuationWindows) — and split a half again if it also hits the cap. The TV API answers in whole UTC periods and each response keeps only its own window, so the halves share no second and no clip.`,
   };
 }
 

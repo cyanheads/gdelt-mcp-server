@@ -93,7 +93,8 @@ export function applyTimeRange(
 /**
  * Resolve a GDELT timespan string (e.g. "1y", "6m", "7d", "24h", "15min") to an
  * absolute `{ start, end }` date range anchored to now.
- * Returns `undefined` when the string cannot be parsed.
+ * Returns `undefined` when the string cannot be parsed, or when its start reaches back past
+ * the range a Date holds (8.64e15 ms before the epoch) — a window no caller can render.
  *
  * Steps back in UTC, as GDELT reads `timespan`: hours, days, and weeks are exact multiples of
  * an hour whatever the server's zone, and months and years step by the UTC calendar. Local-time
@@ -125,6 +126,7 @@ export function resolveTimespan(timespan: string): { start: Date; end: Date } | 
       start.setUTCFullYear(start.getUTCFullYear() - n);
       break;
   }
+  if (Number.isNaN(start.getTime())) return;
   return { start, end };
 }
 
@@ -768,6 +770,28 @@ const BODY_EXCERPT_LIMIT = 200;
  * Extend this list when a new wording deserves a more specific hint than the generic fallback.
  */
 const GDELT_REJECTIONS: ReadonlyArray<{ marker: string; hint: string; api?: string }> = [
+  // Context entries precede the unscoped ones that share their wording: the first match wins.
+  {
+    // Measured live: sourcecountry:, theme:, and tone filters all draw this rejection on Context.
+    marker: 'keywords were too short, too long or too common',
+    api: 'GDELT Context',
+    hint: 'The Context API refuses the DOC-only operators sourcecountry:, theme:, and tone filters with this message: run those on gdelt_search_articles. Otherwise remove or replace the overly short, long, or common keyword, then retry.',
+  },
+  {
+    marker: 'invalid query start date',
+    api: 'GDELT Context',
+    hint: 'The Context API reaches back only 72 hours. Use a timespan up to 72h or a startDatetime inside the last 72 hours, or gdelt_search_articles for older coverage.',
+  },
+  {
+    // Measured live: sourcelang:spanish draws this rejection on Context, whose results are English.
+    marker: 'invalid/unsupported language',
+    api: 'GDELT Context',
+    hint: 'The Context API returns English-language coverage and refuses sourcelang:. Drop it, or run the query on gdelt_search_articles, which filters by source language.',
+  },
+  {
+    marker: 'invalid/unsupported language',
+    hint: 'GDELT does not recognize the language in sourcelang:. Spell the language name out in English, such as sourcelang:spanish.',
+  },
   {
     marker: 'hourly dateres not available',
     api: 'GDELT TV',
@@ -806,9 +830,11 @@ const GDELT_REJECTIONS: ReadonlyArray<{ marker: string; hint: string; api?: stri
       'more specific keyword, or quote a multi-word phrase such as "bird flu".',
   },
   {
+    // One body for both: a sub-15-minute timespan and a 16-minute explicit window draw it, while
+    // one- and two-hour explicit windows are answered. The exact explicit floor is unmeasured.
     marker: 'timespan is too short',
     api: 'GDELT DOC',
-    hint: 'The GDELT DOC API rejects a timespan under 15 minutes. Use a window of at least 15 minutes, such as "15min".',
+    hint: 'The GDELT DOC API rejects a relative timespan under 15 minutes and an explicit window it considers too short. Lengthen the window the call set: a timespan of at least 15 minutes, or a startDatetime/endDatetime window of an hour or more.',
   },
   {
     // Measured live: a 20-minute explicit window is rejected, a 30-minute one accepted.
