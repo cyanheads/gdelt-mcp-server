@@ -422,6 +422,18 @@ function smooth<T extends { value: number }>(points: T[], width: number | undefi
   });
 }
 
+/** Decimal places of every value the mirror computes — the precision of GDELT's own normalized values. */
+const VALUE_DECIMALS = 4;
+
+/**
+ * Each point's value rounded to {@link VALUE_DECIMALS}, applied to a series once it is built and
+ * smoothed, so its points, its peak, a breakdown's ranking, and both surfaces read one number.
+ * Counts are whole and pass unchanged.
+ */
+function roundValues<T extends { value: number }>(points: T[]): T[] {
+  return points.map((point) => ({ ...point, value: Number(point.value.toFixed(VALUE_DECIMALS)) }));
+}
+
 // ─── Modes ────────────────────────────────────────────────────────────────────
 
 type ModeAnswer = { answer: MirrorResult; matched: number };
@@ -466,7 +478,9 @@ function toneTimeline(ctx: Context, smoothing: number | undefined): ModeAnswer {
   return {
     answer: {
       kind: 'timeline',
-      result: [{ label: TIMELINE_LABELS.timelinetone, data: smooth(points, smoothing) }],
+      result: [
+        { label: TIMELINE_LABELS.timelinetone, data: roundValues(smooth(points, smoothing)) },
+      ],
     },
     matched,
   };
@@ -513,7 +527,7 @@ function volumeTimeline(
   return {
     answer: {
       kind: 'timeline',
-      result: [{ label: TIMELINE_LABELS[mode], data: smooth(points, smoothing) }],
+      result: [{ label: TIMELINE_LABELS[mode], data: roundValues(smooth(points, smoothing)) }],
     },
     matched: matchRows.reduce((sum, row) => sum + row.n, 0),
   };
@@ -599,7 +613,11 @@ function breakdown(
       });
       let total = 0;
       for (const n of counts.values()) total += n;
-      return { label: `${label} Volume Intensity`, total, data: smooth(points, smoothing) };
+      return {
+        label: `${label} Volume Intensity`,
+        total,
+        data: roundValues(smooth(points, smoothing)),
+      };
     })
     .sort((a, b) => b.total - a.total || a.label.localeCompare(b.label))
     .map(({ label, data }): BreakdownSeries => ({ label, data }));

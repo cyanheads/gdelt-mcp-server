@@ -268,7 +268,11 @@ describe('executeMirrorRequest — timelines', () => {
     ]);
     expect(resultOf(timeline('timelinevol', 3), 'timeline').result[0]?.data).toEqual([
       { date: '2026-11-01T11:30:00Z', value: 25 },
-      { date: '2026-11-01T11:45:00Z', value: 50 / 3 },
+      { date: '2026-11-01T11:45:00Z', value: 16.6667 },
+    ]);
+    expect(resultOf(timeline('timelinevolraw', 3), 'timeline').result[0]?.data).toEqual([
+      { date: '2026-11-01T11:30:00Z', value: 1, norm: 0 },
+      { date: '2026-11-01T11:45:00Z', value: 0.3333, norm: 2 },
     ]);
     expect(resultOf(timeline('timelinevol', 5), 'timeline').result[0]?.data).toEqual([]);
   });
@@ -329,6 +333,141 @@ describe('executeMirrorRequest — timelines', () => {
       window: { startDatetime: at('1100'), endDatetime: at('1145') },
     });
     expect(response.matched).toBe(4);
+  });
+});
+
+/**
+ * Every value the mirror computes — a share, a tone mean, a smoothed mean — carries at most four
+ * decimals, as GDELT's own normalized values do, rounded where the point is built and after
+ * smoothing. Seven rows per bucket make each share a repeating decimal: 100 × 1 ÷ 7 and 100 × 2 ÷ 7.
+ */
+describe('executeMirrorRequest — computed values carry four decimals', () => {
+  let fixture: GkgMirrorFixture;
+  const window = { startDatetime: at('1100'), endDatetime: at('1115') };
+
+  beforeAll(async () => {
+    fixture = await openGkgMirrorFixture();
+    seedGkgBothFeeds(fixture.handle, [at('1100'), at('1115')]);
+    const row = (url: string, date: string, tone: number, match: boolean) =>
+      gkgRow({
+        url,
+        date,
+        domain: 'a.com',
+        tone,
+        source_country: 'US',
+        themes: match ? 'TAX_FNCACT' : '',
+      });
+    await seedGkgRows(fixture.store, [
+      // 11:00 — 1 of 7 matches, tone 0.5.
+      row('u/a1', at('1100'), 0.5, true),
+      ...Array.from({ length: 6 }, (_, i) => row(`u/a${i + 2}`, at('1100'), 0, false)),
+      // 11:15 — 2 of 7 match, tones 0.1 and 0.2: a mean of 0.15000000000000002 as doubles.
+      row('u/b1', at('1115'), 0.1, true),
+      row('u/b2', at('1115'), 0.2, true),
+      ...Array.from({ length: 5 }, (_, i) => row(`u/b${i + 3}`, at('1115'), 0, false)),
+    ]);
+  });
+  afterAll(async () => {
+    await fixture.cleanup();
+  });
+
+  const request = (kind: RequestKind) =>
+    answered(fixture, { ...kind, plan: plan('theme:TAX_FNCACT'), window } as MirrorRequest);
+  const values = (response: Answered) => {
+    const { answer } = response;
+    if (answer.kind !== 'timeline' && answer.kind !== 'breakdown')
+      throw new Error(`expected a series, got ${answer.kind}`);
+    return answer.result.map((s) => [s.label, s.data.map((p) => p.value)]);
+  };
+
+  it.each<[string, RequestKind, Array<[string, number[]]>]>([
+    [
+      'timelinevol shares',
+      { kind: 'timeline', mode: 'timelinevol' },
+      [['Volume Intensity', [14.2857, 28.5714]]],
+    ],
+    [
+      'timelinevolinfo shares',
+      { kind: 'timeline', mode: 'timelinevolinfo' },
+      [['Volume Intensity', [14.2857, 28.5714]]],
+    ],
+    [
+      'timelinetone means',
+      { kind: 'timeline', mode: 'timelinetone' },
+      [['Average Tone', [0.5, 0.15]]],
+    ],
+    [
+      'timelinelang shares',
+      { kind: 'breakdown', mode: 'timelinelang' },
+      [['English Volume Intensity', [14.2857, 28.5714]]],
+    ],
+    [
+      'timelinesourcecountry shares',
+      { kind: 'breakdown', mode: 'timelinesourcecountry' },
+      [['United States Volume Intensity', [14.2857, 28.5714]]],
+    ],
+    /**
+     * Smoothing runs on the unrounded shares and the mean is then rounded: rounding first would
+     * give (14.2857 + 28.5714) ÷ 2 = 21.42855, five decimals.
+     */
+    [
+      'a smoothed timeline',
+      { kind: 'timeline', mode: 'timelinevol', smoothing: 2 },
+      [['Volume Intensity', [21.4286]]],
+    ],
+    [
+      'a smoothed breakdown',
+      { kind: 'breakdown', mode: 'timelinelang', smoothing: 2 },
+      [['English Volume Intensity', [21.4286]]],
+    ],
+  ])('rounds %s to four decimals', (_label, kind, expected) => {
+    expect(values(request(kind))).toEqual(expected);
+  });
+
+  it('leaves raw counts and norm whole', () => {
+    expect(
+      resultOf(request({ kind: 'timeline', mode: 'timelinevolraw' }), 'timeline').result[0]?.data,
+    ).toEqual([
+      { date: '2026-11-01T11:00:00Z', value: 1, norm: 7 },
+      { date: '2026-11-01T11:15:00Z', value: 2, norm: 7 },
+    ]);
+  });
+});
+
+/**
+ * Tone means of 1/3 and 1/2: rounded first, (0.3333 + 0.5) ÷ 2 is 0.41665, five decimals;
+ * smoothed unrounded and then rounded, 5/12 is 0.4167.
+ */
+describe('executeMirrorRequest — a smoothed tone timeline rounds after smoothing', () => {
+  let fixture: GkgMirrorFixture;
+
+  beforeAll(async () => {
+    fixture = await openGkgMirrorFixture();
+    seedGkgBothFeeds(fixture.handle, [at('1100'), at('1115')]);
+    const row = (url: string, date: string, tone: number) =>
+      gkgRow({ url, date, domain: 'a.com', tone, themes: 'TAX_FNCACT' });
+    await seedGkgRows(fixture.store, [
+      row('u/a1', at('1100'), 1),
+      row('u/a2', at('1100'), 0),
+      row('u/a3', at('1100'), 0),
+      row('u/b1', at('1115'), 0.5),
+    ]);
+  });
+  afterAll(async () => {
+    await fixture.cleanup();
+  });
+
+  it('rounds the trailing mean of the unrounded means', () => {
+    const response = answered(fixture, {
+      kind: 'timeline',
+      mode: 'timelinetone',
+      smoothing: 2,
+      plan: plan('theme:TAX_FNCACT'),
+      window: { startDatetime: at('1100'), endDatetime: at('1115') },
+    } as MirrorRequest);
+    expect(resultOf(response, 'timeline').result).toEqual([
+      { label: 'Average Tone', data: [{ date: '2026-11-01T11:15:00Z', value: 0.4167 }] },
+    ]);
   });
 });
 
@@ -541,7 +680,7 @@ describe('executeMirrorRequest — breakdowns', () => {
       {
         label: 'Serbian Volume Intensity',
         data: [
-          { date: '2026-11-01T11:00:00Z', value: (100 * 2) / 3 },
+          { date: '2026-11-01T11:00:00Z', value: 66.6667 },
           { date: '2026-11-01T11:15:00Z', value: 0 },
         ],
       },
@@ -567,7 +706,7 @@ describe('executeMirrorRequest — breakdowns', () => {
   it('timelinesourcecountry: merges codes sharing a name and excludes rows without a named country', () => {
     const result = resultOf(breakdown('timelinesourcecountry'), 'breakdown');
     expect(result.result.map((s) => [s.label, s.data[0]?.value])).toEqual([
-      ['Serbia Volume Intensity', (100 * 2) / 3],
+      ['Serbia Volume Intensity', 66.6667],
       ['United States Volume Intensity', 100],
       ['Germany Volume Intensity', 50],
       ['United Kingdom Volume Intensity', 100],
@@ -1040,7 +1179,7 @@ describe('executeMirrorRequest — column predicates beside FTS membership', () 
       resultOf(request(query, { kind: 'timeline', mode: 'timelinevolraw' }), 'timeline').result[0]
         ?.data,
     ).toEqual([{ date: '2026-11-01T11:00:00Z', value: 2, norm: 5 }]);
-    expect(lang(query)).toEqual([['German Volume Intensity', (100 * 2) / 3]]);
+    expect(lang(query)).toEqual([['German Volume Intensity', 66.6667]]);
   });
 
   it('an OR group mixing FTS and a domain beside an excluded language', () => {
@@ -1065,7 +1204,7 @@ describe('executeMirrorRequest — column predicates beside FTS membership', () 
   it('a tone filter in the breakdown modes', () => {
     expect(lang('theme:TAX_FNCACT tone>0')).toEqual([
       ['English Volume Intensity', 100],
-      ['German Volume Intensity', 100 / 3],
+      ['German Volume Intensity', 33.3333],
     ]);
   });
 });

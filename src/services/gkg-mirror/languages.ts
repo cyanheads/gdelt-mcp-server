@@ -1,7 +1,8 @@
 /**
  * @fileoverview GDELT DOC's language lookup (`LOOKUP-LANGUAGES.TXT`, the 65 machine-translated
  * languages) plus English, as the GKG mirror resolves `sourcelang:` and names languages in
- * artlist and `timelinelang` output. Each code is both the three-letter code DOC's `sourcelang:`
+ * artlist and `timelinelang` output, and as a coverage breakdown's language series names its
+ * `sourcelang:` operator. Each code is both the three-letter code DOC's `sourcelang:`
  * accepts and the `srclc:` code GKG's translingual feed writes (`axe` for Azerbaijani included);
  * English-feed rows are stored as `eng`.
  * @module services/gkg-mirror/languages
@@ -97,4 +98,17 @@ export function resolveDocLanguage(value: string): DocLanguageCode | undefined {
 /** DOC's name for a stored language code, or undefined for a code outside DOC's lookup. */
 export function docLanguageName(code: string): string | undefined {
   return nameByCode.get(code);
+}
+
+/** Names lowercased. Every name is letters only, so each is also its own letters-only key. */
+const nameKeys = new Set<string>(DOC_LANGUAGES.map((l) => l.name.toLowerCase()));
+
+/**
+ * The `sourcelang:<name>` operator for a language name as a breakdown series carries it, matched
+ * on its letters in any case (`Norwegian Nynorsk` finds `NorwegianNynorsk`). Undefined for a name
+ * outside DOC's lookup, and for a three-letter code, which is not a name.
+ */
+export function sourceLangOperator(name: string): string | undefined {
+  const key = name.toLowerCase().replace(/[^a-z]/g, '');
+  return nameKeys.has(key) ? `sourcelang:${key}` : undefined;
 }

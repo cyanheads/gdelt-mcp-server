@@ -22,10 +22,12 @@ import {
 import {
   escapeMarkdown,
   markdownLinkDestination,
-  markdownQuote,
   quoteText,
+  renderNotice,
   renderQueryEcho,
 } from '../markdown-escape.js';
+import { peakOf } from '../peak-of.js';
+import { queryInputSchema } from '../query-input.js';
 import {
   DOC_EMPTY_RETRY_NOTE,
   docProvenanceEnrichment,
@@ -49,14 +51,6 @@ type TimelinePoint = {
   articles?: Array<{ url: string; title: string }> | undefined;
   referenceCount?: number | undefined;
 };
-
-/** The point with the largest absolute value, or `undefined` when there are no points. */
-function peakOf<P extends { date: string; value: number }>(points: readonly P[]): P | undefined {
-  return points.reduce<P | undefined>(
-    (max, d) => (max === undefined || Math.abs(d.value) > Math.abs(max.value) ? d : max),
-    undefined,
-  );
-}
 
 /**
  * One timestep's list line and article links. A point not named in `points` shows at most
@@ -154,14 +148,9 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
 
   input: z
     .object({
-      query: z
-        .string()
-        .min(1)
-        .describe(
-          'Search query using GDELT syntax. Same operators as gdelt_search_articles: ' +
-            'phrases, boolean OR, sourcecountry:, sourcelang:, domain:, theme: (GKG theme identifiers ' +
-            'come from gdelt_search_themes), tone<.',
-        ),
+      query: queryInputSchema(
+        'Search query using GDELT syntax. Same operators as gdelt_search_articles: phrases, boolean OR, sourcecountry:, sourcelang:, domain:, theme: (GKG theme identifiers come from gdelt_search_themes), tone<.',
+      ),
       mode: z
         .enum(['volume', 'volume_raw', 'volume_with_articles', 'tone'])
         .default('volume')
@@ -175,8 +164,7 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
         .string()
         .optional()
         .describe(
-          'Time window relative to now, minimum "15min"; other examples: "24h", "7d", "1m". ' +
-            'Ignored when startDatetime/endDatetime are set. Maximum 3 months.',
+          'Time window relative to now, a number followed by its unit, minimum "15min"; other examples: "24h", "7d", "1m". Ignored when startDatetime/endDatetime are set. Maximum 3 months.',
         ),
       startDatetime: z
         .string()
@@ -369,6 +357,7 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
   enrichmentTrailer: {
     limitClamp: { render: renderLimitClamp },
     effectiveQuery: { render: renderQueryEcho },
+    notice: { render: renderNotice },
     ...docProvenanceTrailer,
   },
 
@@ -497,8 +486,7 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
     const notices: string[] = [];
     if (isEmpty) {
       notices.push(
-        `No coverage data found for ${markdownQuote(input.query)}. Broaden the query, extend the time window, ` +
-          'or verify the query operators are correct.',
+        `No coverage data found for ${quoteText(input.query)}. Broaden the query, extend the time window, or verify the query operators are correct.`,
       );
       if (!standIn) notices.push(DOC_EMPTY_RETRY_NOTE);
       if (input.points?.length) {

@@ -1,10 +1,12 @@
 /**
  * @fileoverview FIPS 10-4 country codes and names for the GKG mirror's `sourcecountry:` operator
- * and its artlist and `timelinesourcecountry` output. Merged from DOC's country lookup
+ * and its artlist and `timelinesourcecountry` output, and for the `sourcecountry:` operator a
+ * coverage breakdown's country series carries. Merged from DOC's country lookup
  * (`LOOKUP-COUNTRIES.TXT`, the codes and names `sourcecountry:` accepts) and GDELT's
  * domain-to-country file (`DOMAINSBYCOUNTRY-ALLLANGUAGES.TXT`, the source of every stored
- * `source_country`). Display names are the domain file's, which DOC's breakdown labels use
- * (`United Kingdom Volume Intensity`); DOC lookup names that differ are kept as aliases.
+ * `source_country`). Display names are the domain file's (`United Kingdom`, which the mirror's
+ * breakdown labels carry); DOC lookup names that differ are kept as aliases, so a series named
+ * from either file resolves.
  *
  * The table is a constant, not a read of `gkg_domain_country`, because the query compiler runs on
  * the main thread with no store access and must reject a country DOC would reject.
@@ -14,7 +16,7 @@
 /**
  * Ordered by name. Where two codes share a name (`RI` and `RB`, both Serbia), the first listed is
  * the one the name resolves to; `RI` is DOC's code. `GV` is Guinea: DOC's lookup labels it
- * Equatorial Guinea, a name that resolves to `EK`.
+ * Equatorial Guinea, the domain file's name for `EK`, which is listed first and so keeps the name.
  */
 const DOC_COUNTRIES: ReadonlyArray<{
   fips: string;
@@ -121,7 +123,7 @@ const DOC_COUNTRIES: ReadonlyArray<{
   { fips: 'GQ', name: 'Guam' },
   { fips: 'GT', name: 'Guatemala' },
   { fips: 'GK', name: 'Guernsey' },
-  { fips: 'GV', name: 'Guinea' },
+  { fips: 'GV', name: 'Guinea', aliases: ['Equatorial Guinea'] },
   { fips: 'PU', name: 'Guinea-Bissau' },
   { fips: 'GY', name: 'Guyana' },
   { fips: 'HA', name: 'Haiti' },
@@ -305,11 +307,12 @@ function nameKey(value: string): string {
 
 const nameByFips = new Map<string, string>(DOC_COUNTRIES.map((c) => [c.fips, c.name]));
 
-const fipsByName = new Map<string, string>();
+/** Every code each name or alias stands for, in table order. */
+const fipsByName = new Map<string, string[]>();
 for (const c of DOC_COUNTRIES) {
   for (const name of [c.name, ...(c.aliases ?? [])]) {
     const key = nameKey(name);
-    if (!fipsByName.has(key)) fipsByName.set(key, c.fips);
+    fipsByName.set(key, [...(fipsByName.get(key) ?? []), c.fips]);
   }
 }
 
@@ -326,10 +329,21 @@ export function resolveDocCountry(value: string): string | undefined {
     const fips = value.toUpperCase();
     return nameByFips.has(fips) ? fips : undefined;
   }
-  return fipsByName.get(nameKey(value));
+  return fipsByName.get(nameKey(value))?.[0];
 }
 
 /** The display name of a FIPS code, or undefined for a code neither table names. */
 export function docCountryName(fips: string): string | undefined {
   return nameByFips.get(fips);
+}
+
+/**
+ * The `sourcecountry:<FIPS>` operator for a country name as a breakdown series carries it (a
+ * display name or alias, matched as {@link resolveDocCountry} matches names). Undefined when the
+ * name stands for no code or for several: `Serbia` (`RI` and `RB`), `Equatorial Guinea` (`EK`,
+ * and `GV` in DOC's lookup).
+ */
+export function sourceCountryOperator(name: string): string | undefined {
+  const codes = fipsByName.get(nameKey(name));
+  return codes?.length === 1 ? `sourcecountry:${codes[0]}` : undefined;
 }

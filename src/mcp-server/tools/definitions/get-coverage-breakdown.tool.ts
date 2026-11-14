@@ -8,6 +8,8 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { inferDateResolution } from '@/services/gdelt/date-resolution.js';
 import { routeBreakdown } from '@/services/gdelt/doc-source-router.js';
+import { sourceCountryOperator } from '@/services/gkg-mirror/countries.js';
+import { sourceLangOperator } from '@/services/gkg-mirror/languages.js';
 import {
   describeDateRangeFault,
   GDELT_DATETIME_PATTERN,
@@ -19,25 +21,33 @@ import {
   limitClampSchema,
   renderLimitClamp,
 } from '../limit-clamp.js';
-import { escapeMarkdown, markdownQuote, quoteText, renderQueryEcho } from '../markdown-escape.js';
+import { escapeMarkdown, quoteText, renderNotice, renderQueryEcho } from '../markdown-escape.js';
+import { queryInputSchema } from '../query-input.js';
 import {
   DOC_EMPTY_RETRY_NOTE,
   docProvenanceEnrichment,
   docProvenanceTrailer,
   mirrorAnswerNotice,
 } from '../source-provenance.js';
+import { sumValues } from '../sum-values.js';
 
-/** Series ranked into the topSeries overview; the rest are named in otherSeriesLabels. */
-const MAX_SERIES = 10;
+/** The suffix GDELT puts after the language or country name in a breakdown series label. */
+const LABEL_SUFFIX = ' Volume Intensity';
 
 /**
  * One language or country coverage series. Shared by the ranked `topSeries` overview and
  * the `selectedSeries` arm so a label retrieved by name carries the identical shape it
- * would have had inside the top 10.
+ * has on its overview page.
  */
 const breakdownSeriesSchema = z
   .object({
     label: z.string().describe('Series label (language name or country name).'),
+    operator: z
+      .string()
+      .optional()
+      .describe(
+        "Paste-ready DOC query operator for this series' source: sourcecountry:<FIPS code> for a country (FIPS, not ISO — AU is Austria) or sourcelang:<language name> for a language. Add it to a gdelt_search_articles or gdelt_get_coverage_timeline query to see that source's articles or volume. Omitted when the series name maps to no GDELT code or to more than one.",
+      ),
     data: z
       .array(
         z
@@ -61,24 +71,35 @@ const breakdownSeriesSchema = z
  * series but is not itself a share of anything), peak, and every data point.
  */
 function renderSeries(series: z.infer<typeof breakdownSeriesSchema>): string[] {
-  const sum = series.data.reduce((acc, d) => acc + d.value, 0);
+  const sum = sumValues(series.data.map((d) => d.value));
   const peak = series.data.reduce(
     (max, d) => (d.value > max.value ? d : max),
     series.data[0] ?? { date: '', value: 0 },
   );
-  const lines = [
-    `\n### ${escapeMarkdown(series.label)} (sum of values: ${sum})`,
-    `Data points: ${series.data.length}`,
-  ];
+  const lines = [`\n### ${escapeMarkdown(series.label)} (sum of values: ${sum})`];
+  // A code span renders a backslash escape literally; an operator is a fixed prefix and table
+  // letters (sourcecountry:GM, sourcelang:norwegiannynorsk), none of which ends the span.
+  if (series.operator) lines.push(`Operator: \`${series.operator}\``);
+  lines.push(`Data points: ${series.data.length}`);
   if (peak.date) lines.push(`Peak: ${peak.value} at ${escapeMarkdown(peak.date)}`);
   for (const d of series.data) lines.push(renderPoint(d));
   return lines;
 }
 
-/** The otherSeriesLabels block, rendered on every overview page. */
+/**
+ * The operator a series label names: its name — the label minus the suffix — looked up in the
+ * breakdown dimension's table. A label without the suffix is not a shape GDELT names a source in.
+ */
+function seriesOperator(label: string, breakdownBy: 'language' | 'country'): string | undefined {
+  if (!label.endsWith(LABEL_SUFFIX)) return;
+  const name = label.slice(0, -LABEL_SUFFIX.length);
+  return breakdownBy === 'country' ? sourceCountryOperator(name) : sourceLangOperator(name);
+}
+
+/** The otherSeriesLabels block, rendered on every overview page that leaves series out. */
 function renderOtherLabels(labels: readonly string[]): string[] {
   return [
-    `\n### Series beyond the top ${MAX_SERIES} (${labels.length})`,
+    `\n### Series not on this page (${labels.length})`,
     `Ranked by sum of values. Re-call with series: ["<label>"] to get any of them in full.`,
     ...labels.map((label) => `- ${escapeMarkdown(label, 'line-start')}`),
   ];
@@ -92,20 +113,7 @@ function renderPoint(point: { date: string; value: number }): string {
 export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
   title: 'Get GDELT Coverage Breakdown',
   description:
-    'Break down news coverage volume over time by source language or source country, returning a ' +
-    'multi-series time series (one series per language or country). ' +
-    'Shows which countries or languages drove early vs. late coverage — useful for tracing how a ' +
-    'story propagated geographically or across language communities. ' +
-    'Returns the top 10 series ranked by the sum of their values and names every other series under ' +
-    'otherSeriesLabels — pass any labels, ranked or not, as the series input to get only those series, complete. ' +
-    'A response carries limit series (default 10, cap 75); when more remain it returns nextOffset — ' +
-    'pass it back as offset with otherwise identical inputs for the next page. ' +
-    "Values are normalized: each point is the topic's share of that source's media output, not an absolute " +
-    'article count, so values from different sources do not add up to a share. ' +
-    'Small media markets with concentrated coverage therefore rank above large markets with diverse output — ' +
-    "a high value means the topic dominated that source's coverage, not that it published the most articles. " +
-    'Use breakdownBy "country" with the signal-detection chain to map geographic attention, ' +
-    'or "language" to detect non-English media surges.',
+    'Break down news coverage volume over time by source language or source country, returning a multi-series time series (one series per language or country). Shows which countries or languages drove early vs. late coverage — useful for tracing how a story propagated geographically or across language communities. Ranks every series by the sum of its values and returns limit of them per page (default 10, cap 75); when more remain it returns nextOffset — pass it back as offset with otherwise identical inputs for the next page. otherSeriesLabels names every series not on the page — pass any labels as the series input to get only those series, complete. Each series whose name maps to one GDELT source code carries operator (sourcecountry:<FIPS> or sourcelang:<language>) — add it to a gdelt_search_articles or gdelt_get_coverage_timeline query to read that source\'s articles or volume. Values are normalized: each point is the topic\'s share of that source\'s media output, not an absolute article count, so values from different sources do not add up to a share. Small media markets with concentrated coverage therefore rank above large markets with diverse output — a high value means the topic dominated that source\'s coverage, not that it published the most articles. Use breakdownBy "country" with the signal-detection chain to map geographic attention, or "language" to detect non-English media surges.',
   annotations: { readOnlyHint: true, openWorldHint: true },
 
   errors: [
@@ -119,7 +127,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
     {
       reason: 'offset_out_of_range',
       code: JsonRpcErrorCode.NotFound,
-      when: 'The requested offset is at or beyond the last series of a non-empty overview (the top 10), or of the series named in series.',
+      when: 'The requested offset is at or beyond the last series of a non-empty overview, or of the series named in series.',
       recovery:
         'Retry with an offset inside the range the error names, or with nextOffset from the preceding response.',
     },
@@ -159,14 +167,9 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
 
   input: z
     .object({
-      query: z
-        .string()
-        .min(1)
-        .describe(
-          'Search query using GDELT syntax. Same operators as gdelt_search_articles: ' +
-            'phrases, boolean OR, sourcecountry:, sourcelang:, domain:, theme: (GKG theme identifiers ' +
-            'come from gdelt_search_themes).',
-        ),
+      query: queryInputSchema(
+        'Search query using GDELT syntax. Same operators as gdelt_search_articles: phrases, boolean OR, sourcecountry:, sourcelang:, domain:, theme: (GKG theme identifiers come from gdelt_search_themes).',
+      ),
       breakdownBy: z
         .enum(['language', 'country'])
         .describe(
@@ -177,8 +180,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
         .string()
         .optional()
         .describe(
-          'Time window relative to now, minimum "15min"; other examples: "24h", "7d", "1m". ' +
-            'Ignored when startDatetime/endDatetime are set. Maximum 3 months.',
+          'Time window relative to now, a number followed by its unit, minimum "15min"; other examples: "24h", "7d", "1m". Ignored when startDatetime/endDatetime are set. Maximum 3 months.',
         ),
       startDatetime: z
         .string()
@@ -211,11 +213,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
         .array(z.string())
         .optional()
         .describe(
-          'Exact series labels to return instead of the ranked overview, e.g. ["Portuguese Volume Intensity", "Vietnamese Volume Intensity"]. ' +
-            'Take them verbatim from otherSeriesLabels or topSeries[].label in a response, or from the label ' +
-            'list an unknown_series error prints. Each one comes back complete under selectedSeries, in the ' +
-            'order requested; a label that matches nothing is rejected rather than silently skipped. Omit to ' +
-            'get the ranked overview.',
+          'Exact series labels to return instead of the ranked overview, e.g. ["Portuguese Volume Intensity", "Vietnamese Volume Intensity"]. Take them verbatim from otherSeriesLabels or topSeries[].label in a response, or from the label list an unknown_series error prints — labels, not operators, which go in query. Each one comes back complete under selectedSeries, in the order requested (every series carrying it, when several do); a label that matches nothing is rejected rather than silently skipped. Omit to get the ranked overview.',
         ),
       limit: countInputSchema(
         75,
@@ -228,8 +226,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
         .min(0)
         .default(0)
         .describe(
-          'Zero-based series offset — into the ranked top 10, or into the series named in series. Pass ' +
-            'nextOffset from the preceding response, with otherwise identical inputs, to get the next page.',
+          'Zero-based series offset — into the ranked overview, or into the series named in series. Pass nextOffset from the preceding response, with otherwise identical inputs, to get the next page.',
         ),
     })
     .superRefine(refineDocTimespan),
@@ -246,16 +243,13 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       .array(breakdownSeriesSchema)
       .optional()
       .describe(
-        'The ranked overview: the top 10 series by the sum of their values, those of this page in rank ' +
-          'order. Omitted when the series input selects series instead.',
+        'The ranked overview: every series ranked by the sum of its values, those of this page in rank order. Omitted when the series input selects series instead.',
       ),
     otherSeriesLabels: z
       .array(z.string())
       .optional()
       .describe(
-        'Label of every series beyond the top 10, ranked by the sum of its values, on every overview page. ' +
-          "Pass any of them to the series input to retrieve that series' complete data. Omitted when all " +
-          'series fit in the top 10, or when the series input selects series instead.',
+        "Label of every ranked series not on this page, in rank order, on every overview page. Pass any of them to the series input to retrieve that series' complete data. Omitted when this page holds every series, or when the series input selects series instead.",
       ),
     selectedSeries: z
       .array(breakdownSeriesSchema)
@@ -281,9 +275,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
     breakdownBy: z
       .enum(['language', 'country'])
       .describe('Breakdown dimension used for this response.'),
-    totalCount: z
-      .number()
-      .describe('Total number of series GDELT returned, before ranking into the top 10 or paging.'),
+    totalCount: z.number().describe('Total number of series GDELT returned, before paging.'),
     startDatetime: z
       .string()
       .optional()
@@ -309,6 +301,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
   enrichmentTrailer: {
     limitClamp: { render: renderLimitClamp },
     effectiveQuery: { render: renderQueryEcho },
+    notice: { render: renderNotice },
     ...docProvenanceTrailer,
   },
 
@@ -350,21 +343,18 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       .sort((a, b) => b.sum - a.sum)
       .map(({ s }) => s);
 
-    const topSeries = sorted.slice(0, MAX_SERIES);
-    const otherSeriesLabels =
-      sorted.length > MAX_SERIES ? sorted.slice(MAX_SERIES).map((s) => s.label) : undefined;
-
-    // Label selection re-filters the same complete upstream set the ranking sliced, so a
+    // Label selection re-filters the same complete upstream set the ranking ordered, so a
     // series named on a follow-up call reconstructs statelessly from query + dimension + label.
     // An empty breakdown has no labels to name, so there a selection is moot, not wrong.
     const isSelection = !isEmpty && (input.series?.length ?? 0) > 0;
     const selectedSeries: Array<z.infer<typeof breakdownSeriesSchema>> = [];
     if (isSelection) {
-      const byLabel = new Map(allSeries.map((s) => [s.label, s]));
+      // Nothing upstream makes labels unique, so a label selects every series carrying it.
+      const byLabel = Map.groupBy(sorted, (s) => s.label);
       const unknown: string[] = [];
       for (const label of input.series ?? []) {
-        const match = byLabel.get(label);
-        if (match) selectedSeries.push(match);
+        const matches = byLabel.get(label);
+        if (matches) selectedSeries.push(...matches);
         else unknown.push(label);
       }
       if (unknown.length > 0) {
@@ -381,9 +371,10 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       }
     }
 
-    // The pageable units: the selected series in requested order, or the ranked top 10, whose
-    // pages each carry otherSeriesLabels.
-    const units = isSelection ? selectedSeries : topSeries;
+    // The pageable units: the selected series in requested order, or every ranked series, whose
+    // pages each name the ranked series they leave out. An empty breakdown has no points to page
+    // through, so it returns every series and ignores offset and limit.
+    const units = isSelection ? selectedSeries : sorted;
     if (!isEmpty && input.offset >= units.length) {
       const scope = isSelection
         ? `the series input names ${units.length} series`
@@ -394,10 +385,16 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
         recovery: { hint: `Retry with offset 0–${units.length - 1}; ${scope}.` },
       });
     }
-    const overviewLabels = isSelection ? undefined : otherSeriesLabels;
-    const end = Math.min(input.offset + limit, units.length);
-    const nextOffset = !isEmpty && end < units.length ? end : undefined;
-    const pageSeries = isEmpty ? units : units.slice(input.offset, end);
+    const start = isEmpty ? 0 : input.offset;
+    const end = isEmpty ? units.length : Math.min(start + limit, units.length);
+    const nextOffset = end < units.length ? end : undefined;
+    const pageSeries = units.slice(start, end).map((s) => {
+      const operator = seriesOperator(s.label, input.breakdownBy);
+      return operator ? { label: s.label, operator, data: s.data } : s;
+    });
+    const otherSeriesLabels = isSelection
+      ? []
+      : [...sorted.slice(0, start), ...sorted.slice(end)].map((s) => s.label);
 
     const allDates = allSeries.flatMap((s) => s.data.map((d) => d.date));
     const dateResolution = inferDateResolution(allDates);
@@ -415,8 +412,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
     const notices: string[] = [];
     if (isEmpty) {
       notices.push(
-        `No breakdown data for ${markdownQuote(input.query)}. Broaden the query, extend the time window, or ` +
-          'verify the query operators are correct.',
+        `No breakdown data for ${quoteText(input.query)}. Broaden the query, extend the time window, or verify the query operators are correct.`,
       );
       if (!standIn) notices.push(DOC_EMPTY_RETRY_NOTE);
       if (input.series?.length) {
@@ -445,7 +441,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
     return {
       ...(dateResolution && { dateResolution }),
       ...(isSelection ? { selectedSeries: pageSeries } : { topSeries: pageSeries }),
-      ...(overviewLabels && { otherSeriesLabels: overviewLabels }),
+      ...(otherSeriesLabels.length > 0 && { otherSeriesLabels }),
       ...(nextOffset != null && { nextOffset }),
     };
   },

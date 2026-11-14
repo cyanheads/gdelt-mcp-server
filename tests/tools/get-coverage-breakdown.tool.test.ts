@@ -5,10 +5,14 @@
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetCoverageBreakdown } from '@/mcp-server/tools/definitions/get-coverage-breakdown.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
-import type { MirrorResult } from '@/services/gkg-mirror/types.js';
+import {
+  executeMirrorRequest,
+  readMirrorCoverage,
+} from '@/services/gkg-mirror/gkg-mirror-queries.js';
+import type { MirrorCoverageStatus, MirrorResult } from '@/services/gkg-mirror/types.js';
 import {
   attachMirror,
   DOC_429_DETAIL,
@@ -24,6 +28,14 @@ import {
   SOURCE_LINE,
   useRoutedDoc,
 } from '../helpers/doc-source-fakes.js';
+import {
+  type GkgMirrorFixture,
+  gkgRow,
+  gkgSlotsBetween,
+  openGkgMirrorFixture,
+  seedGkgBothFeeds,
+  seedGkgRows,
+} from '../helpers/gkg-mirror-fixture.js';
 import { contentText, literalHtml, renderMarkdown } from './markdown-render.js';
 
 const SERIES = [
@@ -91,6 +103,28 @@ describe('gdeltGetCoverageBreakdown', () => {
       expect(contentText(response)).toContain('Peak: 1.23456789 at 2026-10-22');
     }
     expect(getBreakdown).toHaveBeenCalledTimes(2);
+  });
+  it('prints the exact sum of a series in the overview and a selection', async () => {
+    const supplied = [
+      {
+        label: 'English Volume Intensity',
+        data: [0.1, 0.2, 0.2837].map((value, d) => ({ date: `2026-10-2${d}`, value })),
+      },
+    ];
+    mockBreakdown(supplied);
+    for (const series of [undefined, ['English Volume Intensity']]) {
+      const response = await runToolContract(gdeltGetCoverageBreakdown, {
+        query: 'bird flu',
+        breakdownBy: 'language',
+        ...(series && { series }),
+      });
+      expect(response.structuredContent).toMatchObject(
+        series ? { selectedSeries: supplied } : { topSeries: supplied },
+      );
+      expect(contentText(response)).toContain(
+        '### English Volume Intensity (sum of values: 0.5837)\n',
+      );
+    }
   });
   it('pages by count and composes a smoothing notice without altering selected labels', async () => {
     const getBreakdown = vi.fn().mockResolvedValue(MANY_SERIES);
@@ -498,6 +532,123 @@ describe('gdeltGetCoverageBreakdown', () => {
       expect(text).toContain('Country10');
       expect(text).toContain('series:');
     });
+
+    /**
+     * Nothing upstream makes labels unique: the DOC parser maps series one to one (and names
+     * every unnamed one `Series`), so a label two series share selects both, never only the last.
+     */
+    it('returns every series carrying a selected label, in rank order', async () => {
+      const shared = [
+        { label: 'Series', data: [{ date: '2024-01-01', value: 1 }] },
+        { label: 'Country0', data: [{ date: '2024-01-01', value: 2 }] },
+        { label: 'Series', data: [{ date: '2024-01-01', value: 3 }] },
+      ];
+      mockBreakdown(shared);
+      const result = await runToolContract(gdeltGetCoverageBreakdown, {
+        query: 'global',
+        breakdownBy: 'country',
+        series: ['Series', 'Country0'],
+      });
+      expect(result.structuredContent).toMatchObject({
+        selectedSeries: [shared[2], shared[0], shared[1]],
+      });
+      expect(contentText(result)).toContain(
+        [
+          '## Selected Series (3)',
+          'Complete series for the labels requested via the series input.',
+          '',
+          '### Series (sum of values: 3)',
+          'Data points: 1',
+          'Peak: 3 at 2024-01-01',
+          '- 2024-01-01: 3',
+          '',
+          '### Series (sum of values: 1)',
+        ].join('\n'),
+      );
+    });
+  });
+
+  /**
+   * #91: each series names the operator that filters a query to its source. The name-to-code
+   * tables are tabled in countries.test.ts and languages.test.ts; these cases prove the wiring.
+   */
+  describe('source operators (#91)', () => {
+    const one = (label: string, value: number) => ({
+      label,
+      data: [{ date: '2024-01-01', value }],
+    });
+    const run = (breakdownBy: 'country' | 'language', series?: string[]) =>
+      runToolContract(gdeltGetCoverageBreakdown, {
+        query: 'x',
+        breakdownBy,
+        ...(series && { series }),
+      });
+    const operators = (result: { structuredContent?: unknown }, field = 'topSeries') =>
+      (
+        (result.structuredContent as Record<string, Array<{ label: string; operator?: string }>>)[
+          field
+        ] ?? []
+      ).map((s) => [s.label, s.operator]);
+
+    it('sets sourcecountry:<FIPS> for a country name with one code, and none otherwise', async () => {
+      mockBreakdown([
+        one('Germany Volume Intensity', 6),
+        one('Austria Volume Intensity', 5),
+        one('Serbia Volume Intensity', 4),
+        one('Atlantis Volume Intensity', 3),
+        one('French Volume Intensity', 2),
+        one('Germany', 1),
+      ]);
+      const result = await run('country');
+      expect(operators(result)).toEqual([
+        ['Germany Volume Intensity', 'sourcecountry:GM'],
+        ['Austria Volume Intensity', 'sourcecountry:AU'],
+        ['Serbia Volume Intensity', undefined],
+        ['Atlantis Volume Intensity', undefined],
+        ['French Volume Intensity', undefined],
+        ['Germany', undefined],
+      ]);
+      const text = contentText(result);
+      expect(text).toContain(
+        '### Germany Volume Intensity (sum of values: 6)\nOperator: `sourcecountry:GM`\nData points: 1\n',
+      );
+      expect(text).toContain('### Serbia Volume Intensity (sum of values: 4)\nData points: 1\n');
+      expect(text.match(/^Operator: /gm)).toHaveLength(2);
+    });
+
+    it('sets sourcelang:<name> for a language name, and none for a code or a country', async () => {
+      mockBreakdown([
+        one('NorwegianNynorsk Volume Intensity', 4),
+        one('French Volume Intensity', 3),
+        one('fra Volume Intensity', 2),
+        one('France Volume Intensity', 1),
+      ]);
+      const result = await run('language');
+      expect(operators(result)).toEqual([
+        ['NorwegianNynorsk Volume Intensity', 'sourcelang:norwegiannynorsk'],
+        ['French Volume Intensity', 'sourcelang:french'],
+        ['fra Volume Intensity', undefined],
+        ['France Volume Intensity', undefined],
+      ]);
+      expect(contentText(result)).toContain(
+        '### French Volume Intensity (sum of values: 3)\nOperator: `sourcelang:french`\nData points: 1\n',
+      );
+    });
+
+    it('sets the operator on selected series, leaving labels as returned', async () => {
+      mockBreakdown([one('United Kingdom Volume Intensity', 2), one('Serbia Volume Intensity', 1)]);
+      const result = await run('country', [
+        'Serbia Volume Intensity',
+        'United Kingdom Volume Intensity',
+      ]);
+      expect(operators(result, 'selectedSeries')).toEqual([
+        ['Serbia Volume Intensity', undefined],
+        ['United Kingdom Volume Intensity', 'sourcecountry:UK'],
+      ]);
+      expect(contentText(result)).toContain(
+        '### United Kingdom Volume Intensity (sum of values: 2)\nOperator: `sourcecountry:UK`\n',
+      );
+    });
   });
 
   /**
@@ -528,7 +679,7 @@ describe('gdeltGetCoverageBreakdown', () => {
           "value is the topic's share of that source's media output, not an article count. Small " +
           'media markets with concentrated coverage rank above large markets with diverse output.\n\n' +
           '### United States (sum of values: 2)\nData points: 1\nPeak: 2 at 2024-01-15\n' +
-          '- 2024-01-15: 2\n\n### Series beyond the top 10 (2)\nRanked by sum of values. ' +
+          '- 2024-01-15: 2\n\n### Series not on this page (2)\nRanked by sum of values. ' +
           'Re-call with series: ["<label>"] to get any of them in full.\n- Portugal\n- Viet Nam\n\n' +
           '## Selected Series (1)\nComplete series for the labels requested via the series input.\n\n' +
           '### Portugal (sum of values: 0.1)\nData points: 1\nPeak: 0.1 at 2024-01-15\n- 2024-01-15: 0.1',
@@ -570,7 +721,10 @@ describe('gdeltGetCoverageBreakdown', () => {
       for (const label of sc.otherSeriesLabels) {
         expect(html).toContain(`<li>${literalHtml(label)}</li>`);
       }
-      expect(html).not.toMatch(/<(ol|blockquote|em)>|<li>\s*<ul>/);
+      expect(html).not.toMatch(/<(ol|em)>|<li>\s*<ul>/);
+      // The one blockquote is the server's paging notice (the page stops at 10 of 14 series).
+      expect(html.match(/<blockquote>/g)).toHaveLength(1);
+      expect(html).toContain('<blockquote>\n<p>Returned series 1–10 of 14 series;');
       expect(renderMarkdown(contentText(selection))).not.toMatch(
         /<(ol|blockquote|em)>|<li>\s*<ul>/,
       );
@@ -668,13 +822,14 @@ describe('gdeltGetCoverageBreakdown', () => {
         const result = await call({ ...input, offset });
         expect(result.isError).toBeFalsy();
         const sc = out(result);
+        const text = contentText(result);
         expect(sc[field]!.length).toBeLessThanOrEqual(Number(input.limit ?? 10));
         for (const series of sc[field]!) {
           for (const point of series.data)
-            expect(contentText(result)).toContain(`- ${point.date}: ${point.value}`);
+            expect(text).toContain(`- ${point.date}: ${point.value}`);
         }
         if (sc.nextOffset !== undefined) {
-          expect(contentText(result)).toContain(`**Next offset:** ${sc.nextOffset}`);
+          expect(text).toContain(`**Next offset:** ${sc.nextOffset}`);
         }
         pages.push(sc);
         offset = sc.nextOffset;
@@ -684,23 +839,86 @@ describe('gdeltGetCoverageBreakdown', () => {
 
     beforeEach(() => mockBreakdown(BIG));
 
-    it('pages the overview in rank order, with otherSeriesLabels on every page', async () => {
-      const { pages, labels } = await walk({ limit: 3 }, 'topSeries');
-      expect(pages.length).toBe(4);
-      expect(labels).toEqual(RANKED.slice(0, 10));
+    it('walks every ranked series once, in rank order, naming the rest on every page (#86)', async () => {
+      const { pages, labels } = await walk({ limit: 7 }, 'topSeries');
+      expect(pages.length).toBe(29);
+      expect(labels).toEqual(RANKED);
       for (const page of pages) {
-        expect(page.otherSeriesLabels).toEqual(FOLDED);
+        const onPage = new Set(page.topSeries!.map((s) => s.label));
+        expect(page.otherSeriesLabels).toEqual(RANKED.filter((label) => !onPage.has(label)));
         expect(page.totalCount).toBe(200);
         expect(page.dateResolution).toBe('15min');
         expect(page).not.toHaveProperty('selectedSeries');
       }
-      expect(pages[0]!.notice).toMatch(/^Returned series 1–3 of 10 series; continue with offset 3/);
-      expect(pages.at(-1)!.notice).toMatch(/of 10 series — the last page\.$/);
+      expect(pages[0]!.notice).toMatch(
+        /^Returned series 1–7 of 200 series; continue with offset 7/,
+      );
+      expect(pages.at(-1)!.notice).toMatch(
+        /^Returned series 197–200 of 200 series — the last page\.$/,
+      );
+      expect(pages.at(-1)).not.toHaveProperty('nextOffset');
     });
 
     it('returns every series and point unchanged across the overview pages', async () => {
       const { pages } = await walk({}, 'topSeries');
-      expect(pages.flatMap((p) => p.topSeries ?? [])).toEqual(BIG.slice(0, 10));
+      expect(pages).toHaveLength(20);
+      expect(pages.flatMap((p) => p.topSeries ?? [])).toEqual(BIG);
+    });
+
+    /** The 45-series country breakdown #86 reported, at each of its three calls. */
+    describe('a 45-series overview (#86)', () => {
+      const FORTY_FIVE = BIG.slice(0, 45);
+      beforeEach(() => mockBreakdown(FORTY_FIVE));
+
+      it('returns all 45 series on one page at limit 75, with nothing left to name', async () => {
+        const result = await call({ limit: 75 });
+        expect(result.isError).toBeFalsy();
+        const sc = out(result);
+        expect(sc.topSeries).toEqual(FORTY_FIVE);
+        expect(sc).not.toHaveProperty('otherSeriesLabels');
+        expect(sc).not.toHaveProperty('nextOffset');
+        expect(sc).not.toHaveProperty('notice');
+        expect(contentText(result)).not.toContain('Series not on this page');
+      });
+
+      it('returns the top 10 by default, naming the other 35, with nextOffset 10', async () => {
+        const result = await call({});
+        const sc = out(result);
+        expect(sc.topSeries).toEqual(FORTY_FIVE.slice(0, 10));
+        expect(sc.otherSeriesLabels).toEqual(RANKED.slice(10, 45));
+        expect(sc.nextOffset).toBe(10);
+        expect(sc.totalCount).toBe(45);
+        expect(contentText(result)).toContain('**Next offset:** 10');
+      });
+
+      it('answers offset 10 with the next ten, naming the series before and after the page', async () => {
+        const sc = out(await call({ offset: 10 }));
+        expect(sc.topSeries).toEqual(FORTY_FIVE.slice(10, 20));
+        expect(sc.otherSeriesLabels).toEqual([...RANKED.slice(0, 10), ...RANKED.slice(20, 45)]);
+        expect(sc.nextOffset).toBe(20);
+      });
+
+      it('clamps limit 200 to 75 and fills the page from the whole ranked list', async () => {
+        const result = await call({ limit: 200 });
+        expect(out(result)).toMatchObject({
+          limitClamp: { parameter: 'limit', requested: 200, applied: 75 },
+          topSeries: FORTY_FIVE,
+        });
+        expect(out(result)).not.toHaveProperty('nextOffset');
+      });
+
+      it('rejects offset 45, naming 0–44 and the ranked total', async () => {
+        const result = await call({ offset: 45 });
+        expect(result).toMatchObject({
+          isError: true,
+          structuredContent: {
+            error: { data: { reason: 'offset_out_of_range', offset: 45, totalSeries: 45 } },
+          },
+        });
+        expect(contentText(result)).toContain(
+          'Retry with offset 0–44; the ranked overview holds 45 series.',
+        );
+      });
     });
 
     it('pages a selection of all 190 folded labels as selectedSeries alone, in requested order', async () => {
@@ -713,7 +931,7 @@ describe('gdeltGetCoverageBreakdown', () => {
       }
     });
 
-    it('returns all ten overview series despite large labels and data', async () => {
+    it('returns all ten series of the default page despite large labels and data', async () => {
       const longLabels = Array.from({ length: 200 }, (_, s) => ({
         ...BIG[s]!,
         label: `${'L'.repeat(400)} ${s}`,
@@ -722,7 +940,7 @@ describe('gdeltGetCoverageBreakdown', () => {
       const result = await call({});
       const sc = out(result);
       expect(sc.topSeries).toHaveLength(10);
-      expect(sc.nextOffset).toBeUndefined();
+      expect(sc.nextOffset).toBe(10);
       expect(sc.otherSeriesLabels).toHaveLength(190);
       expect(surfaceBytes(result).structured).toBeGreaterThan(50_000);
       expect(surfaceBytes(result).text).toBeGreaterThan(50_000);
@@ -738,17 +956,18 @@ describe('gdeltGetCoverageBreakdown', () => {
     });
 
     it('rejects an offset at or past the series total of the page kind, naming the valid range', async () => {
-      const overview = await call({ offset: 10 });
+      const overview = await call({ offset: 200 });
       expect(overview).toMatchObject({
         isError: true,
         structuredContent: {
           error: {
             code: JsonRpcErrorCode.NotFound,
-            data: { reason: 'offset_out_of_range', offset: 10, totalSeries: 10 },
+            data: { reason: 'offset_out_of_range', offset: 200, totalSeries: 200 },
           },
         },
       });
-      expect(contentText(overview)).toContain('offset 0–9');
+      expect(contentText(overview)).toContain('offset 0–199');
+      expect((await call({ offset: 199 })).isError).toBeFalsy();
       const selection = await call({ series: FOLDED.slice(0, 2), offset: 2 });
       expect(contentText(selection)).toContain('offset 0–1');
     });
@@ -758,6 +977,18 @@ describe('gdeltGetCoverageBreakdown', () => {
       const result = await call({ offset: 3 });
       expect(result.isError).toBeFalsy();
       expect(out(result)).toMatchObject({ topSeries: [], totalCount: 0 });
+    });
+
+    it('returns every pointless series of an empty breakdown, naming none and ignoring offset and limit', async () => {
+      const pointless = ['A', 'B', 'C'].map((label) => ({ label, data: [] }));
+      mockBreakdown(pointless);
+      const result = await call({ offset: 5, limit: 1 });
+      expect(result.isError).toBeFalsy();
+      const sc = out(result);
+      expect(sc.topSeries).toEqual(pointless);
+      expect(sc).not.toHaveProperty('otherSeriesLabels');
+      expect(sc).not.toHaveProperty('nextOffset');
+      expect(sc.notice).toMatch(/^No breakdown data for "drought"\./);
     });
 
     it('keeps unknown_series ahead of the offset check', async () => {
@@ -807,6 +1038,7 @@ describe('gdelt_get_coverage_breakdown DOC source routing', () => {
       topSeries: [
         {
           label: 'Germany Volume Intensity',
+          operator: 'sourcecountry:GM',
           data: [{ date: '2026-10-31T00:00:00Z', value: 83.33 }],
         },
       ],
@@ -821,6 +1053,7 @@ describe('gdelt_get_coverage_breakdown DOC source routing', () => {
         "**Values:** normalized — each value is the topic's share of that source's media output, not an article count. Small media markets with concentrated coverage rank above large markets with diverse output.",
         '',
         '### Germany Volume Intensity (sum of values: 83.33)',
+        'Operator: `sourcecountry:GM`',
         'Data points: 1',
         'Peak: 83.33 at 2026-10-31T00:00:00Z',
         '- 2026-10-31T00:00:00Z: 83.33',
@@ -862,7 +1095,7 @@ describe('gdelt_get_coverage_breakdown DOC source routing', () => {
 
     const mirrorNotice = `${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${EXCLUDED_SENTENCE}`;
     expect(result.structuredContent).toEqual({
-      topSeries: [MIRROR_SERIES],
+      topSeries: [{ ...MIRROR_SERIES, operator: 'sourcecountry:FR' }],
       effectiveQuery: 'climate',
       totalCount: 1,
       breakdownBy: 'country',
@@ -876,7 +1109,9 @@ describe('gdelt_get_coverage_breakdown DOC source routing', () => {
       notice: mirrorNotice,
     });
     const text = contentText(result);
-    expect(text).toContain('### France Volume Intensity (sum of values: 4.5)');
+    expect(text).toContain(
+      '### France Volume Intensity (sum of values: 4.5)\nOperator: `sourcecountry:FR`\n',
+    );
     expect(text).toContain(SOURCE_LINE.gkg_mirror);
     expect(text).toContain(refusedAttemptsLines('answered'));
     expect(text).toContain(PARTIAL_COVERAGE_LINE);
@@ -893,6 +1128,89 @@ describe('gdelt_get_coverage_breakdown DOC source routing', () => {
       `${EMPTY_NOTICE} ${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_NO_MATCH_SENTENCE}`,
     );
     expect(contentText(result)).toContain(refusedAttemptsLines('empty'));
+  });
+
+  /**
+   * A mirror answer's labels are the table's own names, so every series but the ones whose name
+   * has two codes carries an operator — the merged Serbia series (RI and RB) and EK's Equatorial
+   * Guinea among those without one, as is a stored language code the table does not name.
+   */
+  describe('operators on a mirror answer (#91)', () => {
+    let fixture: GkgMirrorFixture;
+    let status: MirrorCoverageStatus;
+
+    beforeAll(async () => {
+      fixture = await openGkgMirrorFixture();
+      seedGkgBothFeeds(fixture.handle, gkgSlotsBetween('20261031000000', '20261101000000'));
+      const row = (id: string, source_country: string, language: string) =>
+        gkgRow({
+          url: `https://example.com/${id}`,
+          date: '20261031120000',
+          domain: 'example.com',
+          themes: 'TAX_FNCACT',
+          source_country,
+          language,
+        });
+      await seedGkgRows(fixture.store, [
+        row('gm', 'GM', 'deu'),
+        row('ri', 'RI', 'srp'),
+        row('rb', 'RB', 'srp'),
+        row('ek', 'EK', 'spa'),
+        row('gv', 'GV', 'fra'),
+        row('uk', 'UK', 'xyz'),
+        row('no', 'NO', 'nno'),
+      ]);
+      status = { ready: true, ...readMirrorCoverage(fixture.handle) };
+    });
+
+    afterAll(async () => {
+      await fixture.cleanup();
+    });
+
+    beforeEach(() => {
+      attachMirror((req) => executeMirrorRequest(fixture.handle, req), status);
+      doc.answerDoc('refuse');
+    });
+
+    const operatorsOf = async (breakdownBy: 'country' | 'language') => {
+      const result = await runToolContract(gdeltGetCoverageBreakdown, {
+        query: 'theme:TAX_FNCACT',
+        breakdownBy,
+        ...ROUTED_WINDOW,
+      });
+      const sc = result.structuredContent as {
+        source: string;
+        topSeries: Array<{ label: string; operator?: string }>;
+      };
+      expect(sc.source).toBe('gkg_mirror');
+      for (const { label, operator } of sc.topSeries) {
+        if (operator) expect(contentText(result)).toContain(`Operator: \`${operator}\``);
+        else expect(contentText(result)).toMatch(new RegExp(`### ${label} \\(.*\\)\\nData points`));
+      }
+      return Object.fromEntries(sc.topSeries.map((s) => [s.label, s.operator]));
+    };
+
+    it('names the operator of each country series with one code', async () => {
+      expect(await operatorsOf('country')).toEqual({
+        'Germany Volume Intensity': 'sourcecountry:GM',
+        'Serbia Volume Intensity': undefined,
+        'Equatorial Guinea Volume Intensity': undefined,
+        'Guinea Volume Intensity': 'sourcecountry:GV',
+        'United Kingdom Volume Intensity': 'sourcecountry:UK',
+        'Norway Volume Intensity': 'sourcecountry:NO',
+      });
+    });
+
+    it('names the operator of each language series the table names', async () => {
+      expect(await operatorsOf('language')).toEqual({
+        'German Volume Intensity': 'sourcelang:german',
+        'Serbian Volume Intensity': 'sourcelang:serbian',
+        'Spanish Volume Intensity': 'sourcelang:spanish',
+        'French Volume Intensity': 'sourcelang:french',
+        'xyz Volume Intensity': undefined,
+        'NorwegianNynorsk Volume Intensity': 'sourcelang:norwegiannynorsk',
+      });
+    });
   });
 
   it("keeps DOC's empty answer with the overload sentence when the mirror has no match either", async () => {
