@@ -456,7 +456,9 @@ describe('FTS5 literal safety against a real store', () => {
  * Compile cost on both runtimes: the length bound caps what the scanner reads, so a query over it
  * is refused at a cost independent of its length, and every shape up to it stays within a CPU cap.
  * Thread CPU (never wall clock), fastest of three samples per size, sizes spanning 64×, an absolute
- * cap checked at each size, and the parsed result asserted at every size.
+ * cap checked at each size, and the parsed result asserted at every size. Each test runs with a
+ * timeout of 0: vitest cannot interrupt a synchronous body, so a wall-clock timeout bounds no hang
+ * and only fails linear work on a loaded machine.
  */
 describe('compileDocQuery — bounded cost', () => {
   /** Element counts spanning 64×; the largest query of every shape stays under the length bound. */
@@ -544,7 +546,7 @@ describe('compileDocQuery — bounded cost', () => {
           costs.push(cost);
         }
         expect(Math.max(costs.at(-1) ?? 0, 1) / Math.max(costs[0] ?? 0, 1)).toBeLessThan(256);
-      });
+      }, 0);
     }
   }
 
@@ -564,6 +566,6 @@ describe('compileDocQuery — bounded cost', () => {
         costs.push(cost);
       }
       expect(Math.max(costs.at(-1) ?? 0, 1) / Math.max(costs[0] ?? 0, 1)).toBeLessThan(256);
-    });
+    }, 0);
   }
 });

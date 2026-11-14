@@ -243,7 +243,9 @@ function fastestCpuMicros(fn: () => unknown): number {
 /**
  * Linear-time proof over sizes spanning 64×: the result is asserted at every size, each size's
  * CPU stays under an absolute cap before the next runs, and the full-span ratio stays under 256
- * (linear ≈ 64, quadratic ≈ 4096).
+ * (linear ≈ 64, quadratic ≈ 4096). Callers set a per-test timeout of 0: vitest cannot interrupt
+ * a synchronous body, so a wall-clock timeout bounds no hang and only fails linear work on a
+ * loaded machine; the per-size CPU cap is what stops a super-linear regression.
  */
 function expectLinear(
   build: (units: number) => string,
@@ -282,7 +284,7 @@ describe('linear scanning of upstream text', () => {
       decodeHtmlEntities,
       decoded,
     );
-  });
+  }, 0);
 
   it('decodes entities in linear time with breaks throughout', () => {
     expectLinear(
@@ -293,7 +295,7 @@ describe('linear scanning of upstream text', () => {
         expect((result as string).split('&x\n')).toHaveLength(units * 8 + 1);
       },
     );
-  });
+  }, 0);
 
   const record = (body: string) =>
     `${atSlot(readGkgFixture('english-rows.tsv').split('\n')[0] ?? '', '20261101120000').replace(/<PAGE_TITLE>.*$/, '')}${body}<PAGE_TITLE>T &amp; U</PAGE_TITLE>`;
@@ -310,7 +312,7 @@ describe('linear scanning of upstream text', () => {
       (input) => parseGkgFile(input, noCountry),
       oneRow,
     );
-  });
+  }, 0);
 
   it('parses a record whose V2EXTRASXML breaks across many lines in linear time', () => {
     expectLinear(
@@ -319,7 +321,7 @@ describe('linear scanning of upstream text', () => {
       (input) => parseGkgFile(input, noCountry),
       oneRow,
     );
-  });
+  }, 0);
 });
 
 describe('inflateSingleEntryZip', () => {
