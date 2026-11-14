@@ -4,7 +4,8 @@
  * filter is the caller's; rendered raw they parse as markup — a nested `[x](y)` breaks a link,
  * `*…*` turns into emphasis, `<b>` renders as HTML, a newline opens a new list item or ends a
  * notice. Escaping applies to `content[]` only; `structuredContent` keeps the raw value, and
- * nothing is decoded or stripped.
+ * nothing is decoded or stripped — a notice quotes its values raw and is escaped whole when its
+ * trailer line renders.
  * @module mcp-server/tools/markdown-escape
  */
 
@@ -172,17 +173,23 @@ export function escapeMarkdown(value: string, slot: MarkdownSlot = 'inline'): st
 }
 
 /**
- * A value quoted inside server-authored prose — a notice, an error message, a recovery hint, a
- * trailer echo — where the caller wrote it: JSON-encoded, so it stays on one line with its
- * quotes and control characters escaped, then escaped as inline text, so it displays as exactly
- * its JSON encoding and opens no markup. A plain value reads as `"value"`. The leading quote
- * keeps a block marker off the start of a line, which a notice's first text is.
+ * A value quoted inside a trailer line a render writes for `content[]` alone — the query echo, an
+ * echoed timespan: JSON-encoded, so it stays on one line with its quotes and control characters
+ * escaped, then escaped as inline text, so it displays as exactly its JSON encoding and opens no
+ * markup. A plain value reads as `"value"`. Text that also reaches `structuredContent` — a notice,
+ * an error message, a recovery hint — quotes with {@link quoteText} instead and is escaped where it
+ * is rendered.
  */
 export function markdownQuote(value: string): string {
   return escapeMarkdown(quoteText(value));
 }
 
-/** Quote a text value for raw error data; the framework escapes its Markdown rendering. */
+/**
+ * Quote a text value inside server prose that reaches both surfaces — a notice, an error message,
+ * a recovery hint: JSON-encoded, so it stays on one line with its quotes and control characters
+ * escaped, and carrying no Markdown escape, which {@link renderNotice} and the framework's error
+ * rendering add for `content[]`.
+ */
 export function quoteText(value: string): string {
   return JSON.stringify(value);
 }
@@ -190,6 +197,19 @@ export function quoteText(value: string): string {
 /** The `effectiveQuery` line of a `content[]` trailer: the echoed query, quoted as text. */
 export function renderQueryEcho(query: string): string {
   return `Query: ${markdownQuote(query)}`;
+}
+
+/**
+ * The `notice` line of a `content[]` trailer: the whole notice escaped as inline text in one
+ * blockquote line. A notice holds each caller and upstream value as {@link quoteText} returns it,
+ * so `structuredContent` carries it unescaped; the escaper turns every line break into a space, so
+ * one `> ` quotes it all and nothing inside can end the quote or open markup. The server's own
+ * notice prose holds no character the escaper changes, so a value reads as `markdownQuote` writes
+ * it; a bracket the prose writes around values is escaped and displays as itself, and a URL beside
+ * it no longer links.
+ */
+export function renderNotice(notice: string): string {
+  return `> ${escapeMarkdown(notice)}`;
 }
 
 /** A URI autolink's scheme, per CommonMark: a letter, then 1–31 letters, digits, `+`, `.`, `-`. */

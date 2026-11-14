@@ -14,7 +14,7 @@ import {
   limitClampSchema,
   renderLimitClamp,
 } from '../limit-clamp.js';
-import { escapeMarkdown, markdownQuote, quoteText, renderQueryEcho } from '../markdown-escape.js';
+import { escapeMarkdown, quoteText, renderNotice, renderQueryEcho } from '../markdown-escape.js';
 
 /** Page-size ceiling: 100 of the longest identifiers stay near 17 KB of structuredContent. */
 const MAX_MATCHES_PER_PAGE = 100;
@@ -146,6 +146,7 @@ export const gdeltSearchThemes = tool('gdelt_search_themes', {
   enrichmentTrailer: {
     effectiveQuery: { render: renderQueryEcho },
     limitClamp: { render: renderLimitClamp },
+    notice: { render: renderNotice },
   },
 
   async handler(input, ctx) {
@@ -182,8 +183,8 @@ export const gdeltSearchThemes = tool('gdelt_search_themes', {
 
     // Every notice segment accumulates here and is flushed once — ctx.enrich.notice is last-wins.
     const notices: string[] = [];
-    const singular = singularWords && markdownQuote(singularWords.join(' '));
-    const query = markdownQuote(input.query);
+    const singular = singularWords && quoteText(singularWords.join(' '));
+    const query = quoteText(input.query);
     if (totalMatches > 0 && singular) {
       notices.push(
         `No theme matched ${query} as given; these are the matches for ${singular}, with a ` +

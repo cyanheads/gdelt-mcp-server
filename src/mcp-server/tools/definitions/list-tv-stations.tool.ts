@@ -9,7 +9,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
 import type { TvStation } from '@/services/gdelt/types.js';
-import { escapeMarkdown, markdownQuote } from '../markdown-escape.js';
+import { escapeMarkdown, quoteText, renderNotice } from '../markdown-escape.js';
 import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
 
 /** Non-US markets in the catalog. Every other market not starting with `National` is a US city. */
@@ -140,6 +140,7 @@ export const gdeltListTvStations = tool('gdelt_list_tv_stations', {
   },
 
   enrichmentTrailer: {
+    notice: { render: renderNotice },
     staleResponse: { render: renderStaleResponse },
   },
 
@@ -184,10 +185,10 @@ export const gdeltListTvStations = tool('gdelt_list_tv_stations', {
     // Every notice segment for this response accumulates here and is flushed once —
     // ctx.enrich.notice is last-wins, so a second call would silently drop the first.
     const notices: string[] = [];
-    const quotedIds = [...requestedIds.values()].map(markdownQuote).join(', ');
+    const quotedIds = [...requestedIds.values()].map(quoteText).join(', ');
     const attributeFilters = [
-      network && `network ${markdownQuote(network)}`,
-      market && `market ${markdownQuote(market)}`,
+      network && `network ${quoteText(network)}`,
+      market && `market ${quoteText(market)}`,
     ].filter(Boolean);
     if (returned.length === 0) {
       const applied = [requestedIds.size > 0 && `stations [${quotedIds}]`, ...attributeFilters];
@@ -202,13 +203,11 @@ export const gdeltListTvStations = tool('gdelt_list_tv_stations', {
       .filter(([key]) => catalogIds.has(key) && !returnedIds.has(key))
       .map(([, id]) => id);
     if (unknownIds.length > 0) {
-      notices.push(`No station has ID ${unknownIds.map(markdownQuote).join(', ')}.`);
+      notices.push(`No station has ID ${unknownIds.map(quoteText).join(', ')}.`);
     }
     if (excludedIds.length > 0) {
       notices.push(
-        `${excludedIds.map(markdownQuote).join(', ')} ` +
-          `${excludedIds.length === 1 ? 'is a station' : 'are stations'} ` +
-          `but did not match ${attributeFilters.join(' and ')}.`,
+        `${excludedIds.map(quoteText).join(', ')} ${excludedIds.length === 1 ? 'is a station' : 'are stations'} but did not match ${attributeFilters.join(' and ')}.`,
       );
     }
     if (returned.length === 0 || unknownIds.length > 0) {
