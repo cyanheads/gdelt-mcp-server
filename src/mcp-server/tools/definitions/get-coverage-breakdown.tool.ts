@@ -60,7 +60,7 @@ const breakdownSeriesSchema = z
     pointCount: z
       .number()
       .describe(
-        'Data points GDELT returned for the whole series — not the number of timesteps in the window, which is larger by missingTimesteps when GDELT left some out.',
+        'Data points GDELT returned for the whole series — fewer than the timesteps in the window when GDELT left some out (see missingTimesteps).',
       ),
     peak: z
       .object({
