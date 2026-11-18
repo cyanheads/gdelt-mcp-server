@@ -11,6 +11,7 @@ import {
   describeTvTimespanFault,
   GDELT_DATETIME_PATTERN,
   resolveEffectiveWindow,
+  tvAnalyticsWindow,
 } from '../date-range.js';
 import {
   clampToCap,
@@ -115,7 +116,7 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
       .regex(GDELT_DATETIME_PATTERN, 'endDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
       .optional()
       .describe(
-        `UTC end in YYYYMMDDHHMMSS format. Must pair with an earlier startDatetime. ${WINDOW_RULE}`,
+        `UTC end in YYYYMMDDHHMMSS format. Must pair with an earlier startDatetime. An end exactly on the clock hour counts as the second before it, so it adds no period starting there. ${WINDOW_RULE}`,
       ),
     limit: countInputSchema(
       10_000,
@@ -195,6 +196,10 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
       });
     ctx.log.info('gdelt_get_tv_breakdown', { query: input.query, breakdownBy: input.breakdownBy });
     const svc = getGdeltTvService();
+    const sent =
+      input.startDatetime && input.endDatetime
+        ? tvAnalyticsWindow({ startDatetime: input.startDatetime, endDatetime: input.endDatetime })
+        : undefined;
     const result = await svc.getTvBreakdown(
       {
         query: input.query,
@@ -202,8 +207,7 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
         normalize: input.normalize,
         ...(stationIds.length > 0 && { stations: stationIds }),
         ...(input.timespan && { timespan: input.timespan }),
-        ...(input.startDatetime && { startDatetime: input.startDatetime }),
-        ...(input.endDatetime && { endDatetime: input.endDatetime }),
+        ...sent,
       },
       ctx,
     );

@@ -3,6 +3,7 @@
  * @module tests/tools/get-coverage-breakdown.tool.test
  */
 
+import { readFileSync } from 'node:fs';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -17,15 +18,23 @@ import {
   attachMirror,
   DOC_429_DETAIL,
   MIRROR_DIVERGENCE_SENTENCE,
+  MIRROR_KEYWORD_CASES,
   MIRROR_NO_MATCH_SENTENCE,
   MIRROR_STANDS_IN_FOR,
+  MIRROR_THEME_ROUTE_SENTENCE,
   mirrorAnswers,
+  mirrorSentences,
   OVERLOAD_RETRY_SENTENCE,
   PARTIAL_COVERAGE,
   PARTIAL_COVERAGE_LINE,
   ROUTED_WINDOW,
   refusedAttemptsLines,
+  SHORT_WINDOW,
+  SHORT_WINDOW_COVERAGE,
+  SHORT_WINDOW_FAULT,
+  SHORT_WINDOW_HINT,
   SOURCE_LINE,
+  shortWindowAttemptsLines,
   useRoutedDoc,
 } from '../helpers/doc-source-fakes.js';
 import {
@@ -67,9 +76,15 @@ const MANY_SERIES = Array.from({ length: 12 }, (_, i) => ({
   ],
 }));
 
+/** {@link SERIES} as the tool returns and renders it, each with its sum, point count, and peak. */
+const SERIES_OUT = [
+  { ...SERIES[0]!, sum: 8, pointCount: 2, peak: { date: '2024-01-01', value: 5 } },
+  { ...SERIES[1]!, sum: 3.5, pointCount: 2, peak: { date: '2024-01-01', value: 2 } },
+];
+
 function mockBreakdown(series: unknown) {
   vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
-    getBreakdown: vi.fn().mockResolvedValue(series),
+    getBreakdown: vi.fn().mockResolvedValue({ series }),
   } as unknown as docServiceModule.GdeltDocService);
 }
 
@@ -84,7 +99,7 @@ describe('gdeltGetCoverageBreakdown', () => {
         ],
       },
     ];
-    const getBreakdown = vi.fn().mockResolvedValue(supplied);
+    const getBreakdown = vi.fn().mockResolvedValue({ series: supplied });
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
       getBreakdown,
     } as unknown as docServiceModule.GdeltDocService);
@@ -127,7 +142,7 @@ describe('gdeltGetCoverageBreakdown', () => {
     }
   });
   it('pages by count and composes a smoothing notice without altering selected labels', async () => {
-    const getBreakdown = vi.fn().mockResolvedValue(MANY_SERIES);
+    const getBreakdown = vi.fn().mockResolvedValue({ series: MANY_SERIES });
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
       getBreakdown,
     } as unknown as docServiceModule.GdeltDocService);
@@ -177,7 +192,7 @@ describe('gdeltGetCoverageBreakdown', () => {
       label: `Language ${i} Volume Intensity`,
       data: [{ date: '2026-10-21', value: i }],
     }));
-    const getBreakdown = vi.fn().mockResolvedValue(supplied);
+    const getBreakdown = vi.fn().mockResolvedValue({ series: supplied });
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
       getBreakdown,
     } as unknown as docServiceModule.GdeltDocService);
@@ -192,8 +207,12 @@ describe('gdeltGetCoverageBreakdown', () => {
       limitClamp: { parameter: 'limit', requested: 76, applied: 75 },
       nextOffset: 75,
     });
+    // One point each: its value is the series' sum and its peak.
     expect((result.structuredContent as { selectedSeries: unknown[] }).selectedSeries).toEqual(
-      supplied.toReversed().slice(0, 75),
+      supplied
+        .toReversed()
+        .slice(0, 75)
+        .map((s) => ({ ...s, sum: s.data[0]!.value, pointCount: 1, peak: s.data[0] })),
     );
     expect(contentText(result).match(/Limit clamped:/g)).toHaveLength(1);
     expect(getBreakdown).toHaveBeenCalledTimes(1);
@@ -258,7 +277,7 @@ describe('gdeltGetCoverageBreakdown', () => {
       data: [{ date: '2024-01-01', value: 12 - i }],
     }));
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
-      getBreakdown: vi.fn().mockResolvedValue(manySeries),
+      getBreakdown: vi.fn().mockResolvedValue({ series: manySeries }),
     } as unknown as docServiceModule.GdeltDocService);
 
     const ctx = createMockContext({ errors: gdeltGetCoverageBreakdown.errors });
@@ -359,7 +378,7 @@ describe('gdeltGetCoverageBreakdown', () => {
   it('formats output with series labels and peaks', () => {
     const output = {
       dateResolution: 'day' as const,
-      topSeries: SERIES,
+      topSeries: SERIES_OUT,
     };
     const blocks = gdeltGetCoverageBreakdown.format!(output);
     const text = (blocks[0] as { text: string }).text;
@@ -378,6 +397,9 @@ describe('gdeltGetCoverageBreakdown', () => {
     const topSeries = [
       {
         label: 'United States',
+        sum: 30,
+        pointCount: 15,
+        peak: { date: '2024-03-15', value: 3.75 },
         data: Array.from({ length: 15 }, (_, i) => ({
           date: `2024-03-${String(i + 1).padStart(2, '0')}`,
           value: (i + 1) / 4,
@@ -385,6 +407,9 @@ describe('gdeltGetCoverageBreakdown', () => {
       },
       {
         label: 'China',
+        sum: 7.5,
+        pointCount: 15,
+        peak: { date: '2024-03-15', value: 0.9375 },
         data: Array.from({ length: 15 }, (_, i) => ({
           date: `2024-03-${String(i + 1).padStart(2, '0')}`,
           value: (i + 1) / 16,
@@ -406,7 +431,7 @@ describe('gdeltGetCoverageBreakdown', () => {
   it('discloses in format output that values are normalized, not article counts', () => {
     const blocks = gdeltGetCoverageBreakdown.format!({
       dateResolution: 'day',
-      topSeries: SERIES,
+      topSeries: SERIES_OUT,
     });
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('normalized');
@@ -453,7 +478,9 @@ describe('gdeltGetCoverageBreakdown', () => {
         series: ['Country11'],
       });
       const result = await gdeltGetCoverageBreakdown.handler(input, ctx);
-      expect(result.selectedSeries).toEqual([MANY_SERIES[11]]);
+      expect(result.selectedSeries).toEqual([
+        { ...MANY_SERIES[11], sum: 1.5, pointCount: 2, peak: { date: '2024-01-01', value: 1 } },
+      ]);
     });
 
     it('returns selected series in the order requested, top-10 labels included', async () => {
@@ -475,7 +502,12 @@ describe('gdeltGetCoverageBreakdown', () => {
         series: ['Country10'],
       });
       const result = await gdeltGetCoverageBreakdown.handler(input, ctx);
-      expect(result).toEqual({ dateResolution: 'day', selectedSeries: [MANY_SERIES[10]] });
+      expect(result).toEqual({
+        dateResolution: 'day',
+        selectedSeries: [
+          { ...MANY_SERIES[10], sum: 3, pointCount: 2, peak: { date: '2024-01-01', value: 2 } },
+        ],
+      });
     });
 
     it('omits selectedSeries when series is not supplied', async () => {
@@ -513,6 +545,9 @@ describe('gdeltGetCoverageBreakdown', () => {
       const selectedSeries = [
         {
           label: 'Country11',
+          sum: 30,
+          pointCount: 20,
+          peak: { date: '2024-05-20', value: 20 / 7 },
           data: Array.from({ length: 20 }, (_, i) => ({
             date: `2024-05-${String(i + 1).padStart(2, '0')}`,
             value: (i + 1) / 7,
@@ -521,7 +556,7 @@ describe('gdeltGetCoverageBreakdown', () => {
       ];
       const blocks = gdeltGetCoverageBreakdown.format!({
         dateResolution: 'day',
-        topSeries: SERIES,
+        topSeries: SERIES_OUT,
         otherSeriesLabels: ['Country10', 'Country11'],
         selectedSeries,
       });
@@ -670,9 +705,25 @@ describe('gdeltGetCoverageBreakdown', () => {
     it('renders plain upstream values byte-identically to the pre-escaping format()', () => {
       const blocks = gdeltGetCoverageBreakdown.format!({
         dateResolution: 'day',
-        topSeries: [{ label: 'United States', data: [{ date: '2024-01-15', value: 2 }] }],
+        topSeries: [
+          {
+            label: 'United States',
+            sum: 2,
+            pointCount: 1,
+            peak: { date: '2024-01-15', value: 2 },
+            data: [{ date: '2024-01-15', value: 2 }],
+          },
+        ],
         otherSeriesLabels: ['Portugal', 'Viet Nam'],
-        selectedSeries: [{ label: 'Portugal', data: [{ date: '2024-01-15', value: 0.1 }] }],
+        selectedSeries: [
+          {
+            label: 'Portugal',
+            sum: 0.1,
+            pointCount: 1,
+            peak: { date: '2024-01-15', value: 0.1 },
+            data: [{ date: '2024-01-15', value: 0.1 }],
+          },
+        ],
       });
       expect((blocks[0] as { text: string }).text).toBe(
         '## GDELT Coverage Breakdown\n**Date Resolution:** day\n**Values:** normalized — each ' +
@@ -770,7 +821,12 @@ describe('gdeltGetCoverageBreakdown', () => {
         series: ['Country L'],
       });
       expect((result.structuredContent as { selectedSeries: unknown }).selectedSeries).toEqual([
-        TWELVE[11],
+        {
+          ...TWELVE[11],
+          sum: 60,
+          pointCount: 1,
+          peak: { date: '2026-10-01T00:00:00Z', value: 60 },
+        },
       ]);
     });
   });
@@ -802,6 +858,20 @@ describe('gdeltGetCoverageBreakdown', () => {
     }));
     const RANKED = BIG.map((s) => s.label);
     const FOLDED = RANKED.slice(10);
+    /**
+     * A BIG series as the overview returns it. Each value is a whole number of ten-thousandths, so
+     * the exact sum is their integer total over 10,000; a series' values are distinct, so its peak
+     * is the one largest.
+     */
+    const summarized = (s: Series) => {
+      const tenThousandths = s.data.map((d) => Math.round(d.value * 10_000));
+      return {
+        ...s,
+        sum: tenThousandths.reduce((total, n) => total + n, 0) / 10_000,
+        pointCount: s.data.length,
+        peak: s.data[tenThousandths.indexOf(Math.max(...tenThousandths))],
+      };
+    };
 
     const call = (input: Record<string, unknown>) =>
       runToolContract(gdeltGetCoverageBreakdown, {
@@ -823,11 +893,15 @@ describe('gdeltGetCoverageBreakdown', () => {
         expect(result.isError).toBeFalsy();
         const sc = out(result);
         const text = contentText(result);
+        // The page's lines, read once: searching the whole text for each point is quadratic.
+        const lines = new Set(text.split('\n'));
         expect(sc[field]!.length).toBeLessThanOrEqual(Number(input.limit ?? 10));
-        for (const series of sc[field]!) {
-          for (const point of series.data)
-            expect(text).toContain(`- ${point.date}: ${point.value}`);
-        }
+        const unprinted = sc[field]!.flatMap((series) =>
+          series.data
+            .map((point) => `- ${point.date}: ${point.value}`)
+            .filter((line) => !lines.has(line)),
+        );
+        expect(unprinted).toEqual([]);
         if (sc.nextOffset !== undefined) {
           expect(text).toContain(`**Next offset:** ${sc.nextOffset}`);
         }
@@ -862,7 +936,7 @@ describe('gdeltGetCoverageBreakdown', () => {
     it('returns every series and point unchanged across the overview pages', async () => {
       const { pages } = await walk({}, 'topSeries');
       expect(pages).toHaveLength(20);
-      expect(pages.flatMap((p) => p.topSeries ?? [])).toEqual(BIG);
+      expect(pages.flatMap((p) => p.topSeries ?? [])).toEqual(BIG.map(summarized));
     });
 
     /** The 45-series country breakdown #86 reported, at each of its three calls. */
@@ -874,7 +948,7 @@ describe('gdeltGetCoverageBreakdown', () => {
         const result = await call({ limit: 75 });
         expect(result.isError).toBeFalsy();
         const sc = out(result);
-        expect(sc.topSeries).toEqual(FORTY_FIVE);
+        expect(sc.topSeries).toEqual(FORTY_FIVE.map(summarized));
         expect(sc).not.toHaveProperty('otherSeriesLabels');
         expect(sc).not.toHaveProperty('nextOffset');
         expect(sc).not.toHaveProperty('notice');
@@ -884,7 +958,7 @@ describe('gdeltGetCoverageBreakdown', () => {
       it('returns the top 10 by default, naming the other 35, with nextOffset 10', async () => {
         const result = await call({});
         const sc = out(result);
-        expect(sc.topSeries).toEqual(FORTY_FIVE.slice(0, 10));
+        expect(sc.topSeries).toEqual(FORTY_FIVE.slice(0, 10).map(summarized));
         expect(sc.otherSeriesLabels).toEqual(RANKED.slice(10, 45));
         expect(sc.nextOffset).toBe(10);
         expect(sc.totalCount).toBe(45);
@@ -893,7 +967,7 @@ describe('gdeltGetCoverageBreakdown', () => {
 
       it('answers offset 10 with the next ten, naming the series before and after the page', async () => {
         const sc = out(await call({ offset: 10 }));
-        expect(sc.topSeries).toEqual(FORTY_FIVE.slice(10, 20));
+        expect(sc.topSeries).toEqual(FORTY_FIVE.slice(10, 20).map(summarized));
         expect(sc.otherSeriesLabels).toEqual([...RANKED.slice(0, 10), ...RANKED.slice(20, 45)]);
         expect(sc.nextOffset).toBe(20);
       });
@@ -985,7 +1059,7 @@ describe('gdeltGetCoverageBreakdown', () => {
       const result = await call({ offset: 5, limit: 1 });
       expect(result.isError).toBeFalsy();
       const sc = out(result);
-      expect(sc.topSeries).toEqual(pointless);
+      expect(sc.topSeries).toEqual(pointless.map((s) => ({ ...s, sum: 0, pointCount: 0 })));
       expect(sc).not.toHaveProperty('otherSeriesLabels');
       expect(sc).not.toHaveProperty('nextOffset');
       expect(sc.notice).toMatch(/^No breakdown data for "drought"\./);
@@ -1039,6 +1113,9 @@ describe('gdelt_get_coverage_breakdown DOC source routing', () => {
         {
           label: 'Germany Volume Intensity',
           operator: 'sourcecountry:GM',
+          sum: 83.33,
+          pointCount: 1,
+          peak: { date: '2026-10-31T00:00:00Z', value: 83.33 },
           data: [{ date: '2026-10-31T00:00:00Z', value: 83.33 }],
         },
       ],
@@ -1093,9 +1170,17 @@ describe('gdelt_get_coverage_breakdown DOC source routing', () => {
 
     const result = await runToolContract(gdeltGetCoverageBreakdown, INPUT);
 
-    const mirrorNotice = `${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${EXCLUDED_SENTENCE}`;
+    const mirrorNotice = `${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_THEME_ROUTE_SENTENCE} ${EXCLUDED_SENTENCE}`;
     expect(result.structuredContent).toEqual({
-      topSeries: [{ ...MIRROR_SERIES, operator: 'sourcecountry:FR' }],
+      topSeries: [
+        {
+          ...MIRROR_SERIES,
+          operator: 'sourcecountry:FR',
+          sum: 4.5,
+          pointCount: 1,
+          peak: { date: '2026-10-31T12:00:00Z', value: 4.5 },
+        },
+      ],
       effectiveQuery: 'climate',
       totalCount: 1,
       breakdownBy: 'country',
@@ -1124,11 +1209,28 @@ describe('gdelt_get_coverage_breakdown DOC source routing', () => {
 
     const result = await runToolContract(gdeltGetCoverageBreakdown, INPUT);
 
-    expect(notice(result)).toBe(
-      `${EMPTY_NOTICE} ${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_NO_MATCH_SENTENCE}`,
-    );
+    const mirrorNotice = `${EMPTY_NOTICE} ${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_NO_MATCH_SENTENCE} ${MIRROR_THEME_ROUTE_SENTENCE}`;
+    expect(notice(result)).toBe(mirrorNotice);
     expect(contentText(result)).toContain(refusedAttemptsLines('empty'));
+    expect(contentText(result).split('\n')).toContain(`> ${mirrorNotice}`);
   });
+
+  /** A matching answer here also leaves articles out for no known country: that sentence comes last. */
+  it.each(MIRROR_KEYWORD_CASES)(
+    'ends the notice with the mirror sentences for a query holding $holds, $matched matched, on both surfaces',
+    async ({ query, matched, sentences }) => {
+      attachMirror(
+        mirrorAnswers(matched > 0 ? MIRROR_BREAKDOWN : { kind: 'breakdown', result: [] }, matched),
+      );
+      doc.answerDoc('refuse');
+
+      const result = await runToolContract(gdeltGetCoverageBreakdown, { ...INPUT, query });
+
+      const expected = matched > 0 ? `${sentences} ${EXCLUDED_SENTENCE}` : sentences;
+      expect(result.structuredContent).toMatchObject({ source: 'gkg_mirror' });
+      expect(mirrorSentences(result)).toEqual({ structuredContent: expected, content: expected });
+    },
+  );
 
   /**
    * A mirror answer's labels are the table's own names, so every series but the ones whose name
@@ -1228,5 +1330,538 @@ describe('gdelt_get_coverage_breakdown DOC source routing', () => {
       ],
       notice: `${EMPTY_NOTICE} ${OVERLOAD_RETRY_SENTENCE}`,
     });
+  });
+
+  /** A window under the 30 minutes DOC accepts (#92); the router's table is in doc-source-router.test.ts. */
+  it('with no mirror, fails a window under 30 minutes invalid_date_range before any request, on both surfaces', async () => {
+    const fetch = doc.answerDoc({ body: DOC_BREAKDOWN });
+
+    const result = await runToolContract(gdeltGetCoverageBreakdown, { ...INPUT, ...SHORT_WINDOW });
+
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: JsonRpcErrorCode.ValidationError,
+          message: SHORT_WINDOW_FAULT,
+          data: { reason: 'invalid_date_range', recovery: { hint: SHORT_WINDOW_HINT } },
+        },
+      },
+    });
+    expect(contentText(result)).toContain(SHORT_WINDOW_FAULT);
+    expect(contentText(result)).toContain(`Recovery: ${SHORT_WINDOW_HINT}`);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('answers a window under 30 minutes from the mirror without asking DOC, saying why on both surfaces', async () => {
+    attachMirror(mirrorAnswers(MIRROR_BREAKDOWN, 30, SHORT_WINDOW_COVERAGE));
+    const fetch = doc.answerDoc({ body: DOC_BREAKDOWN });
+
+    const result = await runToolContract(gdeltGetCoverageBreakdown, { ...INPUT, ...SHORT_WINDOW });
+
+    const mirrorNotice = `${MIRROR_STANDS_IN_FOR.window_too_short} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_THEME_ROUTE_SENTENCE} ${EXCLUDED_SENTENCE}`;
+    expect(result.structuredContent).toMatchObject({
+      topSeries: [{ label: 'France Volume Intensity', operator: 'sourcecountry:FR', sum: 4.5 }],
+      ...SHORT_WINDOW,
+      source: 'gkg_mirror',
+      attempts: [
+        { source: 'doc_api', outcome: 'window_too_short', detail: SHORT_WINDOW_FAULT },
+        { source: 'gkg_mirror', outcome: 'answered' },
+      ],
+      notice: mirrorNotice,
+    });
+    expect(result.structuredContent).not.toHaveProperty('coverage');
+    const text = contentText(result);
+    expect(text).toContain(SOURCE_LINE.gkg_mirror);
+    expect(text).toContain(shortWindowAttemptsLines('answered'));
+    expect(text).toContain(`> ${mirrorNotice}`);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+type SummarySeries = {
+  label: string;
+  operator?: string;
+  sum?: number;
+  pointCount?: number;
+  peak?: { date: string; value: number };
+  data?: Array<{ date: string; value: number }>;
+};
+type SummaryOut = {
+  topSeries?: SummarySeries[];
+  selectedSeries?: SummarySeries[];
+  otherSeriesLabels?: string[];
+  dateResolution?: string;
+  missingTimesteps?: number;
+  nextOffset?: number;
+  totalCount: number;
+  notice?: string;
+  source?: string;
+};
+const summaryOut = (result: { structuredContent?: unknown }) =>
+  result.structuredContent as SummaryOut;
+
+/** A raw DOC `timelinesourcecountry` answer: `points` dated by `dates`, one series per entry. */
+function countryAnswer(
+  dates: readonly string[],
+  series: Record<string, readonly number[]>,
+  dateResolution: string | undefined = 'hour',
+) {
+  return {
+    ...(dateResolution && { query_details: { title: 'climate', date_resolution: dateResolution } }),
+    timeline: Object.entries(series).map(([name, values]) => ({
+      series: `${name} Volume Intensity`,
+      data: dates.map((date, k) => ({ date, value: values[k] ?? 0 })),
+    })),
+  };
+}
+
+/**
+ * #96: each series carries the sum it is ranked by, its point count, and its peak on both
+ * surfaces, and `includePoints: false` leaves its points out. Run through the real DOC service
+ * with only `fetch` stubbed.
+ */
+describe('gdelt_get_coverage_breakdown series summaries (#96)', () => {
+  const doc = useRoutedDoc();
+  const DATES = ['20261031T000000Z', '20261031T010000Z', '20261031T020000Z', '20261031T030000Z'];
+  const ISO = [
+    '2026-10-31T00:00:00Z',
+    '2026-10-31T01:00:00Z',
+    '2026-10-31T02:00:00Z',
+    '2026-10-31T03:00:00Z',
+  ];
+  /** France's values add up to 2.0000000000000004 as doubles; its printed and returned sum is 2. */
+  const BODY = countryAnswer(DATES, {
+    Japan: [0, 0, 0, 0],
+    France: [1.1, 0.2, 0.3, 0.4],
+    Serbia: [0.1, 0, 0, 0],
+    Germany: [0.5, 2.25, 0, 1.25],
+  });
+  const points = (values: number[]) => values.map((value, k) => ({ date: ISO[k]!, value }));
+  /** The ranked overview, every field written out. */
+  const RANKED: SummarySeries[] = [
+    {
+      label: 'Germany Volume Intensity',
+      operator: 'sourcecountry:GM',
+      sum: 4,
+      pointCount: 4,
+      peak: { date: '2026-10-31T01:00:00Z', value: 2.25 },
+      data: points([0.5, 2.25, 0, 1.25]),
+    },
+    {
+      label: 'France Volume Intensity',
+      operator: 'sourcecountry:FR',
+      sum: 2,
+      pointCount: 4,
+      peak: { date: '2026-10-31T00:00:00Z', value: 1.1 },
+      data: points([1.1, 0.2, 0.3, 0.4]),
+    },
+    {
+      label: 'Serbia Volume Intensity',
+      sum: 0.1,
+      pointCount: 4,
+      peak: { date: '2026-10-31T00:00:00Z', value: 0.1 },
+      data: points([0.1, 0, 0, 0]),
+    },
+    {
+      label: 'Japan Volume Intensity',
+      operator: 'sourcecountry:JA',
+      sum: 0,
+      pointCount: 4,
+      peak: { date: '2026-10-31T00:00:00Z', value: 0 },
+      data: points([0, 0, 0, 0]),
+    },
+  ];
+  const withoutPoints = ({ data: _, ...summary }: SummarySeries) => summary;
+  const INPUT = { query: 'climate', breakdownBy: 'country', ...ROUTED_WINDOW } as const;
+  const call = (input: Record<string, unknown> = {}) =>
+    runToolContract(gdeltGetCoverageBreakdown, {
+      ...INPUT,
+      ...input,
+    } as Parameters<typeof gdeltGetCoverageBreakdown.handler>[0]);
+
+  async function walk(input: Record<string, unknown>) {
+    const pages: Array<{ sc: SummaryOut; text: string }> = [];
+    let offset: number | undefined = 0;
+    while (offset !== undefined) {
+      const result = await call({ ...input, offset });
+      expect(result.isError).toBeFalsy();
+      pages.push({ sc: summaryOut(result), text: contentText(result) });
+      offset = summaryOut(result).nextOffset;
+    }
+    return pages;
+  }
+
+  it('returns sum, pointCount, and peak beside every series and its points, on both surfaces', async () => {
+    doc.answerDoc({ body: BODY });
+
+    const result = await call();
+
+    expect(summaryOut(result).topSeries).toEqual(RANKED);
+    expect(contentText(result)).toContain(
+      [
+        '### France Volume Intensity (sum of values: 2)',
+        'Operator: `sourcecountry:FR`',
+        'Data points: 4',
+        'Peak: 1.1 at 2026-10-31T00:00:00Z',
+        '- 2026-10-31T00:00:00Z: 1.1',
+      ].join('\n'),
+    );
+    expect(contentText(result)).not.toContain('Points:**');
+  });
+
+  it('leaves every point out under includePoints: false and still prints each summary', async () => {
+    doc.answerDoc({ body: BODY });
+
+    const result = await call({ includePoints: false });
+
+    expect(summaryOut(result).topSeries).toEqual(RANKED.map(withoutPoints));
+    const text = contentText(result);
+    expect(text).toContain(
+      [
+        '### Germany Volume Intensity (sum of values: 4)',
+        'Operator: `sourcecountry:GM`',
+        'Data points: 4',
+        'Peak: 2.25 at 2026-10-31T01:00:00Z',
+        '',
+        '### France Volume Intensity (sum of values: 2)',
+      ].join('\n'),
+    );
+    expect(text).not.toMatch(/^- 2026-10-31T/m);
+    expect(text).toContain(
+      '**Points:** omitted (includePoints: false); each series keeps its sum, point count, and peak.',
+    );
+    expect(text).not.toContain('No breakdown series returned.');
+  });
+
+  it('leaves the points out of selectedSeries too, in the order requested', async () => {
+    doc.answerDoc({ body: BODY });
+
+    const result = await call({
+      includePoints: false,
+      series: ['Japan Volume Intensity', 'Germany Volume Intensity'],
+    });
+
+    expect(summaryOut(result).selectedSeries).toEqual([
+      withoutPoints(RANKED[3]!),
+      withoutPoints(RANKED[0]!),
+    ]);
+    expect(contentText(result)).toContain('### Japan Volume Intensity (sum of values: 0)\n');
+    expect(contentText(result)).not.toMatch(/^- 2026-10-31T/m);
+  });
+
+  /** Ranking, pages, and the labels each page leaves out never depend on whether points come. */
+  it('pages and ranks the same with or without points, each summary identical on every page and in a selection', async () => {
+    doc.answerDoc({ body: BODY });
+
+    const withPoints = await walk({ limit: 1 });
+    const summaries = await walk({ limit: 1, includePoints: false });
+
+    expect(withPoints).toHaveLength(4);
+    expect(
+      summaries.map(({ sc }) => ({ ...sc, topSeries: sc.topSeries?.map(withoutPoints) })),
+    ).toEqual(withPoints.map(({ sc }) => ({ ...sc, topSeries: sc.topSeries?.map(withoutPoints) })));
+    for (const [k, { sc }] of withPoints.entries()) expect(sc.topSeries).toEqual([RANKED[k]]);
+    for (const series of RANKED) {
+      const selected = summaryOut(await call({ series: [series.label] })).selectedSeries;
+      expect(selected).toEqual([series]);
+    }
+  });
+
+  it('returns each pointless series of an empty breakdown with a zero sum and count and no peak', async () => {
+    doc.answerDoc({ body: countryAnswer([], { Germany: [], France: [] }) });
+
+    const full = await call();
+    const summaries = await call({ includePoints: false });
+
+    expect(summaryOut(full).topSeries).toEqual([
+      {
+        label: 'Germany Volume Intensity',
+        operator: 'sourcecountry:GM',
+        sum: 0,
+        pointCount: 0,
+        data: [],
+      },
+      {
+        label: 'France Volume Intensity',
+        operator: 'sourcecountry:FR',
+        sum: 0,
+        pointCount: 0,
+        data: [],
+      },
+    ]);
+    expect(summaryOut(summaries).topSeries).toEqual([
+      { label: 'Germany Volume Intensity', operator: 'sourcecountry:GM', sum: 0, pointCount: 0 },
+      { label: 'France Volume Intensity', operator: 'sourcecountry:FR', sum: 0, pointCount: 0 },
+    ]);
+    for (const result of [full, summaries]) {
+      expect(contentText(result)).toContain('No breakdown series returned.');
+      expect(contentText(result)).not.toContain('Peak:');
+    }
+  });
+});
+
+/**
+ * #98: DOC leaves a timestep out of every series of a breakdown where GDELT's own data has a gap
+ * (measured: an `earthquake` country breakdown over 2026-09-01 – 09-08 returned 116 series on the
+ * quokka timeline's 159 hourly steps). The fixture puts three series on that step set.
+ */
+describe('gdelt_get_coverage_breakdown missing timesteps (#98)', () => {
+  const doc = useRoutedDoc();
+  const QUOKKA_DATES = (
+    JSON.parse(
+      readFileSync(
+        new URL('../fixtures/doc/quokka-timelinevol-20260901-20260908.json', import.meta.url),
+        'utf8',
+      ),
+    ) as { timeline: Array<{ data: Array<{ date: string }> }> }
+  ).timeline[0]!.data.map((d) => d.date);
+  const wave = (shift: number) => QUOKKA_DATES.map((_, k) => ((k + shift) % 7) / 4);
+  const GAPPED = countryAnswer(QUOKKA_DATES, { Germany: wave(0), France: wave(3), Japan: wave(5) });
+  const GAP_NOTICE =
+    "10 hourly timesteps are missing between the first and last timestep GDELT returned: 2026-09-02T18:00:00Z, 2026-09-03T17:00:00Z–2026-09-03T21:00:00Z (5), 2026-09-04T11:00:00Z, 2026-09-05T22:00:00Z, 2026-09-06T04:00:00Z, 2026-09-06T23:00:00Z. A missing timestep is a gap in GDELT's data, not zero coverage.";
+  const INPUT = {
+    query: 'earthquake',
+    breakdownBy: 'country',
+    startDatetime: '20260901000000',
+    endDatetime: '20260908000000',
+  } as const;
+  const call = (input: Record<string, unknown> = {}) =>
+    runToolContract(gdeltGetCoverageBreakdown, {
+      ...INPUT,
+      ...input,
+    } as Parameters<typeof gdeltGetCoverageBreakdown.handler>[0]);
+
+  it('counts the ten hours every series lacks, once per response, on both surfaces', async () => {
+    doc.answerDoc({ body: GAPPED });
+
+    const result = await call();
+
+    expect(summaryOut(result)).toMatchObject({
+      dateResolution: 'hour',
+      missingTimesteps: 10,
+      notice: GAP_NOTICE,
+      totalCount: 3,
+    });
+    for (const series of summaryOut(result).topSeries ?? []) {
+      expect(series).not.toHaveProperty('missingTimesteps');
+      expect(series.data).toHaveLength(159);
+      // The points the series holds, not the 169 timesteps its first and last span.
+      expect(series.pointCount).toBe(159);
+    }
+    expect(contentText(result)).toContain('**Date Resolution:** hour\n**Missing timesteps:** 10\n');
+    expect(contentText(result)).toContain(`> ${GAP_NOTICE}`);
+    expect(contentText(result).match(/^Data points: 159$/gm)).toHaveLength(3);
+  });
+
+  it.each([
+    ['every page of a limit-1 walk', { limit: 1 }],
+    ['every page of a limit-1 walk without points', { limit: 1, includePoints: false }],
+    [
+      'a series selection, paged',
+      { limit: 1, series: ['Japan Volume Intensity', 'France Volume Intensity'] },
+    ],
+  ])('carries the same count and runs on %s', async (_label, input) => {
+    doc.answerDoc({ body: GAPPED });
+    const pages: SummaryOut[] = [];
+    let offset: number | undefined = 0;
+    while (offset !== undefined) {
+      const result = await call({ ...input, offset });
+      expect(result.isError).toBeFalsy();
+      expect(contentText(result)).toContain('**Missing timesteps:** 10\n');
+      expect(contentText(result)).toContain(GAP_NOTICE);
+      pages.push(summaryOut(result));
+      offset = summaryOut(result).nextOffset;
+    }
+    expect(pages.length).toBeGreaterThan(1);
+    expect(pages[0]!.notice).toMatch(/^Returned series 1–1 of \d series; continue with offset 1 /);
+    for (const page of pages) {
+      expect(page.missingTimesteps).toBe(10);
+      expect(page.notice?.endsWith(` ${GAP_NOTICE}`)).toBe(true);
+    }
+  });
+
+  /**
+   * Germany, ranked first, holds only the first 40 hours, which run without a gap; France holds
+   * all 159. The gaps are the whole answer's: a step France carries is present, and a page or a
+   * selection holding only Germany reports France's gaps too.
+   */
+  it("counts the whole answer's gaps when its series carry different timesteps, on every page and under a selection", async () => {
+    doc.answerDoc({
+      body: {
+        query_details: { title: 'earthquake', date_resolution: 'hour' },
+        timeline: [
+          {
+            series: 'France Volume Intensity',
+            data: QUOKKA_DATES.map((date) => ({ date, value: 0.01 })),
+          },
+          {
+            series: 'Germany Volume Intensity',
+            data: QUOKKA_DATES.slice(0, 40).map((date) => ({ date, value: 1 })),
+          },
+        ],
+      },
+    });
+
+    for (const [input, pageCount] of [
+      [{ limit: 1 }, 2],
+      [{ series: ['Germany Volume Intensity'] }, 1],
+    ] as const) {
+      const pages: SummaryOut[] = [];
+      let offset: number | undefined = 0;
+      while (offset !== undefined) {
+        const result = await call({ ...input, offset });
+        expect(result.isError).toBeFalsy();
+        expect(contentText(result)).toContain('**Missing timesteps:** 10\n');
+        expect(contentText(result)).toContain(GAP_NOTICE);
+        pages.push(summaryOut(result));
+        offset = summaryOut(result).nextOffset;
+      }
+      expect(pages).toHaveLength(pageCount);
+      expect([...(pages[0]!.topSeries ?? []), ...(pages[0]!.selectedSeries ?? [])]).toMatchObject([
+        { label: 'Germany Volume Intensity', pointCount: 40 },
+      ]);
+      for (const page of pages) {
+        expect(page).toMatchObject({ dateResolution: 'hour', missingTimesteps: 10 });
+        expect(page.notice?.endsWith(GAP_NOTICE)).toBe(true);
+      }
+    }
+  });
+
+  /**
+   * Timesteps a week apart infer `day`, the nearest resolution DOC uses, with no daily step among
+   * them: the answer reports that resolution and claims no gap at it. An empty `dateResolution`
+   * leaves `query_details` out of the answer.
+   */
+  it.each([
+    ['names a resolution the server does not use', 'week'],
+    ['names none', ''],
+  ])('claims no gap between weekly timesteps when DOC %s', async (_label, reported) => {
+    const weeks = ['20260601T000000Z', '20260608T000000Z', '20260615T000000Z', '20260622T000000Z'];
+    doc.answerDoc({
+      body: countryAnswer(weeks, { Germany: [1, 2, 3, 4], France: [4, 3, 2, 1] }, reported),
+    });
+
+    const result = await call({ startDatetime: '20260601000000', endDatetime: '20260623000000' });
+
+    expect(summaryOut(result)).toMatchObject({ dateResolution: 'day', totalCount: 2 });
+    expect(summaryOut(result)).not.toHaveProperty('missingTimesteps');
+    expect(summaryOut(result).notice ?? '').not.toMatch(/missing/i);
+    expect(contentText(result)).not.toContain('Missing timesteps');
+  });
+
+  it('takes the resolution DOC reports on a one-timestep answer inference cannot read', async () => {
+    doc.answerDoc({ body: countryAnswer(['20260904T000000Z'], { Germany: [1], France: [0.5] }) });
+
+    const result = await call();
+
+    expect(summaryOut(result)).toMatchObject({ dateResolution: 'hour', totalCount: 2 });
+    expect(summaryOut(result)).not.toHaveProperty('missingTimesteps');
+    expect(contentText(result)).toContain('**Date Resolution:** hour\n');
+  });
+
+  /**
+   * DOC's reported resolution is the answer's `dateResolution` even where the spacing implies a
+   * coarser one, but it is DOC's label, not its spacing: timesteps a day apart never step hourly,
+   * so the 46 hours between them are not claimed as gaps.
+   */
+  it('reports the resolution DOC names over the one the spacing implies, and claims no gap the spacing does not show', async () => {
+    const days = ['20260901T000000Z', '20260902T000000Z', '20260903T000000Z'];
+    doc.answerDoc({ body: countryAnswer(days, { Germany: [1, 2, 3], France: [3, 2, 1] }) });
+
+    const result = await call();
+
+    expect(summaryOut(result)).toMatchObject({ dateResolution: 'hour', totalCount: 2 });
+    expect(summaryOut(result)).not.toHaveProperty('missingTimesteps');
+    expect(summaryOut(result).notice ?? '').not.toMatch(/missing/i);
+    expect(contentText(result)).toContain('**Date Resolution:** hour\n');
+    expect(contentText(result)).not.toContain('Missing timesteps');
+  });
+
+  it('leaves a mirror answer with interior holes unchecked', async () => {
+    attachMirror(
+      mirrorAnswers(
+        {
+          kind: 'breakdown',
+          result: [
+            {
+              label: 'France Volume Intensity',
+              data: [
+                { date: '2026-10-31T10:00:00Z', value: 4.5 },
+                { date: '2026-10-31T13:00:00Z', value: 1 },
+                { date: '2026-10-31T14:00:00Z', value: 0 },
+              ],
+            },
+          ],
+        },
+        3,
+      ),
+    );
+    doc.answerDoc('refuse');
+
+    const result = await call({ ...ROUTED_WINDOW, query: 'climate' });
+
+    expect(summaryOut(result)).toMatchObject({ source: 'gkg_mirror', dateResolution: 'hour' });
+    expect(summaryOut(result)).not.toHaveProperty('missingTimesteps');
+    expect(summaryOut(result).notice).toBe(
+      `${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_THEME_ROUTE_SENTENCE}`,
+    );
+  });
+
+  it('draws no count or gap notice for contiguous series, smoothed or not, on any page', async () => {
+    const hours = QUOKKA_DATES.slice(0, 40);
+    doc.answerDoc({ body: countryAnswer(hours, { Germany: [], France: [1], Japan: [0, 2] }) });
+
+    for (const input of [{ limit: 1 }, { limit: 1, smoothing: 6, query: 'tremor' }]) {
+      let offset: number | undefined = 0;
+      while (offset !== undefined) {
+        const result = await call({ ...input, offset });
+        expect(summaryOut(result)).not.toHaveProperty('missingTimesteps');
+        expect(summaryOut(result).notice).not.toMatch(/missing/i);
+        expect(contentText(result)).not.toContain('Missing timesteps');
+        offset = summaryOut(result).nextOffset;
+      }
+    }
+  });
+
+  /** #68: smoothing drops leading steps and says so; they are not gaps. Hours 5–39 run unbroken. */
+  it('keeps the smoothing notice alone when a smoothed answer starts late', async () => {
+    const smoothingNotice =
+      'A trailing moving average of width 6 needs that many source steps; leading steps without a full window are omitted and peaks may appear later.';
+    doc.answerDoc({
+      body: countryAnswer(QUOKKA_DATES.slice(5, 40), { Germany: [1, 2, 3], France: [0, 1] }),
+    });
+
+    const result = await call({ smoothing: 6 });
+
+    expect(summaryOut(result).topSeries?.[0]?.data?.[0]?.date).toBe('2026-09-01T05:00:00Z');
+    expect(summaryOut(result)).not.toHaveProperty('missingTimesteps');
+    expect(summaryOut(result).notice).toBe(smoothingNotice);
+    expect(contentText(result)).toContain(`> ${smoothingNotice}`);
+  });
+
+  /**
+   * A window that ended under 24 hours before the fetch is fresh for 15 minutes, then served
+   * stale when a refetch is refused: still DOC's data, so it is checked like a live answer.
+   */
+  it('checks a stored DOC answer served stale like a live one', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.parse('2026-09-08T06:00:00Z') });
+    try {
+      doc.answerDoc({ body: GAPPED });
+      await call();
+      vi.setSystemTime(Date.parse('2026-09-08T06:16:00Z'));
+      doc.answerDoc('refuse');
+
+      const result = await call();
+
+      expect(result.structuredContent).toMatchObject({
+        staleResponse: { reason: 'gdelt_rate_limited' },
+        missingTimesteps: 10,
+        notice: GAP_NOTICE,
+      });
+      expect(contentText(result)).toContain('**Missing timesteps:** 10\n');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

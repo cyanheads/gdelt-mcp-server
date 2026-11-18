@@ -1,0 +1,16 @@
+{
+  "query_details": {
+    "title": "hurricane helene station:CNN",
+    "time": "Hourly +00:00: 09/27/2024 11pm - 09/28/2024 0am",
+    "date_resolution": "hour"
+  },
+  "timeline": [
+    {
+      "series": "CNN",
+      "data": [
+        { "date": "20240927T230000Z", "value": 6 },
+        { "date": "20240928T000000Z", "value": 6 }
+      ]
+    }
+  ]
+}

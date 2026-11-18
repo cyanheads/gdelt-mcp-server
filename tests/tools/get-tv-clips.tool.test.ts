@@ -67,7 +67,9 @@ describe('gdeltGetTvClips', () => {
     expect(sc).not.toHaveProperty('withheldCount');
     const text = contentText(result);
     expect(text.match(/^### /gm)).toHaveLength(3000);
-    for (let i = 0; i < 3000; i++) expect(text).toContain(`retained-${i}`);
+    // Every record's URL, read off the text in one pass: a search per record is quadratic.
+    const printed = new Set(Array.from(text.matchAll(/retained-(\d+)/g), (m) => Number(m[1])));
+    expect([...printed].sort((a, b) => a - b)).toEqual(fetched.map((_, i) => i));
   });
   beforeEach(() => {
     vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
@@ -502,6 +504,8 @@ describe('gdeltGetTvClips', () => {
       ['20240116010500', '20240116031000', '20240116010500', '20240116031000'],
       ['20240116010000', '20240116020000', '20240116010000', '20240116015959'],
       ['20191215003000', '20191222003000', '20191215003000', '20191222003000'],
+      // Exactly 3 × 365 days ending on the hour: the end goes a second earlier at the threshold too.
+      ['20161201000000', '20191201000000', '20161201000000', '20191130235959'],
     ])('requests %s–%s as %s–%s', async (start, end, sentStart, sentEnd) => {
       const upstream = vi.fn().mockResolvedValue({ clips: [] });
       vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({

@@ -3,6 +3,7 @@
  * @module tests/tools/get-coverage-timeline.tool.test
  */
 
+import { readFileSync } from 'node:fs';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -13,15 +14,23 @@ import {
   attachMirror,
   DOC_429_DETAIL,
   MIRROR_DIVERGENCE_SENTENCE,
+  MIRROR_KEYWORD_CASES,
   MIRROR_NO_MATCH_SENTENCE,
   MIRROR_STANDS_IN_FOR,
+  MIRROR_THEME_ROUTE_SENTENCE,
   mirrorAnswers,
+  mirrorSentences,
   OVERLOAD_RETRY_SENTENCE,
   PARTIAL_COVERAGE,
   PARTIAL_COVERAGE_LINE,
   ROUTED_WINDOW,
   refusedAttemptsLines,
+  SHORT_WINDOW,
+  SHORT_WINDOW_COVERAGE,
+  SHORT_WINDOW_FAULT,
+  SHORT_WINDOW_HINT,
   SOURCE_LINE,
+  shortWindowAttemptsLines,
   useRoutedDoc,
 } from '../helpers/doc-source-fakes.js';
 import { contentText, hrefFor, literalHtml, renderMarkdown } from './markdown-render.js';
@@ -48,15 +57,17 @@ const DAY_SERIES = [
 
 describe('gdeltGetCoverageTimeline', () => {
   it('renders smoothed raw values and the full-result peak without losing numeric precision', async () => {
-    const getTimeline = vi.fn().mockResolvedValue([
-      {
-        label: 'Article Count',
-        data: [
-          { date: '2026-10-21T15:00:00Z', value: 0.2837, norm: 11825 },
-          { date: '2026-10-21T16:00:00Z', value: 1.23456789, norm: 12000 },
-        ],
-      },
-    ]);
+    const getTimeline = vi.fn().mockResolvedValue({
+      series: [
+        {
+          label: 'Article Count',
+          data: [
+            { date: '2026-10-21T15:00:00Z', value: 0.2837, norm: 11825 },
+            { date: '2026-10-21T16:00:00Z', value: 1.23456789, norm: 12000 },
+          ],
+        },
+      ],
+    });
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
       getTimeline,
     } as unknown as docServiceModule.GdeltDocService);
@@ -83,16 +94,18 @@ describe('gdeltGetCoverageTimeline', () => {
     expect(getTimeline).toHaveBeenCalledTimes(1);
   });
   it('preserves raw denominators through selection and count pages on both surfaces', async () => {
-    const getTimeline = vi.fn().mockResolvedValue([
-      {
-        label: 'Article Count',
-        data: [
-          { date: '2026-10-21T15:00:00Z', value: 0, norm: 10000 },
-          { date: '2026-10-21T16:00:00Z', value: 11, norm: 11825 },
-          { date: '2026-10-21T17:00:00Z', value: 5.5, norm: 12000 },
-        ],
-      },
-    ]);
+    const getTimeline = vi.fn().mockResolvedValue({
+      series: [
+        {
+          label: 'Article Count',
+          data: [
+            { date: '2026-10-21T15:00:00Z', value: 0, norm: 10000 },
+            { date: '2026-10-21T16:00:00Z', value: 11, norm: 11825 },
+            { date: '2026-10-21T17:00:00Z', value: 5.5, norm: 12000 },
+          ],
+        },
+      ],
+    });
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
       getTimeline,
     } as unknown as docServiceModule.GdeltDocService);
@@ -140,15 +153,17 @@ describe('gdeltGetCoverageTimeline', () => {
   });
 
   it('pages by requested timestep count even when all points fit the former byte budget', async () => {
-    const getTimeline = vi.fn().mockResolvedValue([
-      {
-        label: 'Volume',
-        data: Array.from({ length: 12 }, (_, i) => ({
-          date: `2026-10-${String(i + 1).padStart(2, '0')}`,
-          value: i,
-        })),
-      },
-    ]);
+    const getTimeline = vi.fn().mockResolvedValue({
+      series: [
+        {
+          label: 'Volume',
+          data: Array.from({ length: 12 }, (_, i) => ({
+            date: `2026-10-${String(i + 1).padStart(2, '0')}`,
+            value: i,
+          })),
+        },
+      ],
+    });
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
       getTimeline,
     } as unknown as docServiceModule.GdeltDocService);
@@ -161,15 +176,17 @@ describe('gdeltGetCoverageTimeline', () => {
   });
 
   it('retains raw zero denominators and the full peak through exact point selection', async () => {
-    const getTimeline = vi.fn().mockResolvedValue([
-      {
-        label: 'Article Count',
-        data: [
-          { date: '2026-10-21T15:00:00Z', value: 0, norm: 0 },
-          { date: '2026-10-21T16:00:00Z', value: 11, norm: 11825 },
-        ],
-      },
-    ]);
+    const getTimeline = vi.fn().mockResolvedValue({
+      series: [
+        {
+          label: 'Article Count',
+          data: [
+            { date: '2026-10-21T15:00:00Z', value: 0, norm: 0 },
+            { date: '2026-10-21T16:00:00Z', value: 11, norm: 11825 },
+          ],
+        },
+      ],
+    });
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
       getTimeline,
     } as unknown as docServiceModule.GdeltDocService);
@@ -191,7 +208,7 @@ describe('gdeltGetCoverageTimeline', () => {
   it.each([undefined, 0, 1, 6, 30])(
     'composes smoothing %s with empty results without inventing data',
     async (smoothing) => {
-      const getTimeline = vi.fn().mockResolvedValue([]);
+      const getTimeline = vi.fn().mockResolvedValue({ series: [] });
       vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
         getTimeline,
       } as unknown as docServiceModule.GdeltDocService);
@@ -214,12 +231,14 @@ describe('gdeltGetCoverageTimeline', () => {
   );
 
   it('applies and discloses the timestep cap once while retaining the next count page', async () => {
-    const getTimeline = vi.fn().mockResolvedValue([
-      {
-        label: 'Volume',
-        data: Array.from({ length: 401 }, (_, value) => ({ date: String(value), value })),
-      },
-    ]);
+    const getTimeline = vi.fn().mockResolvedValue({
+      series: [
+        {
+          label: 'Volume',
+          data: Array.from({ length: 401 }, (_, value) => ({ date: String(value), value })),
+        },
+      ],
+    });
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
       getTimeline,
     } as unknown as docServiceModule.GdeltDocService);
@@ -237,7 +256,7 @@ describe('gdeltGetCoverageTimeline', () => {
   });
   beforeEach(() => {
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
-      getTimeline: vi.fn().mockResolvedValue(VOLUME_SERIES),
+      getTimeline: vi.fn().mockResolvedValue({ series: VOLUME_SERIES }),
     } as unknown as docServiceModule.GdeltDocService);
   });
 
@@ -268,7 +287,7 @@ describe('gdeltGetCoverageTimeline', () => {
 
   it('infers day resolution from date-only strings', async () => {
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
-      getTimeline: vi.fn().mockResolvedValue(DAY_SERIES),
+      getTimeline: vi.fn().mockResolvedValue({ series: DAY_SERIES }),
     } as unknown as docServiceModule.GdeltDocService);
 
     const ctx = createMockContext({ errors: gdeltGetCoverageTimeline.errors });
@@ -280,7 +299,7 @@ describe('gdeltGetCoverageTimeline', () => {
   describe('zero-match answer', () => {
     function mockTimeline(series: unknown) {
       vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
-        getTimeline: vi.fn().mockResolvedValue(series),
+        getTimeline: vi.fn().mockResolvedValue({ series }),
       } as unknown as docServiceModule.GdeltDocService);
     }
 
@@ -346,11 +365,11 @@ describe('gdeltGetCoverageTimeline', () => {
 
   it('omits dateResolution when a single point leaves it undeterminable', async () => {
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
-      getTimeline: vi
-        .fn()
-        .mockResolvedValue([
+      getTimeline: vi.fn().mockResolvedValue({
+        series: [
           { label: 'Volume Intensity', data: [{ date: '2024-01-01T00:00:00Z', value: 0.5 }] },
-        ]),
+        ],
+      }),
     } as unknown as docServiceModule.GdeltDocService);
     const result = await runToolContract(gdeltGetCoverageTimeline, { query: 'x', mode: 'volume' });
     expect(result.isError).toBeFalsy();
@@ -531,7 +550,7 @@ describe('gdeltGetCoverageTimeline', () => {
 
     beforeEach(() => {
       vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
-        getTimeline: vi.fn().mockResolvedValue(SPIKE_SERIES),
+        getTimeline: vi.fn().mockResolvedValue({ series: SPIKE_SERIES }),
       } as unknown as docServiceModule.GdeltDocService);
     });
 
@@ -693,7 +712,7 @@ describe('gdeltGetCoverageTimeline', () => {
 
     it('escapes labels, keeps destinations whole, and leaves structuredContent raw', async () => {
       vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
-        getTimeline: vi.fn().mockResolvedValue(HOSTILE_SERIES),
+        getTimeline: vi.fn().mockResolvedValue({ series: HOSTILE_SERIES }),
       } as unknown as docServiceModule.GdeltDocService);
       const result = await runToolContract(gdeltGetCoverageTimeline, {
         query: 'x',
@@ -782,7 +801,7 @@ describe('gdeltGetCoverageTimeline', () => {
 
     function mock(series: unknown) {
       vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
-        getTimeline: vi.fn().mockResolvedValue(series),
+        getTimeline: vi.fn().mockResolvedValue({ series }),
       } as unknown as docServiceModule.GdeltDocService);
     }
     const call = (input: Record<string, unknown>) =>
@@ -1115,7 +1134,7 @@ describe('gdelt_get_coverage_timeline DOC source routing', () => {
 
     const result = await runToolContract(gdeltGetCoverageTimeline, INPUT);
 
-    const mirrorNotice = `${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE}`;
+    const mirrorNotice = `${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_THEME_ROUTE_SENTENCE}`;
     expect(result.structuredContent).toEqual({
       series: [{ label: 'Volume Intensity', data: [POINT], pointCount: 1, peak: POINT }],
       effectiveQuery: 'climate',
@@ -1146,11 +1165,26 @@ describe('gdelt_get_coverage_timeline DOC source routing', () => {
 
     const result = await runToolContract(gdeltGetCoverageTimeline, { ...INPUT, mode: 'tone' });
 
-    expect(notice(result)).toBe(
-      `${EMPTY_NOTICE} ${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_NO_MATCH_SENTENCE}`,
-    );
+    const mirrorNotice = `${EMPTY_NOTICE} ${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_NO_MATCH_SENTENCE} ${MIRROR_THEME_ROUTE_SENTENCE}`;
+    expect(notice(result)).toBe(mirrorNotice);
     expect(contentText(result)).toContain(refusedAttemptsLines('empty'));
+    expect(contentText(result).split('\n')).toContain(`> ${mirrorNotice}`);
   });
+
+  it.each(MIRROR_KEYWORD_CASES)(
+    'ends the notice with the mirror sentences for a query holding $holds, $matched matched, on both surfaces',
+    async ({ query, matched, sentences }) => {
+      attachMirror(
+        mirrorAnswers(matched > 0 ? MIRROR_TIMELINE : { kind: 'timeline', result: [] }, matched),
+      );
+      doc.answerDoc('refuse');
+
+      const result = await runToolContract(gdeltGetCoverageTimeline, { ...INPUT, query });
+
+      expect(result.structuredContent).toMatchObject({ source: 'gkg_mirror' });
+      expect(mirrorSentences(result)).toEqual({ structuredContent: sentences, content: sentences });
+    },
+  );
 
   it("keeps DOC's empty answer with the overload sentence when the mirror has no match either", async () => {
     attachMirror(
@@ -1168,6 +1202,406 @@ describe('gdelt_get_coverage_timeline DOC source routing', () => {
         { source: 'gkg_mirror', outcome: 'empty' },
       ],
       notice: `${EMPTY_NOTICE} ${OVERLOAD_RETRY_SENTENCE}`,
+    });
+  });
+
+  /** A window under the 30 minutes DOC accepts (#92); the router's table is in doc-source-router.test.ts. */
+  it('with no mirror, fails a window under 30 minutes invalid_date_range before any request, on both surfaces', async () => {
+    const fetch = doc.answerDoc({ body: {} });
+
+    const result = await runToolContract(gdeltGetCoverageTimeline, { ...INPUT, ...SHORT_WINDOW });
+
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: JsonRpcErrorCode.ValidationError,
+          message: SHORT_WINDOW_FAULT,
+          data: { reason: 'invalid_date_range', recovery: { hint: SHORT_WINDOW_HINT } },
+        },
+      },
+    });
+    expect(contentText(result)).toContain(SHORT_WINDOW_FAULT);
+    expect(contentText(result)).toContain(`Recovery: ${SHORT_WINDOW_HINT}`);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('answers a window under 30 minutes from the mirror without asking DOC, saying why on both surfaces', async () => {
+    attachMirror(mirrorAnswers(MIRROR_TIMELINE, 3, SHORT_WINDOW_COVERAGE));
+    const fetch = doc.answerDoc({ body: {} });
+
+    const result = await runToolContract(gdeltGetCoverageTimeline, { ...INPUT, ...SHORT_WINDOW });
+
+    const mirrorNotice = `${MIRROR_STANDS_IN_FOR.window_too_short} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_THEME_ROUTE_SENTENCE}`;
+    expect(result.structuredContent).toEqual({
+      series: [{ label: 'Volume Intensity', data: [POINT], pointCount: 1, peak: POINT }],
+      effectiveQuery: 'climate',
+      totalCount: 1,
+      mode: 'volume',
+      ...SHORT_WINDOW,
+      source: 'gkg_mirror',
+      attempts: [
+        { source: 'doc_api', outcome: 'window_too_short', detail: SHORT_WINDOW_FAULT },
+        { source: 'gkg_mirror', outcome: 'answered' },
+      ],
+      notice: mirrorNotice,
+    });
+    const text = contentText(result);
+    expect(text).toContain(SOURCE_LINE.gkg_mirror);
+    expect(text).toContain(shortWindowAttemptsLines('answered'));
+    expect(text).toContain(`> ${mirrorNotice}`);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #98: DOC leaves a timestep out of its answer where GDELT's own data has a gap, and answers a
+ * timestep with no matching coverage with 0. The fixture is a real DOC answer (quokka,
+ * 2026-09-01 – 09-08): 159 of the window's 169 hourly steps, 158 of them 0, run through the real
+ * DOC service with only `fetch` stubbed. The gap count's own table is in date-resolution.test.ts
+ * and the notice's in missing-timesteps.test.ts; these cases prove the wiring.
+ */
+describe('gdelt_get_coverage_timeline missing timesteps (#98)', () => {
+  const doc = useRoutedDoc();
+  type RawDoc = {
+    query_details?: { title?: string; date_resolution?: string };
+    timeline: Array<{ series: string; data: Array<{ date: string; value: number }> }>;
+  };
+  type Out = {
+    dateResolution?: string;
+    missingTimesteps?: number;
+    notice?: string;
+    totalCount: number;
+    nextOffset?: number;
+    series: Array<{ label: string; pointCount?: number; data: Array<{ date: string }> }>;
+    staleResponse?: unknown;
+  };
+  const QUOKKA = JSON.parse(
+    readFileSync(
+      new URL('../fixtures/doc/quokka-timelinevol-20260901-20260908.json', import.meta.url),
+      'utf8',
+    ),
+  ) as RawDoc;
+  /** DOC's tone timeline of the same query and window: the same 159 steps, 0 where no article matched. */
+  const QUOKKA_TONE = JSON.parse(
+    readFileSync(
+      new URL('../fixtures/doc/quokka-timelinetone-20260901-20260908.json', import.meta.url),
+      'utf8',
+    ),
+  ) as RawDoc;
+  const QUOKKA_INPUT = {
+    query: 'quokka',
+    startDatetime: '20260901000000',
+    endDatetime: '20260908000000',
+  } as const;
+  const GAP_NOTICE =
+    "10 hourly timesteps are missing between the first and last timestep GDELT returned: 2026-09-02T18:00:00Z, 2026-09-03T17:00:00Z–2026-09-03T21:00:00Z (5), 2026-09-04T11:00:00Z, 2026-09-05T22:00:00Z, 2026-09-06T04:00:00Z, 2026-09-06T23:00:00Z. A missing timestep is a gap in GDELT's data, not zero coverage.";
+  const SMOOTHING_NOTICE =
+    'A trailing moving average of width 6 needs that many source steps; leading steps without a full window are omitted and peaks may appear later.';
+  const out = (result: { structuredContent?: unknown }) => result.structuredContent as Out;
+  const call = (input: Record<string, unknown>) =>
+    runToolContract(gdeltGetCoverageTimeline, {
+      ...QUOKKA_INPUT,
+      ...input,
+    } as Parameters<typeof gdeltGetCoverageTimeline.handler>[0]);
+
+  /** Every page of a walk from offset 0 with `input`. */
+  async function walk(input: Record<string, unknown>) {
+    const pages: Array<{ sc: Out; text: string }> = [];
+    let offset: number | undefined = 0;
+    while (offset !== undefined) {
+      const result = await call({ ...input, offset });
+      expect(result.isError).toBeFalsy();
+      pages.push({ sc: out(result), text: contentText(result) });
+      offset = out(result).nextOffset;
+    }
+    return pages;
+  }
+
+  /** `count` steps of `stepMs` from `start`, as DOC writes them (YYYYMMDDTHHMMSSZ), each 0. */
+  function steps(start: string, count: number, stepMs: number) {
+    return Array.from({ length: count }, (_, k) => ({
+      date: new Date(Date.parse(start) + k * stepMs)
+        .toISOString()
+        .replace(/\.000Z$/, 'Z')
+        .replaceAll(/[-:]/g, ''),
+      value: 0,
+    }));
+  }
+  const HOUR = 3_600_000;
+
+  it('counts the ten hours the quokka answer lacks and names each run on both surfaces', async () => {
+    doc.answerDoc({ body: QUOKKA });
+
+    const result = await call({ limit: 400 });
+
+    expect(result.isError).toBeFalsy();
+    expect(out(result)).toMatchObject({
+      dateResolution: 'hour',
+      missingTimesteps: 10,
+      totalCount: 159,
+      notice: GAP_NOTICE,
+      series: [{ label: 'Volume Intensity', pointCount: 159 }],
+    });
+    expect(out(result).series[0]!.data).toHaveLength(159);
+    const text = contentText(result);
+    expect(text).toContain('**Date Resolution:** hour\n**Missing timesteps:** 10\n');
+    expect(text).toContain(`> ${GAP_NOTICE}`);
+  });
+
+  it('carries the same count and runs on every page of a limit-10 walk', async () => {
+    doc.answerDoc({ body: QUOKKA });
+
+    const pages = await walk({ limit: 10 });
+
+    expect(pages).toHaveLength(16);
+    expect(pages[0]!.sc.notice).toBe(
+      `Returned timesteps 1–10 of 159 timesteps; continue with offset 10 (nextOffset) and otherwise identical inputs. ${GAP_NOTICE}`,
+    );
+    expect(pages.at(-1)!.sc.notice).toBe(
+      `Returned timesteps 151–159 of 159 timesteps — the last page. ${GAP_NOTICE}`,
+    );
+    for (const { sc, text } of pages) {
+      expect(sc.missingTimesteps).toBe(10);
+      expect(sc.notice?.split(GAP_NOTICE)).toHaveLength(2);
+      expect(text).toContain('**Missing timesteps:** 10\n');
+      expect(text).toContain(GAP_NOTICE);
+    }
+  });
+
+  it('carries the same count and runs when points restricts the response', async () => {
+    doc.answerDoc({ body: QUOKKA });
+
+    const result = await call({ points: ['2026-09-04T00:00:00Z'] });
+
+    expect(out(result)).toMatchObject({
+      missingTimesteps: 10,
+      notice: GAP_NOTICE,
+      series: [{ pointCount: 159, data: [{ date: '2026-09-04T00:00:00Z', value: 0.0307 }] }],
+    });
+    expect(contentText(result)).toContain('**Missing timesteps:** 10\n');
+  });
+
+  it('takes the resolution DOC reports before inferring one, and infers past one it does not use', async () => {
+    doc.answerDoc({
+      body: {
+        query_details: { date_resolution: 'hour' },
+        timeline: [{ series: 'Volume Intensity', data: steps('2026-09-04T00:00:00Z', 1, HOUR) }],
+      },
+    });
+    const reported = await call({});
+    expect(out(reported)).toMatchObject({ dateResolution: 'hour', totalCount: 1 });
+    expect(out(reported)).not.toHaveProperty('missingTimesteps');
+    expect(contentText(reported)).toContain('**Date Resolution:** hour\n');
+
+    // The spelling DOC gives its 15-minute resolution, on one timestep inference cannot read.
+    doc.answerDoc({
+      body: {
+        query_details: { date_resolution: '15m' },
+        timeline: [{ series: 'Volume Intensity', data: steps('2026-09-04T00:00:00Z', 1, HOUR) }],
+      },
+    });
+    const quarterHour = await call({ query: 'bilby' });
+    expect(out(quarterHour)).toMatchObject({ dateResolution: '15min', totalCount: 1 });
+    expect(contentText(quarterHour)).toContain('**Date Resolution:** 15min\n');
+
+    doc.answerDoc({
+      body: {
+        query_details: { date_resolution: 'fortnight' },
+        timeline: [{ series: 'Volume Intensity', data: steps('2026-09-04T00:00:00Z', 2, HOUR) }],
+      },
+    });
+    expect(out(await call({ query: 'numbat' }))).toMatchObject({ dateResolution: 'hour' });
+  });
+
+  /**
+   * DOC's reported resolution is the answer's `dateResolution` even where the spacing implies a
+   * coarser one, but it is DOC's label, not its spacing: timesteps a day apart never step hourly,
+   * so the 46 hours between them are not claimed as gaps.
+   */
+  it('reports the resolution DOC names over the one the spacing implies, and claims no gap the spacing does not show', async () => {
+    doc.answerDoc({
+      body: {
+        query_details: { date_resolution: 'hour' },
+        timeline: [
+          { series: 'Volume Intensity', data: steps('2026-09-01T00:00:00Z', 3, 24 * HOUR) },
+        ],
+      },
+    });
+
+    const result = await call({});
+
+    expect(out(result)).toMatchObject({ dateResolution: 'hour', totalCount: 3 });
+    expect(out(result)).not.toHaveProperty('missingTimesteps');
+    expect(out(result).notice ?? '').not.toMatch(/missing/i);
+    expect(contentText(result)).toContain('**Date Resolution:** hour\n');
+    expect(contentText(result)).not.toContain('Missing timesteps');
+  });
+
+  /**
+   * Timesteps a week apart infer `day`, the nearest resolution DOC uses, with no daily step among
+   * them: the answer reports that resolution and claims no gap at it.
+   */
+  it.each([
+    ['names a resolution the server does not use', { date_resolution: 'week' }],
+    ['names none', undefined],
+  ])('claims no gap between weekly timesteps when DOC %s', async (_label, query_details) => {
+    doc.answerDoc({
+      body: {
+        ...(query_details && { query_details }),
+        timeline: [
+          { series: 'Volume Intensity', data: steps('2026-06-01T00:00:00Z', 8, 7 * 24 * HOUR) },
+        ],
+      },
+    });
+
+    const result = await call({ startDatetime: '20260601000000', endDatetime: '20260727000000' });
+
+    expect(out(result)).toMatchObject({ dateResolution: 'day', totalCount: 8 });
+    expect(out(result)).not.toHaveProperty('missingTimesteps');
+    expect(out(result).notice ?? '').not.toMatch(/missing/i);
+    expect(contentText(result)).not.toContain('Missing timesteps');
+  });
+
+  it('counts the gaps of an answer that names no resolution at the one its timesteps step at', async () => {
+    doc.answerDoc({ body: { timeline: QUOKKA.timeline } });
+
+    const result = await call({ limit: 400 });
+
+    expect(out(result)).toMatchObject({
+      dateResolution: 'hour',
+      missingTimesteps: 10,
+      notice: GAP_NOTICE,
+    });
+  });
+
+  /**
+   * A window that ended under 24 hours before the fetch is fresh for 15 minutes, then served
+   * stale when a refetch is refused: still DOC's data, so it is checked like a live answer.
+   */
+  it('checks a stored DOC answer served stale like a live one', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.parse('2026-09-08T06:00:00Z') });
+    try {
+      doc.answerDoc({ body: QUOKKA });
+      await call({ limit: 400 });
+      vi.setSystemTime(Date.parse('2026-09-08T06:16:00Z'));
+      doc.answerDoc('refuse');
+
+      const result = await call({ limit: 400 });
+
+      expect(out(result)).toMatchObject({
+        staleResponse: { reason: 'gdelt_rate_limited' },
+        missingTimesteps: 10,
+        notice: GAP_NOTICE,
+      });
+      expect(contentText(result)).toContain('**Missing timesteps:** 10\n');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('counts the gaps of a tone timeline like a volume one', async () => {
+    doc.answerDoc({ body: QUOKKA_TONE });
+
+    const result = await call({ mode: 'tone', limit: 400 });
+
+    expect(out(result)).toMatchObject({
+      dateResolution: 'hour',
+      totalCount: 159,
+      missingTimesteps: 10,
+      notice: GAP_NOTICE,
+    });
+    expect(contentText(result)).toContain('**Missing timesteps:** 10\n');
+    expect(contentText(result)).toContain(`> ${GAP_NOTICE}`);
+  });
+
+  it('leaves a mirror answer with interior holes unchecked', async () => {
+    attachMirror(
+      mirrorAnswers(
+        {
+          kind: 'timeline',
+          result: [
+            {
+              label: 'Volume Intensity',
+              data: [
+                { date: '2026-10-31T10:00:00Z', value: 1 },
+                { date: '2026-10-31T13:00:00Z', value: 2 },
+                { date: '2026-10-31T14:00:00Z', value: 0 },
+              ],
+            },
+          ],
+        },
+        3,
+      ),
+    );
+    doc.answerDoc('refuse');
+
+    const result = await runToolContract(gdeltGetCoverageTimeline, {
+      query: 'climate',
+      ...ROUTED_WINDOW,
+    });
+
+    expect(out(result)).toMatchObject({ source: 'gkg_mirror', dateResolution: 'hour' });
+    expect(out(result)).not.toHaveProperty('missingTimesteps');
+    expect(out(result).notice).toBe(
+      `${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_THEME_ROUTE_SENTENCE}`,
+    );
+  });
+
+  /**
+   * The primary guard: an answer whose timesteps are contiguous draws neither the count nor the
+   * notice, zeros included, smoothed or not, however far its first or last step sits from the
+   * window's edges, at any resolution, on any page.
+   */
+  describe('a complete answer', () => {
+    const FILLED = steps('2026-09-01T00:00:00Z', 169, HOUR);
+    const answer = (data: Array<{ date: string; value: number }>, dateResolution?: string) => ({
+      ...(dateResolution && {
+        query_details: { title: 'quokka', date_resolution: dateResolution },
+      }),
+      timeline: [{ series: 'Volume Intensity', data }],
+    });
+
+    it.each([
+      ['every hourly step of the window, zeros included', answer(FILLED, 'hour'), {}],
+      ['one that stops 12 hours short of the window end', answer(FILLED.slice(0, 157), 'hour'), {}],
+      [
+        'a timespan answer starting and ending away from any edge',
+        answer(steps('2026-09-03T05:00:00Z', 46, HOUR), 'hour'),
+        { startDatetime: undefined, endDatetime: undefined, timespan: '7d' },
+      ],
+      [
+        'contiguous 15-minute steps with no reported resolution',
+        answer(steps('2026-09-07T00:00:00Z', 96, HOUR / 4)),
+        {},
+      ],
+      [
+        'contiguous days at a reported day resolution',
+        answer(steps('2026-06-01T00:00:00Z', 60, 24 * HOUR), 'Day'),
+        {},
+      ],
+    ])('draws no count or gap notice for %s, on any page', async (_label, body, input) => {
+      doc.answerDoc({ body });
+
+      const pages = await walk({ limit: 10, ...input });
+
+      expect(pages.length).toBeGreaterThan(1);
+      for (const { sc, text } of pages) {
+        expect(sc).not.toHaveProperty('missingTimesteps');
+        expect(sc.notice).not.toMatch(/missing/i);
+        expect(text).not.toContain('Missing timesteps');
+      }
+    });
+
+    /** #68: smoothing drops leading steps and says so; they are not gaps. */
+    it('keeps the smoothing notice alone when a smoothed answer starts late', async () => {
+      doc.answerDoc({ body: answer(FILLED.slice(5), 'hour') });
+
+      const result = await call({ smoothing: 6, limit: 400 });
+
+      expect(out(result)).not.toHaveProperty('missingTimesteps');
+      expect(out(result).notice).toBe(SMOOTHING_NOTICE);
+      expect(contentText(result)).toContain(`> ${SMOOTHING_NOTICE}`);
     });
   });
 });

@@ -1,0 +1,19 @@
+{
+  "query_details": { "title": "hurricane helene station:CNN" },
+  "wordcloud": [
+    { "label": "Hurricane", "count": 100.0 },
+    { "label": "Helene", "count": 93.3333 },
+    { "label": "Storm", "count": 60.0 },
+    { "label": "Florida", "count": 60.0 },
+    { "label": "Seen", "count": 46.6667 },
+    { "label": "Georgia", "count": 40.0 },
+    { "label": "Death", "count": 40.0 },
+    { "label": "Tonight", "count": 40.0 },
+    { "label": "Least", "count": 33.3333 },
+    { "label": "Toll", "count": 33.3333 },
+    { "label": "Rising", "count": 33.3333 },
+    { "label": "Hours", "count": 33.3333 },
+    { "label": "Flooding", "count": 33.3333 },
+    { "label": "Cnn", "count": 33.3333 }
+  ]
+}

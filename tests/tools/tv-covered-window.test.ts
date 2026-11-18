@@ -19,7 +19,8 @@ const window = (startDatetime: string, endDatetime: string) => ({ startDatetime,
 describe('describeTvCoveredWindow', () => {
   /**
    * Measured live: GDELT widens outward — the start floored to its period, the end through its
-   * period's last second — in UTC, with weeks running Sunday through Saturday.
+   * period's last second — in UTC, with weeks running Sunday through Saturday. The window is read
+   * as the TV tools send it: an end exactly on the clock hour a second earlier.
    */
   it.each<[string, TvDateResolution, string, string, string | undefined]>([
     [
@@ -31,11 +32,18 @@ describe('describeTvCoveredWindow', () => {
     ],
     ['both edges on the hour', 'hour', '20191218200000', '20191218225959', undefined],
     [
-      'an end exactly on the hour, whose whole hour is counted',
+      'an end exactly on the hour, which adds no hour past it',
       'hour',
       '20191218200000',
       '20191218230000',
-      '2019-12-18T20:00:00Z – 2019-12-18T23:59:59Z',
+      undefined,
+    ],
+    [
+      'a 30-minute window ending on the hour, sent as given',
+      'hour',
+      '20240927233000',
+      '20240928000000',
+      '2024-09-27T23:00:00Z – 2024-09-28T00:59:59Z',
     ],
     [
       'only the start inside its hour',
@@ -52,6 +60,7 @@ describe('describeTvCoveredWindow', () => {
       '2019-12-15T00:00:00Z – 2020-01-15T23:59:59Z',
     ],
     ['both edges on UTC day boundaries', 'day', '20191215000000', '20200115235959', undefined],
+    ['an end exactly on a UTC day boundary', 'day', '20240924000000', '20241004000000', undefined],
     [
       'only the end inside its day',
       'day',
@@ -79,7 +88,14 @@ describe('describeTvCoveredWindow', () => {
       'week',
       '20191215120000',
       '20191222000000',
-      '2019-12-15T00:00:00Z – 2019-12-28T23:59:59Z',
+      '2019-12-15T00:00:00Z – 2019-12-21T23:59:59Z',
+    ],
+    [
+      'a Sunday start and an end at a Sunday midnight',
+      'week',
+      '20240922000000',
+      '20241006000000',
+      undefined,
     ],
     [
       'both edges inside a month',
@@ -89,6 +105,13 @@ describe('describeTvCoveredWindow', () => {
       '2019-12-01T00:00:00Z – 2020-01-31T23:59:59Z',
     ],
     ['both edges on month boundaries', 'month', '20191201000000', '20200131235959', undefined],
+    [
+      'an end exactly on the 1st of a month',
+      'month',
+      '20161201000000',
+      '20191201000000',
+      undefined,
+    ],
     [
       'a leap-year February',
       'month',
@@ -111,6 +134,7 @@ describe('describeTvCoveredWindow', () => {
       '2019-01-01T00:00:00Z – 2020-12-31T23:59:59Z',
     ],
     ['both edges on year boundaries', 'year', '20190101000000', '20201231235959', undefined],
+    ['an end exactly on 1 January', 'year', '20190101000000', '20210101000000', undefined],
   ])('%s (%s)', (_label, resolution, start, end, covered) => {
     const sentence = describeTvCoveredWindow('Values', window(start, end), resolution);
     expect(sentence).toBe(
@@ -139,6 +163,21 @@ describe('describeTvCoveredWindow', () => {
     );
     expect(describeTvCoveredWindow('Values', window('20191215180000', '20200115060000'))).toBe(
       'Values cover whole UTC days, 2019-12-15T00:00:00Z – 2020-01-15T23:59:59Z, wider than the requested 20191215180000–20200115060000.',
+    );
+  });
+
+  /**
+   * GDELT picks the default from the span it is sent, a second short of the caller's when the end
+   * is on the hour — at exactly 3 × 365 days that is daily, at 7 days and a second hourly.
+   */
+  it('takes the fallback from the window sent, not the window requested', () => {
+    expect(
+      describeTvCoveredWindow('Terms and scores', window('20170302000000', '20200301000000')),
+    ).toBeUndefined();
+    expect(
+      describeTvCoveredWindow('Terms and scores', window('20240920235959', '20240928000000')),
+    ).toBe(
+      'Terms and scores cover whole clock hours, 2024-09-20T23:00:00Z – 2024-09-27T23:59:59Z, wider than the requested 20240920235959–20240928000000.',
     );
   });
 

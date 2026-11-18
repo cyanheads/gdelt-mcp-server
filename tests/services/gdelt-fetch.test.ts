@@ -257,13 +257,14 @@ describe('parseGdeltJson', () => {
       },
       {
         /**
-         * DOC answers a sub-15-minute timespan and a short explicit window (16 minutes) with the
-         * same body, so the one hint names both and keeps "15min" off the explicit-window branch.
+         * DOC answers a sub-15-minute timespan and an explicit window under 30 minutes (29 minutes
+         * 59 seconds, measured on every DOC mode) with the same body, so the one hint names both
+         * minimums and keeps "15 minutes" off the explicit-window branch.
          */
         trigger: 'a timespan or explicit window below the DOC minimum',
         body: 'Timespan is too short.',
         apiLabel: 'GDELT DOC',
-        hint: /^The GDELT DOC API rejects a relative timespan under 15 minutes and an explicit window it considers too short\. Lengthen the window the call set: a timespan of at least 15 minutes, or a startDatetime\/endDatetime window of an hour or more\.$/,
+        hint: /^The GDELT DOC API rejects a relative timespan under 15 minutes and a startDatetime\/endDatetime window under 30 minutes\. Lengthen the window the call set: a timespan of at least 15 minutes, or a startDatetime\/endDatetime window of at least 30 minutes\.$/,
       },
       {
         trigger: 'window below the TV minimum (a 20-minute explicit window, measured live)',

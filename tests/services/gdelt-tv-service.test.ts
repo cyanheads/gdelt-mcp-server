@@ -5,7 +5,6 @@
  * @module tests/services/gdelt-tv-service.test
  */
 
-import { readFileSync } from 'node:fs';
 import {
   JsonRpcErrorCode,
   rateLimited,
@@ -22,7 +21,8 @@ import {
   initGdeltResponseCache,
 } from '@/services/gdelt/gdelt-response-cache.js';
 import { GdeltTvService } from '@/services/gdelt/gdelt-tv-service.js';
-import type { RawTvStation, TvStation } from '@/services/gdelt/types.js';
+import type { RawTvStation } from '@/services/gdelt/types.js';
+import { RAW_TV_CATALOG as CATALOG } from '../helpers/tv-answer-replay.js';
 
 const MOCK_CONFIG = {} as ConstructorParameters<typeof GdeltTvService>[0];
 const MOCK_STORAGE = {} as ConstructorParameters<typeof GdeltTvService>[1];
@@ -34,24 +34,6 @@ const MOCK_SERVER_CONFIG = {
 function makeService(requestTimeoutMs = MOCK_SERVER_CONFIG.requestTimeoutMs): GdeltTvService {
   return new GdeltTvService(MOCK_CONFIG, MOCK_STORAGE, { ...MOCK_SERVER_CONFIG, requestTimeoutMs });
 }
-
-/** The live 159-station catalog (captured 2026-09-24), back in the raw `stationdetails` shape. */
-const CATALOG = {
-  station_details: (
-    JSON.parse(
-      readFileSync(new URL('../fixtures/tv-station-catalog.json', import.meta.url), 'utf8'),
-    ) as { stations: TvStation[] }
-  ).stations.map(
-    (s): RawTvStation => ({
-      StationID: s.stationId,
-      Description: s.description,
-      Market: s.market,
-      Network: s.network,
-      StartDate: s.startDate.replaceAll('-', ''),
-      EndDate: s.endDate.replaceAll('-', ''),
-    }),
-  ),
-};
 
 const isCatalogRequest = (params: URLSearchParams) => params.get('mode') === 'stationdetails';
 
@@ -1482,7 +1464,7 @@ describe('GdeltTvService station catalog wait, through the real fetch path', () 
     const docState = timed(timeline);
     await vi.advanceTimersByTimeAsync(20_000);
     expect(docState.settledAfterMs).toBe(0);
-    expect((await timeline)[0]?.label).toBe('FOX News');
+    expect((await timeline).series[0]?.label).toBe('FOX News');
 
     catalogAnswers = true;
     const next = svc.searchTv({ query: 'y' }, createMockContext());

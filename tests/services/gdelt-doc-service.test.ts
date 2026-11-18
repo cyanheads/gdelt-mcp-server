@@ -116,7 +116,7 @@ describe('GdeltDocService.getTimeline (standard modes)', () => {
           { series: 'Series', data: [{ date: '20261021T160000Z', value: 1.5, norm: 11825 }] },
         ],
       });
-      const series = await makeService().getTimeline(
+      const { series } = await makeService().getTimeline(
         { query: 'bird flu', mode },
         createMockContext(),
       );
@@ -136,7 +136,7 @@ describe('GdeltDocService.getTimeline (standard modes)', () => {
         },
       ],
     });
-    const series = await makeService().getTimeline(
+    const { series } = await makeService().getTimeline(
       { query: 'bird flu', mode: 'timelinevolraw', smoothing: 6 },
       createMockContext(),
     );
@@ -164,7 +164,7 @@ describe('GdeltDocService.getTimeline (standard modes)', () => {
     vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce(raw);
     const ctx = createMockContext();
     const svc = makeService();
-    const series = await svc.getTimeline({ query: 'test', mode: 'timelinevol' }, ctx);
+    const { series } = await svc.getTimeline({ query: 'test', mode: 'timelinevol' }, ctx);
     expect(series).toHaveLength(1);
     expect(series[0]?.label).toBe('Volume Intensity');
     expect(series[0]?.data).toHaveLength(2);
@@ -177,7 +177,7 @@ describe('GdeltDocService.getTimeline (standard modes)', () => {
     vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce(raw);
     const ctx = createMockContext();
     const svc = makeService();
-    const series = await svc.getTimeline({ query: 'test', mode: 'timelinetone' }, ctx);
+    const { series } = await svc.getTimeline({ query: 'test', mode: 'timelinetone' }, ctx);
     expect(series[0]?.label).toBe('Series');
   });
 
@@ -185,7 +185,7 @@ describe('GdeltDocService.getTimeline (standard modes)', () => {
     vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({});
     const ctx = createMockContext();
     const svc = makeService();
-    const series = await svc.getTimeline({ query: 'test', mode: 'timelinevol' }, ctx);
+    const { series } = await svc.getTimeline({ query: 'test', mode: 'timelinevol' }, ctx);
     expect(series).toEqual([]);
   });
 
@@ -194,7 +194,7 @@ describe('GdeltDocService.getTimeline (standard modes)', () => {
     vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce(raw);
     const ctx = createMockContext();
     const svc = makeService();
-    const series = await svc.getTimeline({ query: 'test', mode: 'timelinevol' }, ctx);
+    const { series } = await svc.getTimeline({ query: 'test', mode: 'timelinevol' }, ctx);
     expect(series[0]?.data).toEqual([]);
   });
 
@@ -214,7 +214,7 @@ describe('GdeltDocService.getTimeline (standard modes)', () => {
         ],
       });
     });
-    const series = await makeService().getTimeline(
+    const { series } = await makeService().getTimeline(
       { query: 'test', mode: 'timelinevol', smoothing: 3 },
       createMockContext(),
     );
@@ -247,7 +247,7 @@ describe('GdeltDocService.getTimeline (timelinevolinfo mode)', () => {
     vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce(raw);
     const ctx = createMockContext();
     const svc = makeService();
-    const series = await svc.getTimeline({ query: 'test', mode: 'timelinevolinfo' }, ctx);
+    const { series } = await svc.getTimeline({ query: 'test', mode: 'timelinevolinfo' }, ctx);
     expect(series[0]?.data[0]?.articles).toHaveLength(1);
     expect(series[0]?.data[0]?.articles?.[0]?.url).toBe('https://news.com/a');
     expect(series[0]?.data[1]).not.toHaveProperty('articles');
@@ -260,7 +260,7 @@ describe('GdeltDocService.getTimeline (timelinevolinfo mode)', () => {
     vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce(raw);
     const ctx = createMockContext();
     const svc = makeService();
-    const series = await svc.getTimeline({ query: 'test', mode: 'timelinevolinfo' }, ctx);
+    const { series } = await svc.getTimeline({ query: 'test', mode: 'timelinevolinfo' }, ctx);
     expect(series[0]?.label).toBe('Volume Intensity');
   });
 });
@@ -339,7 +339,10 @@ describe('GdeltDocService.getBreakdown', () => {
     vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce(raw);
     const ctx = createMockContext();
     const svc = makeService();
-    const breakdown = await svc.getBreakdown({ query: 'test', mode: 'timelinelang' }, ctx);
+    const { series: breakdown } = await svc.getBreakdown(
+      { query: 'test', mode: 'timelinelang' },
+      ctx,
+    );
     expect(breakdown).toHaveLength(1);
     expect(breakdown[0]?.label).toBe('English');
     expect(breakdown[0]?.data[0]?.value).toBe(4.2);
@@ -354,10 +357,84 @@ describe('GdeltDocService.getBreakdown', () => {
         },
       ],
     });
-    const breakdown = await makeService().getBreakdown(
+    const { series: breakdown } = await makeService().getBreakdown(
       { query: 'test', mode: 'timelinelang' },
       createMockContext(),
     );
     expect(breakdown[0]?.data[0]?.date).toBe('2024-01-01T12:00:00Z');
+  });
+});
+
+/**
+ * #98: DOC names its timestep in `query_details.date_resolution` (measured: `"hour"` on
+ * `timelinevol` and `timelinesourcecountry` over 7 days, `"15m"` on `timelinevol` over 24 hours),
+ * which the gap count reads before inference. Which spellings count is tabled in
+ * date-resolution.test.ts.
+ */
+describe('GdeltDocService reported resolution', () => {
+  const SERIES = [{ series: 'Volume Intensity', data: [{ date: '20260901T000000Z', value: 0 }] }];
+  const CALLS = [
+    [
+      'getTimeline timelinevol',
+      (svc: GdeltDocService) =>
+        svc.getTimeline({ query: 'quokka', mode: 'timelinevol' }, createMockContext()),
+    ],
+    [
+      'getTimeline timelinevolraw',
+      (svc: GdeltDocService) =>
+        svc.getTimeline({ query: 'quokka', mode: 'timelinevolraw' }, createMockContext()),
+    ],
+    [
+      'getTimeline timelinevolinfo',
+      (svc: GdeltDocService) =>
+        svc.getTimeline({ query: 'quokka', mode: 'timelinevolinfo' }, createMockContext()),
+    ],
+    [
+      'getTimeline timelinetone',
+      (svc: GdeltDocService) =>
+        svc.getTimeline({ query: 'quokka', mode: 'timelinetone' }, createMockContext()),
+    ],
+    [
+      'getBreakdown timelinesourcecountry',
+      (svc: GdeltDocService) =>
+        svc.getBreakdown({ query: 'quokka', mode: 'timelinesourcecountry' }, createMockContext()),
+    ],
+  ] as const;
+
+  it.each(CALLS)('%s returns the resolution query_details names', async (_label, run) => {
+    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({
+      query_details: { title: 'quokka', date_resolution: 'Hour' },
+      timeline: SERIES,
+    });
+    const answer = await run(makeService());
+    expect(answer.reportedResolution).toBe('hour');
+    expect(answer.series).toHaveLength(1);
+  });
+
+  it.each(CALLS)('%s reads the 15m a 24-hour answer reports as 15min', async (_label, run) => {
+    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({
+      query_details: { title: 'quokka', date_resolution: '15m' },
+      timeline: SERIES,
+    });
+    expect((await run(makeService())).reportedResolution).toBe('15min');
+  });
+
+  it.each(
+    CALLS.flatMap(
+      ([label, run]) =>
+        [
+          [label, run, 'names no resolution', { title: 'quokka' }],
+          [label, run, 'names one DOC does not use', { date_resolution: 'week' }],
+          [label, run, 'is absent', undefined],
+        ] as const,
+    ),
+  )('%s omits the resolution when query_details %s', async (_label, run, _case, details) => {
+    vi.spyOn(gdeltFetchModule, 'gdeltFetch').mockResolvedValueOnce({
+      ...(details && { query_details: details }),
+      timeline: SERIES,
+    });
+    const answer = await run(makeService());
+    expect(answer).not.toHaveProperty('reportedResolution');
+    expect(answer.series).toHaveLength(1);
   });
 });

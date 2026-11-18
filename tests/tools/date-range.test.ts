@@ -9,8 +9,10 @@ import { z } from '@cyanheads/mcp-ts-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   articleSearchTimespan,
+  DOC_SHORT_WINDOW_HINT,
   describeDateRangeFault,
   describeResolvedTimespan,
+  describeShortDocWindow,
   describeTvTimespanFault,
   isUnpairedDateRange,
   isWithinWindow,
@@ -21,6 +23,7 @@ import {
   resolveEffectiveWindow,
   splitWindow,
   toGdeltDatetime,
+  tvAnalyticsWindow,
   tvRequestWindow,
 } from '@/mcp-server/tools/date-range.js';
 import { defaultTvResolution } from '@/mcp-server/tools/tv-covered-window.js';
@@ -114,6 +117,65 @@ describe('describeDateRangeFault', () => {
     // check has to run first or the rollover is reported as a valid window.
     expect(describeDateRangeFault('20230229000000', '20230301000000')).toMatch(
       /not a real UTC calendar timestamp/,
+    );
+  });
+});
+
+/**
+ * The DOC API's explicit-window floor (#92), measured live: 29 minutes 59 seconds refused on every
+ * DOC mode, 30 minutes answered on or off a quarter hour. Compared to the second, no rounding.
+ */
+describe('describeShortDocWindow', () => {
+  it('names the window, its span, and the 30-minute minimum', () => {
+    expect(describeShortDocWindow('20261113120000', '20261113122959')).toBe(
+      'The window 20261113120000–20261113122959 spans 29 minutes 59 seconds, under the 30 minutes the GDELT DOC API accepts for a startDatetime/endDatetime window.',
+    );
+  });
+
+  it.each([
+    ['20 minutes on a quarter hour', '20261113120000', '20261113122000', '20 minutes'],
+    ['29 minutes off a quarter hour', '20261113120100', '20261113123000', '29 minutes'],
+    ['29 minutes 1 second', '20261113120059', '20261113123000', '29 minutes 1 second'],
+    ['one minute', '20261113120000', '20261113120100', '1 minute'],
+    ['45 seconds', '20261113120000', '20261113120045', '45 seconds'],
+    ['one second', '20261113120000', '20261113120001', '1 second'],
+    [
+      '29 minutes 59 seconds across midnight',
+      '20261113234500',
+      '20261114001459',
+      '29 minutes 59 seconds',
+    ],
+  ])('faults %s', (_label, startDatetime, endDatetime, span) => {
+    expect(describeShortDocWindow(startDatetime, endDatetime)).toBe(
+      `The window ${startDatetime}–${endDatetime} spans ${span}, under the 30 minutes the GDELT DOC API accepts for a startDatetime/endDatetime window.`,
+    );
+  });
+
+  it.each([
+    ['exactly 30 minutes on a quarter hour', '20261113120000', '20261113123000'],
+    ['exactly 30 minutes off a quarter hour', '20261113120500', '20261113123500'],
+    ['30 minutes 1 second', '20261113120000', '20261113123001'],
+    ['60 minutes', '20261113120000', '20261113130000'],
+    ['a week', '20261106000000', '20261113000000'],
+  ])('passes %s', (_label, startDatetime, endDatetime) => {
+    expect(describeShortDocWindow(startDatetime, endDatetime)).toBeUndefined();
+  });
+
+  /** Validity runs first: a pair it faults is reported by it, never as a short window. */
+  it.each([
+    ['no window', undefined, undefined],
+    ['a lone start', '20261113120000', undefined],
+    ['a lone end', undefined, '20261113122000'],
+    ['a reversed 20-minute window', '20261113122000', '20261113120000'],
+    ['an equal window', '20261113120000', '20261113120000'],
+    ['an impossible start', '20261131120000', '20261131121000'],
+  ])('leaves %s to describeDateRangeFault', (_label, startDatetime, endDatetime) => {
+    expect(describeShortDocWindow(startDatetime, endDatetime)).toBeUndefined();
+  });
+
+  it('pairs with a recovery naming the 30-minute minimum and a timespan in place of the pair', () => {
+    expect(DOC_SHORT_WINDOW_HINT).toBe(
+      'Set endDatetime at least 30 minutes after startDatetime, or omit both and use a timespan of 15 minutes or more for a window ending now.',
     );
   });
 });
@@ -355,7 +417,7 @@ describe('splitWindow', () => {
    * a shared midpoint would silently drop whatever sat on it.
    */
   it('tiles the original window exactly under exclusive boundaries — no gap, no repeat', () => {
-    const window = { startDatetime: '20240101000000', endDatetime: '20240101000030' };
+    const window = { startDatetime: '20240101000000', endDatetime: '20240101010007' };
     const [first, second] = splitWindow(window)!;
     expect([...coveredSeconds(first), ...coveredSeconds(second)]).toEqual(coveredSeconds(window));
   });
@@ -363,18 +425,28 @@ describe('splitWindow', () => {
   it('yields halves that are both strictly narrower, so recursion converges', () => {
     const span = (w: { startDatetime: string; endDatetime: string }) =>
       coveredSeconds(w).length + 1;
-    const window = { startDatetime: '20240101000000', endDatetime: '20240101000004' };
+    const window = { startDatetime: '20240101000000', endDatetime: '20240101010000' };
     const halves = splitWindow(window)!;
     for (const half of halves) expect(span(half)).toBeLessThan(span(window));
   });
 
-  it('refuses to split below four seconds, where a half would stop shrinking', () => {
-    expect(
-      splitWindow({ startDatetime: '20240101000000', endDatetime: '20240101000003' }),
-    ).toBeUndefined();
-    expect(
-      splitWindow({ startDatetime: '20240101000000', endDatetime: '20240101000000' }),
-    ).toBeUndefined();
+  /** GDELT DOC refuses a window under 30 minutes (#92), so no half may fall under it. */
+  it('splits a 60-minute window into halves DOC accepts: 30 minutes and 30 minutes 1 second', () => {
+    expect(splitWindow({ startDatetime: '20261113120000', endDatetime: '20261113130000' })).toEqual(
+      [
+        { startDatetime: '20261113120000', endDatetime: '20261113123000' },
+        { startDatetime: '20261113122959', endDatetime: '20261113130000' },
+      ],
+    );
+  });
+
+  it.each([
+    ['59 minutes 59 seconds', '20261113125959'],
+    ['45 minutes', '20261113124500'],
+    ['3 seconds', '20261113120003'],
+    ['no time at all', '20261113120000'],
+  ])('refuses to split %s, where a half would fall under 30 minutes', (_label, endDatetime) => {
+    expect(splitWindow({ startDatetime: '20261113120000', endDatetime })).toBeUndefined();
   });
 
   it('refuses an unparseable window rather than emitting NaN boundaries', () => {
@@ -392,13 +464,26 @@ describe('planWindowContinuation', () => {
     expect(plan.guidance).toMatch(/startDatetime\/endDatetime/);
   });
 
-  it('states that the remainder is unreachable once the window cannot be narrowed', () => {
+  it.each([
+    ['59 minutes 59 seconds', '20240101005959'],
+    ['2 seconds', '20240101000002'],
+  ])('gives a %s window no halves, saying a narrower window is not searched', (_l, endDatetime) => {
+    const plan = planWindowContinuation({ startDatetime: '20240101000000', endDatetime });
+    expect(plan.windows).toBeUndefined();
+    expect(plan.guidance).toBe(
+      `The window 20240101000000–${endDatetime} is under 60 minutes, so either half would fall under the 30 minutes the GDELT DOC API accepts: it does not search a narrower window, and the remaining records are not retrievable through this API.`,
+    );
+  });
+
+  it('halves a 60-minute window, neither half under 30 minutes', () => {
     const plan = planWindowContinuation({
       startDatetime: '20240101000000',
-      endDatetime: '20240101000002',
+      endDatetime: '20240101010000',
     });
-    expect(plan.windows).toBeUndefined();
-    expect(plan.guidance).toMatch(/not retrievable/);
+    expect(plan.windows).toEqual([
+      { startDatetime: '20240101000000', endDatetime: '20240101003000' },
+      { startDatetime: '20240101002959', endDatetime: '20240101010000' },
+    ]);
   });
 
   it('names both halves in the guidance, not just in the structured windows', () => {
@@ -480,6 +565,71 @@ describe('tvRequestWindow', () => {
     expect(defaultTvResolution(sent)).toBe(
       defaultTvResolution({ startDatetime: start, endDatetime: end }),
     );
+  });
+
+  /**
+   * The on-the-hour end rule shortens the span by a second, so at exactly 3 × 365 days or 7 days
+   * and a second GDELT answers clips in the next finer period: fewer edge clips spend maxRecords.
+   */
+  it.each([
+    ['20161201000000', '20191201000000', '20191130235959', 'day'],
+    ['20240920235959', '20240928000000', '20240927235959', 'hour'],
+  ])(
+    'sends %s–%s, at a period threshold, as ending %s, answered in %s',
+    (start, end, sentEnd, period) => {
+      const sent = tvRequestWindow({ startDatetime: start, endDatetime: end });
+      expect(sent).toEqual({ startDatetime: start, endDatetime: sentEnd });
+      expect(defaultTvResolution(sent)).toBe(period);
+    },
+  );
+});
+
+/**
+ * Every UTC period GDELT TV counts starts on the clock hour, and GDELT counts the whole period an
+ * end falls in: an end on a period's first second, sent as is, adds that whole period. Measured
+ * live: 30 minutes is GDELT TV's shortest window (29 minutes 59 seconds and 20 minutes refused).
+ */
+describe('tvAnalyticsWindow', () => {
+  it.each([
+    ['a clock hour', '20240927220000', '20240928000000', '20240927235959'],
+    ['a Sunday', '20240922000000', '20241006000000', '20241005235959'],
+    ['the 1st of a month', '20161201000000', '20191201000000', '20191130235959'],
+    ['1 January', '20190101000000', '20210101000000', '20201231235959'],
+    ['the hour inside a day', '20240920000000', '20240928060000', '20240928055959'],
+    ['a window 31 minutes long', '20240927232900', '20240928000000', '20240927235959'],
+    // Trimmed to exactly 30 minutes, the shortest window GDELT TV answers.
+    ['a window 30 minutes and a second long', '20240927232959', '20240928000000', '20240927235959'],
+  ])('sends an end on %s a second earlier', (_label, start, end, sentEnd) => {
+    expect(tvAnalyticsWindow({ startDatetime: start, endDatetime: end })).toEqual({
+      startDatetime: start,
+      endDatetime: sentEnd,
+    });
+  });
+
+  it.each([
+    ['half past the hour', '20240924000000', '20241004063000'],
+    ["a day's last second", '20191215000000', '20200115235959'],
+    ['a minute past the hour', '20240927220000', '20240928000100'],
+    ['the hour, 30 minutes from the start', '20240927233000', '20240928000000'],
+    ['the hour, 15 minutes from the start', '20240927234500', '20240928000000'],
+  ])('sends an end on %s as given', (_label, start, end) => {
+    expect(tvAnalyticsWindow({ startDatetime: start, endDatetime: end })).toEqual({
+      startDatetime: start,
+      endDatetime: end,
+    });
+  });
+
+  /** GDELT picks the period from the span it is sent, and the trim takes off one second. */
+  it.each([
+    ['exactly 3 × 365 days', 'month', 'day', '20161201000000', '20191201000000'],
+    ['exactly 3 × 365 days, over 29 February', 'month', 'day', '20170302000000', '20200301000000'],
+    ['7 days and a second', 'day', 'hour', '20240920235959', '20240928000000'],
+    ['exactly 7 days', 'hour', 'hour', '20191215000000', '20191222000000'],
+    ['3 × 365 days and an hour', 'month', 'month', '20161201000000', '20191201010000'],
+  ])('moves a span of %s from %s to %s', (_label, untrimmed, sent, start, end) => {
+    const window = { startDatetime: start, endDatetime: end };
+    expect(defaultTvResolution(window)).toBe(untrimmed);
+    expect(defaultTvResolution(tvAnalyticsWindow(window))).toBe(sent);
   });
 });
 

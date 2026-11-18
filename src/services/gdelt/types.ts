@@ -52,6 +52,23 @@ export type RawTimelineVolInfoPoint = {
   toparts?: Array<{ url: string; title: string }>;
 };
 
+/** What a GDELT DOC timeline or breakdown answer reports about itself beside its series. */
+export type RawDocQueryDetails = {
+  /** The answer's timestep, e.g. `"hour"`. */
+  date_resolution?: string;
+};
+
+/**
+ * The shortest explicit startDatetime/endDatetime window the GDELT DOC API accepts, in seconds,
+ * compared to the second. Measured live on all eight DOC modes the tools send: 29 minutes 59
+ * seconds draws `Timespan is too short.` and 30 minutes is accepted (on `artlist`, on or off a
+ * quarter hour).
+ */
+export const DOC_MIN_WINDOW_SECONDS = 1_800;
+
+/** {@link DOC_MIN_WINDOW_SECONDS} in the minutes the wording names. */
+export const DOC_MIN_WINDOW_MINUTES = DOC_MIN_WINDOW_SECONDS / 60;
+
 // ─── DOC answer provenance ───────────────────────────────────────────────────
 
 /** Where a DOC tool's answer came from: the GDELT DOC API or the server's local GKG mirror. */
@@ -61,7 +78,8 @@ export type DocSource = (typeof DOC_SOURCES)[number];
 
 /**
  * What one source did with a DOC tool call: answered with data, answered with nothing, refused
- * (`rate_limited`, `unavailable`), or — for the mirror — could not answer (`not_ready`,
+ * (`rate_limited`, `unavailable`), was not asked because the window is under the DOC API's minimum
+ * (`window_too_short`, DOC only), or — for the mirror — could not answer (`not_ready`,
  * `not_compiled`, `outside_coverage`, `store_error`).
  */
 export const DOC_ATTEMPT_OUTCOMES = [
@@ -69,6 +87,7 @@ export const DOC_ATTEMPT_OUTCOMES = [
   'empty',
   'rate_limited',
   'unavailable',
+  'window_too_short',
   'not_ready',
   'not_compiled',
   'outside_coverage',
@@ -83,14 +102,23 @@ export type DocAttempt = { source: DocSource; outcome: DocAttemptOutcome; detail
 /** How much of the requested window a mirror answer covers, when it covers less. */
 export type DocCoverage = MirrorCoverage;
 
-/** What DOC did with a call the mirror then answered in its place. */
-export type DocStoodInFor = Extract<DocAttemptOutcome, 'empty' | 'rate_limited' | 'unavailable'>;
+/** What DOC did with a call the mirror then answered in its place, or why it was not asked. */
+export type DocStoodInFor = Extract<
+  DocAttemptOutcome,
+  'empty' | 'rate_limited' | 'unavailable' | 'window_too_short'
+>;
 
 /** A DOC tool call the local GKG mirror answered in DOC's place: the facts its notice discloses. */
 export type MirrorStandIn = {
   standsInFor: DocStoodInFor;
   /** Mirrored articles matching the query in the answered window; zero is an answer. */
   matched: number;
+  /**
+   * How the query's keywords and phrases, which the mirror matches against titles and entity names
+   * alone, bear on the answer: `none`, it holds none; `required`, every match satisfied a clause of
+   * keywords and phrases alone; `unrequired`, they appear only excluded or OR-ed with an operator.
+   */
+  keywords: 'none' | 'required' | 'unrequired';
   /** Matching articles left out of a source-country breakdown because their outlet has no known country. */
   excludedWithoutCountry?: number;
 };

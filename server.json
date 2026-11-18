@@ -51,7 +51,7 @@
         },
         {
           "name": "GDELT_MIRROR_PATH",
-          "description": "SQLite file of the optional local GKG mirror the DOC tools fall back to when the DOC API refuses requests. Unset leaves it off. Built with `bun run mirror:init` from a checkout or the Docker image; on Node it needs better-sqlite3 installed.",
+          "description": "SQLite file of the optional local GKG mirror the DOC tools answer from when the DOC API refuses a request, returns nothing, or is not asked (an explicit window under 30 minutes). Unset leaves it off. Built with `bun run mirror:init` from a checkout or the Docker image; on Node it needs better-sqlite3 installed.",
           "format": "string",
           "isRequired": false
         },
@@ -117,7 +117,7 @@
         },
         {
           "name": "GDELT_MIRROR_PATH",
-          "description": "SQLite file of the optional local GKG mirror the DOC tools fall back to when the DOC API refuses requests. Unset leaves it off. Built with `bun run mirror:init` from a checkout or the Docker image; on Node it needs better-sqlite3 installed.",
+          "description": "SQLite file of the optional local GKG mirror the DOC tools answer from when the DOC API refuses a request, returns nothing, or is not asked (an explicit window under 30 minutes). Unset leaves it off. Built with `bun run mirror:init` from a checkout or the Docker image; on Node it needs better-sqlite3 installed.",
           "format": "string",
           "isRequired": false
         },

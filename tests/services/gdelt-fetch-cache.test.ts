@@ -2,8 +2,9 @@
  * @fileoverview The DOC and TV response cache at the `gdeltFetch` seam: exact-URL hits that
  * spend no request or pacer slot, the 15-minute and 24-hour freshness windows, what is stored
  * and what is not, the byte-charged LRU, in-flight sharing and per-caller cancellation, stale
- * serves in place of a refused refetch, the 45-second fallback budget and closed-gate serves that
- * keep a stale answer under the client timeout, and the station-label lookup's fresh-only reads.
+ * serves in place of a refused refetch, the 45-second fallback budget and the serves behind a
+ * closed cooldown — the call's own endpoint's only — that keep a stale answer under the client
+ * timeout, and the station-label lookup's fresh-only reads.
  * The real pacer, retry ladder, and `fetchWithTimeout` run; only the global `fetch` is stubbed.
  * @module tests/services/gdelt-fetch-cache.test
  */
@@ -134,7 +135,7 @@ describe('hits', () => {
     );
     await call({ query: 'stored' });
     await rejection(call({ query: 'refused' }));
-    expect(getGdeltPacer().cooldown.remainingMs).toBeGreaterThan(0);
+    expect(getGdeltPacer(BASE_URL).cooldown.remainingMs).toBeGreaterThan(0);
 
     let settled = false;
     const hit = call({ query: 'stored' }).finally(() => {
@@ -675,7 +676,7 @@ describe('under the client timeout', () => {
             await vi.runAllTimersAsync();
             await refusal;
           }
-          expect(getGdeltPacer().cooldown.remainingMs).toBe(60_000);
+          expect(getGdeltPacer(BASE_URL).cooldown.remainingMs).toBe(60_000);
         },
         unchangedMs: 60_000,
         storedMs: 0,
@@ -842,7 +843,7 @@ describe('under the client timeout', () => {
     it('rejects a hasFallback call at once with gdelt_rate_limited, spending no request or pacer slot', async () => {
       upstream.mockImplementation(async () => refused());
       await rejection(call({ query: 'other' }));
-      const run = vi.spyOn(getGdeltPacer(), 'run');
+      const run = vi.spyOn(getGdeltPacer(BASE_URL), 'run');
       const ctx = createMockContext();
 
       const pending = rejection(call(PARAMS, { hasFallback: true }, ctx));
@@ -860,7 +861,7 @@ describe('under the client timeout', () => {
       });
       expect(run).not.toHaveBeenCalled();
       expect(requestedQueries()).toEqual(['other']);
-      expect(getGdeltPacer().cooldown.remainingMs).toBe(5_000);
+      expect(getGdeltPacer(BASE_URL).cooldown.remainingMs).toBe(5_000);
       expect(getEnrichment(ctx)).toEqual({});
     });
 
@@ -896,6 +897,79 @@ describe('under the client timeout', () => {
       });
       expect(requestedQueries()).toEqual(['stale', 'other', 'stale']);
       expect(getEnrichment(ctx)).toEqual({});
+    });
+
+    describe('reads only the call’s own endpoint', () => {
+      const TV_URL = 'https://api.gdeltproject.org/api/v2/tv/tv';
+
+      function callTv(
+        params: Record<string, string>,
+        options: GdeltFetchOptions = {},
+        ctx = createMockContext(),
+      ): Promise<unknown> {
+        return gdeltFetch(TV_URL, new URLSearchParams(params), ctx, 'test', 'GDELT TV', options);
+      }
+
+      /** Refuse every request to `endpoint` and answer the other with FRESH. */
+      function refuseOnly(endpoint: 'doc' | 'tv'): void {
+        upstream.mockImplementation(async (url) =>
+          new URL(url).pathname.endsWith(`/${endpoint}/${endpoint}`) ? refused() : ok(FRESH),
+        );
+      }
+
+      /** Every upstream request as `<endpoint> <query>`, in order. */
+      function requests(): string[] {
+        return upstream.mock.calls.map(([url]) => {
+          const { pathname, searchParams } = new URL(url);
+          return `${pathname.split('/').pop()} ${searchParams.get('query')}`;
+        });
+      }
+
+      /** Store a TV answer for PARAMS and age it past its freshness. */
+      async function storeTvAnswer(): Promise<void> {
+        upstream.mockImplementation(async () => ok(BODY));
+        await callTv(PARAMS);
+        vi.setSystemTime(T0 + 15 * MINUTE);
+      }
+
+      it('fetches afresh for a TV call holding a stored answer while only DOC’s cooldown is closed', async () => {
+        await storeTvAnswer();
+        refuseOnly('doc');
+        await rejection(call({ query: 'other' }));
+        expect(getGdeltPacer(BASE_URL).cooldown.remainingMs).toBe(5_000);
+        const ctx = createMockContext();
+
+        await expect(callTv(PARAMS, {}, ctx)).resolves.toEqual(FRESH);
+        expect(requests()).toEqual(['tv stale', 'doc other', 'tv stale']);
+        expect(getEnrichment(ctx)).toEqual({});
+      });
+
+      it('serves a TV call its stored answer at once while TV’s own cooldown is closed', async () => {
+        await storeTvAnswer();
+        refuseOnly('tv');
+        await rejection(callTv({ query: 'other' }));
+        const ctx = createMockContext();
+
+        const pending = callTv(PARAMS, {}, ctx);
+        const { settled } = track(pending);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(settled()).toBe(true);
+        await expect(pending).resolves.toEqual(BODY);
+        expect(requests()).toEqual(['tv stale', 'tv other']);
+        expect(getEnrichment(ctx)).toEqual({
+          staleResponse: expect.objectContaining({ reason: 'gdelt_rate_limited' }),
+        });
+      });
+
+      it('sends a hasFallback DOC call upstream while only TV’s cooldown is closed', async () => {
+        refuseOnly('tv');
+        await rejection(callTv({ query: 'other' }));
+        expect(getGdeltPacer(TV_URL).cooldown.remainingMs).toBe(5_000);
+
+        await expect(call(PARAMS, { hasFallback: true })).resolves.toEqual(FRESH);
+        expect(requests()).toEqual(['tv other', 'doc stale']);
+      });
     });
   });
 
@@ -999,7 +1073,7 @@ describe('under the client timeout', () => {
         data: { reason: 'gdelt_rate_limited' },
       });
       await expect(blocker).resolves.toEqual(BODY);
-      expect(getGdeltPacer().cooldown.remainingMs).toBe(0);
+      expect(getGdeltPacer(BASE_URL).cooldown.remainingMs).toBe(0);
       expect(requestedQueries()).toEqual(['blocker']);
     });
 

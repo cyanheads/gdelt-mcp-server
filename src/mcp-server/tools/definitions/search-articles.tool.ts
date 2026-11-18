@@ -7,8 +7,10 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { routeArticleSearch } from '@/services/gdelt/doc-source-router.js';
+import { DOC_MIN_WINDOW_MINUTES } from '@/services/gdelt/types.js';
 import {
   articleSearchTimespan,
+  DOC_WINDOW_MINIMUM_NOTE,
   describeDateRangeFault,
   describeResolvedTimespan,
   GDELT_DATETIME_PATTERN,
@@ -111,9 +113,8 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
     {
       reason: 'invalid_date_range',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'Only one of startDatetime / endDatetime was supplied, one of them is not a real UTC calendar timestamp, or startDatetime is not earlier than endDatetime.',
-      recovery:
-        'Supply both startDatetime and endDatetime as real UTC calendar timestamps, with startDatetime earlier than endDatetime, or omit both and use timespan instead.',
+      when: `Only one of startDatetime / endDatetime was supplied, one of them is not a real UTC calendar timestamp, startDatetime is not earlier than endDatetime, or the window spans under the ${DOC_MIN_WINDOW_MINUTES} minutes the GDELT DOC API accepts and no local GKG mirror answers it in DOC's place.`,
+      recovery: `Supply both startDatetime and endDatetime as real UTC calendar timestamps, with startDatetime at least ${DOC_MIN_WINDOW_MINUTES} minutes earlier than endDatetime, or omit both and use timespan instead.`,
     },
     {
       reason: 'invalid_query',
@@ -158,18 +159,14 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
         .regex(GDELT_DATETIME_PATTERN, 'startDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
         .optional()
         .describe(
-          'Start of date range in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-            '(e.g. 20240101000000). Must be supplied together with endDatetime; supplying only one ' +
-            'of the two is rejected.',
+          `Start of date range in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators (e.g. 20240101000000). Must be supplied together with endDatetime; supplying only one of the two is rejected. ${DOC_WINDOW_MINIMUM_NOTE}`,
         ),
       endDatetime: z
         .string()
         .regex(GDELT_DATETIME_PATTERN, 'endDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
         .optional()
         .describe(
-          'End of date range in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-            '(e.g. 20240131235959). Must be supplied together with startDatetime; supplying only one ' +
-            'of the two is rejected.',
+          `End of date range in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators (e.g. 20240131235959). Must be supplied together with startDatetime; supplying only one of the two is rejected. ${DOC_WINDOW_MINIMUM_NOTE}`,
         ),
       maxRecords: countInputSchema(
         MAX_RECORDS_CEILING,

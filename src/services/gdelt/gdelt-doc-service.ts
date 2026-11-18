@@ -8,9 +8,19 @@ import type { Context } from '@cyanheads/mcp-ts-core';
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import type { ServerConfig } from '@/config/server-config.js';
-import { normalizeGdeltDate } from './date-resolution.js';
+import {
+  type DocDateResolution,
+  normalizeGdeltDate,
+  parseDocDateResolution,
+} from './date-resolution.js';
 import { applyTimeRange, type GdeltFetchOptions, gdeltFetch } from './gdelt-fetch.js';
-import type { Article, RawArticle, RawTimelineSeries, RawTimelineVolInfoPoint } from './types.js';
+import type {
+  Article,
+  RawArticle,
+  RawDocQueryDetails,
+  RawTimelineSeries,
+  RawTimelineVolInfoPoint,
+} from './types.js';
 
 const DOC_ENDPOINT = '/doc/doc';
 
@@ -82,6 +92,13 @@ export type BreakdownSeries = {
   data: Array<{ date: string; value: number }>;
 };
 
+/** A timeline or breakdown answer: its series, and the timestep DOC reported for them. */
+export type DocSeriesAnswer<S> = {
+  series: S[];
+  /** `query_details.date_resolution`, when it names a resolution DOC uses. */
+  reportedResolution?: DocDateResolution;
+};
+
 export class GdeltDocService {
   private readonly baseUrl: string;
 
@@ -120,7 +137,7 @@ export class GdeltDocService {
     params: DocTimelineParams,
     ctx: Context,
     options?: DocFetchOptions,
-  ): Promise<TimelineSeries[]> {
+  ): Promise<DocSeriesAnswer<TimelineSeries>> {
     const urlParams = this.buildBaseParams(params.query);
     urlParams.set('mode', params.mode);
     if (params.smoothing != null) urlParams.set('timelinesmooth', String(params.smoothing));
@@ -129,12 +146,19 @@ export class GdeltDocService {
     if (params.mode === 'timelinevolinfo') {
       const raw = await this.fetch<{
         timeline?: Array<{ series?: string; data?: RawTimelineVolInfoPoint[] }>;
+        query_details?: RawDocQueryDetails;
       }>(urlParams, ctx, options);
-      return parseVolInfoTimeline(raw);
+      return withReportedResolution(parseVolInfoTimeline(raw), raw.query_details);
     }
 
-    const raw = await this.fetch<{ timeline?: RawTimelineSeries[] }>(urlParams, ctx, options);
-    return parseTimeline(raw, params.mode === 'timelinevolraw');
+    const raw = await this.fetch<{
+      timeline?: RawTimelineSeries[];
+      query_details?: RawDocQueryDetails;
+    }>(urlParams, ctx, options);
+    return withReportedResolution(
+      parseTimeline(raw, params.mode === 'timelinevolraw'),
+      raw.query_details,
+    );
   }
 
   /** Fetch tone distribution histogram (tonechart mode). */
@@ -166,17 +190,21 @@ export class GdeltDocService {
     params: DocBreakdownParams,
     ctx: Context,
     options?: DocFetchOptions,
-  ): Promise<BreakdownSeries[]> {
+  ): Promise<DocSeriesAnswer<BreakdownSeries>> {
     const urlParams = this.buildBaseParams(params.query);
     urlParams.set('mode', params.mode);
     if (params.smoothing != null) urlParams.set('timelinesmooth', String(params.smoothing));
     applyTimeRange(urlParams, params.timespan, params.startDatetime, params.endDatetime);
 
-    const raw = await this.fetch<{ timeline?: RawTimelineSeries[] }>(urlParams, ctx, options);
-    return parseTimeline(raw).map((s) => ({
+    const raw = await this.fetch<{
+      timeline?: RawTimelineSeries[];
+      query_details?: RawDocQueryDetails;
+    }>(urlParams, ctx, options);
+    const series = parseTimeline(raw).map((s) => ({
       label: s.label,
       data: s.data.map((d) => ({ date: d.date, value: d.value })),
     }));
+    return withReportedResolution(series, raw.query_details);
   }
 
   // ─── Private helpers ────────────────────────────────────────────────────────
@@ -205,6 +233,15 @@ function normalizeArticle(raw: RawArticle): Article {
     sourcecountry: raw.sourcecountry,
     ...(raw.socialimage ? { socialimage: raw.socialimage } : {}),
   };
+}
+
+/** `series` beside the resolution `queryDetails` names, when it names one DOC uses. */
+function withReportedResolution<S>(
+  series: S[],
+  queryDetails: RawDocQueryDetails | undefined,
+): DocSeriesAnswer<S> {
+  const reportedResolution = parseDocDateResolution(queryDetails?.date_resolution);
+  return { series, ...(reportedResolution && { reportedResolution }) };
 }
 
 function parseTimeline(

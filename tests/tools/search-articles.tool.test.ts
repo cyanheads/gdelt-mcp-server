@@ -19,17 +19,25 @@ import {
   attachMirror,
   DOC_429_DETAIL,
   MIRROR_DIVERGENCE_SENTENCE,
+  MIRROR_KEYWORD_CASES,
   MIRROR_NO_MATCH_SENTENCE,
   MIRROR_NOT_READY,
   MIRROR_STANDS_IN_FOR,
+  MIRROR_THEME_ROUTE_SENTENCE,
   mirrorAnswers,
+  mirrorSentences,
   OVERLOAD_RETRY_SENTENCE,
   PARTIAL_COVERAGE,
   PARTIAL_COVERAGE_LINE,
   RATE_LIMIT_HINT,
   ROUTED_WINDOW,
   refusedAttemptsLines,
+  SHORT_WINDOW,
+  SHORT_WINDOW_COVERAGE,
+  SHORT_WINDOW_FAULT,
+  SHORT_WINDOW_HINT,
   SOURCE_LINE,
+  shortWindowAttemptsLines,
   useRoutedDoc,
 } from '../helpers/doc-source-fakes.js';
 import { contentText, hrefFor, literalHtml, renderMarkdown } from './markdown-render.js';
@@ -324,16 +332,30 @@ describe('gdeltSearchArticles', () => {
     });
 
     /**
-     * The honest terminal case: a window already at GDELT's resolution still full at 250 means
-     * the remainder is unreachable. Saying nothing would imply the 250 were complete.
+     * The honest terminal case: a window whose halves would fall under the 30 minutes DOC accepts
+     * (#92) still full at 250 means the remainder is unreachable. Saying nothing would imply the
+     * 250 were complete.
      */
-    it('discloses that the rest is unreachable when the window cannot be narrowed further', async () => {
+    it('gives a window under 60 minutes no halves, saying a narrower window is not searched', async () => {
       const enrichment = await runAtCeiling({
         startDatetime: '20240101000000',
-        endDatetime: '20240101000002',
+        endDatetime: '20240101005959',
       });
       expect(enrichment.continuationWindows).toBeUndefined();
-      expect(enrichment.notice).toMatch(/not retrievable/);
+      expect(enrichment.notice).toContain(
+        'The window 20240101000000–20240101005959 is under 60 minutes, so either half would fall under the 30 minutes the GDELT DOC API accepts: it does not search a narrower window, and the remaining records are not retrievable through this API.',
+      );
+    });
+
+    it('halves a 60-minute window into halves of at least 30 minutes', async () => {
+      const enrichment = await runAtCeiling({
+        startDatetime: '20240101000000',
+        endDatetime: '20240101010000',
+      });
+      expect(enrichment.continuationWindows).toEqual([
+        { startDatetime: '20240101000000', endDatetime: '20240101003000' },
+        { startDatetime: '20240101002959', endDatetime: '20240101010000' },
+      ]);
     });
 
     it('still recommends raising maxRecords below the ceiling', async () => {
@@ -860,7 +882,7 @@ describe('gdelt_search_articles DOC source routing', () => {
 
     const result = await runToolContract(gdeltSearchArticles, INPUT);
 
-    const mirrorNotice = `${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE}`;
+    const mirrorNotice = `${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_THEME_ROUTE_SENTENCE}`;
     expect(result.isError).toBeFalsy();
     expect(result.structuredContent).toEqual({
       articles: [MIRROR_ARTICLE],
@@ -890,11 +912,11 @@ describe('gdelt_search_articles DOC source routing', () => {
 
     const result = await runToolContract(gdeltSearchArticles, INPUT);
 
-    expect(notice(result)).toBe(
-      `${EMPTY_NOTICE} ${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_NO_MATCH_SENTENCE}`,
-    );
+    const mirrorNotice = `${EMPTY_NOTICE} ${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_NO_MATCH_SENTENCE} ${MIRROR_THEME_ROUTE_SENTENCE}`;
+    expect(notice(result)).toBe(mirrorNotice);
     expect(result.structuredContent).toMatchObject({ articles: [], source: 'gkg_mirror' });
     expect(contentText(result)).toContain(refusedAttemptsLines('empty'));
+    expect(contentText(result).split('\n')).toContain(`> ${mirrorNotice}`);
   });
 
   it("keeps DOC's empty answer with the overload sentence when the mirror has no match either", async () => {
@@ -930,9 +952,34 @@ describe('gdelt_search_articles DOC source routing', () => {
         { source: 'doc_api', outcome: 'empty' },
         { source: 'gkg_mirror', outcome: 'answered' },
       ],
-      notice: `${MIRROR_STANDS_IN_FOR.empty} ${MIRROR_DIVERGENCE_SENTENCE}`,
+      notice: `${MIRROR_STANDS_IN_FOR.empty} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_THEME_ROUTE_SENTENCE}`,
     });
   });
+
+  it.each(MIRROR_KEYWORD_CASES)(
+    'ends the notice with the mirror sentences for a query holding $holds, $matched matched, on both surfaces',
+    async ({ query, matched, sentences }) => {
+      attachMirror(mirrorAnswers(matched > 0 ? MIRROR_ARTLIST : MIRROR_NO_ARTICLES, matched));
+      doc.answerDoc('refuse');
+
+      const result = await runToolContract(gdeltSearchArticles, { ...INPUT, query });
+
+      expect(result.structuredContent).toMatchObject({ source: 'gkg_mirror' });
+      expect(mirrorSentences(result)).toEqual({ structuredContent: sentences, content: sentences });
+    },
+  );
+
+  it.each(MIRROR_KEYWORD_CASES.filter(({ matched }) => matched > 0))(
+    'writes nothing ahead of the mirror sentences for a matched query holding $holds',
+    async ({ query, matched, sentences }) => {
+      attachMirror(mirrorAnswers(MIRROR_ARTLIST, matched));
+      doc.answerDoc('refuse');
+
+      const result = await runToolContract(gdeltSearchArticles, { ...INPUT, query });
+
+      expect(result.structuredContent).toMatchObject({ notice: sentences });
+    },
+  );
 
   it("rejects with DOC's code, reason, and both attempts when the mirror cannot answer", async () => {
     attachMirror(mirrorAnswers(MIRROR_ARTLIST, 1), MIRROR_NOT_READY);
@@ -964,6 +1011,59 @@ describe('gdelt_search_articles DOC source routing', () => {
       },
     });
     expect(contentText(result)).toContain(`Recovery: ${hint}`);
+  });
+
+  /** A window under the 30 minutes DOC accepts (#92); the router's table is in doc-source-router.test.ts. */
+  it('with no mirror, fails a window under 30 minutes invalid_date_range before any request, on both surfaces', async () => {
+    const fetch = doc.answerDoc({ body: { articles: [DOC_ARTICLE] } });
+
+    const result = await runToolContract(gdeltSearchArticles, { ...INPUT, ...SHORT_WINDOW });
+
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: JsonRpcErrorCode.ValidationError,
+          message: SHORT_WINDOW_FAULT,
+          data: { reason: 'invalid_date_range', recovery: { hint: SHORT_WINDOW_HINT } },
+        },
+      },
+    });
+    expect(contentText(result)).toContain(SHORT_WINDOW_FAULT);
+    expect(contentText(result)).toContain(`Recovery: ${SHORT_WINDOW_HINT}`);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('answers a window under 30 minutes from the mirror without asking DOC, saying why on both surfaces', async () => {
+    const inWindow = { ...MIRROR_ARTICLE, seendate: '20261031T121500Z' };
+    attachMirror(
+      mirrorAnswers(
+        { kind: 'artlist', result: { articles: [inWindow], totalReturned: 1 } },
+        1,
+        SHORT_WINDOW_COVERAGE,
+      ),
+    );
+    const fetch = doc.answerDoc({ body: { articles: [DOC_ARTICLE] } });
+
+    const result = await runToolContract(gdeltSearchArticles, { ...INPUT, ...SHORT_WINDOW });
+
+    const mirrorNotice = `${MIRROR_STANDS_IN_FOR.window_too_short} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_THEME_ROUTE_SENTENCE}`;
+    expect(result.structuredContent).toEqual({
+      articles: [inWindow],
+      effectiveQuery: 'climate',
+      totalCount: 1,
+      source: 'gkg_mirror',
+      attempts: [
+        { source: 'doc_api', outcome: 'window_too_short', detail: SHORT_WINDOW_FAULT },
+        { source: 'gkg_mirror', outcome: 'answered' },
+      ],
+      notice: mirrorNotice,
+    });
+    const text = contentText(result);
+    expect(text).toContain(SOURCE_LINE.gkg_mirror);
+    expect(text).toContain(shortWindowAttemptsLines('answered'));
+    expect(text).toContain(`> ${mirrorNotice}`);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 

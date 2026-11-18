@@ -13,6 +13,7 @@ import {
   describeTvTimespanFault,
   GDELT_DATETIME_PATTERN,
   resolveEffectiveWindow,
+  tvAnalyticsWindow,
 } from '../date-range.js';
 import {
   clampToCap,
@@ -141,7 +142,7 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       .regex(GDELT_DATETIME_PATTERN, 'endDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
       .optional()
       .describe(
-        `End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators (e.g. 20200131235959). Must pair with startDatetime; supplying only one of the two is rejected. ${WINDOW_RULE}`,
+        `End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators (e.g. 20200131235959). Must pair with startDatetime; supplying only one of the two is rejected. An end exactly on the clock hour counts as the second before it, so it adds no period starting there. ${WINDOW_RULE}`,
       ),
   }),
 
@@ -214,13 +215,16 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
     ctx.log.info('gdelt_get_tv_context', { query: input.query });
     const svc = getGdeltTvService();
 
+    const sent =
+      input.startDatetime && input.endDatetime
+        ? tvAnalyticsWindow({ startDatetime: input.startDatetime, endDatetime: input.endDatetime })
+        : undefined;
     const result = await svc.getTvContext(
       {
         query: input.query,
         ...(stationIds.length > 0 && { stations: stationIds }),
         ...(input.timespan && { timespan: input.timespan }),
-        ...(input.startDatetime && { startDatetime: input.startDatetime }),
-        ...(input.endDatetime && { endDatetime: input.endDatetime }),
+        ...sent,
       },
       ctx,
     );

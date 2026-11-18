@@ -1,8 +1,9 @@
 /**
  * @fileoverview Shared date-range handling for the GDELT tools that accept an explicit
  * startDatetime/endDatetime window — the YYYYMMDDHHMMSS field pattern, the both-or-neither
- * pairing predicate, record timestamps against a window, and the window partitioning and
- * continuation windows the record-list tools hand back when an upstream cap is reached.
+ * pairing predicate, the DOC API's shortest explicit window, record timestamps against a window,
+ * and the window partitioning and continuation windows the record-list tools hand back when an
+ * upstream cap is reached.
  * @module mcp-server/tools/date-range
  */
 
@@ -12,6 +13,7 @@ import {
   parseGdeltTimespan,
   resolveTimespan,
 } from '@/services/gdelt/gdelt-fetch.js';
+import { DOC_MIN_WINDOW_MINUTES, DOC_MIN_WINDOW_SECONDS } from '@/services/gdelt/types.js';
 import { quoteText } from './markdown-escape.js';
 
 /**
@@ -195,15 +197,16 @@ export function describeResolvedTimespan(args: {
 }
 
 /**
- * Smallest span that still divides into two strictly-narrower halves. The second half
- * reaches back a second to cover the seam, so it costs `span - floor(span/2) + 1`
- * seconds — only under four does that stop shrinking.
+ * Smallest span whose halves the GDELT DOC API still accepts. The first half is
+ * `floor(span/2)` seconds, so both reach {@link DOC_MIN_WINDOW_SECONDS} from twice that; the
+ * second, reaching back a second to cover the seam, is a second longer. Both are strictly
+ * narrower than the span, so repeated halving converges.
  */
-const MIN_SPLITTABLE_MS = 4 * GDELT_RESOLUTION_MS;
+const MIN_SPLITTABLE_MS = 2 * DOC_MIN_WINDOW_SECONDS * GDELT_RESOLUTION_MS;
 
 /**
- * Split a window into two halves whose union covers it exactly, or `undefined` when it
- * is already too narrow to divide.
+ * Split a window into two halves whose union covers it exactly, or `undefined` when a half
+ * would fall under the shortest window the GDELT DOC API accepts.
  *
  * The second half deliberately **overlaps** the first by one second rather than resuming
  * at the shared midpoint. GDELT documents both boundaries as exclusive — STARTDATETIME
@@ -239,14 +242,14 @@ export type WindowContinuation = {
 };
 
 /**
- * How a caller retrieves records left behind once `maxRecords` is already at its ceiling.
+ * How a DOC caller retrieves records left behind once `maxRecords` is already at its ceiling.
  *
  * GDELT exposes no offset or cursor, so narrowing the time window is the only lever, and
  * each outcome is stated rather than implied: halves to re-query when the window divides,
- * how to pin a window when the call never set one, and — when the window is already too
- * narrow to divide — that the remaining records are simply unreachable.
+ * how to pin a window when the call never set one, and — when a half would fall under the
+ * shortest window the DOC API accepts — that the remaining records are unreachable.
  *
- * Callers own the record-noun prose; this covers only the window reasoning both tools share.
+ * Callers own the record-noun prose; this covers only the window reasoning.
  */
 export function planWindowContinuation(window: GdeltWindow | undefined): WindowContinuation {
   if (!window) {
@@ -260,9 +263,7 @@ export function planWindowContinuation(window: GdeltWindow | undefined): WindowC
   const windows = splitWindow(window);
   if (!windows) {
     return {
-      guidance:
-        `The window ${window.startDatetime}–${window.endDatetime} is already too narrow to divide at GDELT's ` +
-        'one-second resolution, so the remaining records are not retrievable through this API.',
+      guidance: `The window ${window.startDatetime}–${window.endDatetime} is under ${2 * DOC_MIN_WINDOW_MINUTES} minutes, so either half would fall under the ${DOC_MIN_WINDOW_MINUTES} minutes the GDELT DOC API accepts: it does not search a narrower window, and the remaining records are not retrievable through this API.`,
     };
   }
 
@@ -333,6 +334,34 @@ export function tvRequestWindow(window: GdeltWindow): GdeltWindow {
 function lastTvSecond(window: GdeltWindow): number {
   const end = parseGdeltDatetime(window.endDatetime).getTime();
   return end % HOUR_MS === 0 ? end - GDELT_RESOLUTION_MS : end;
+}
+
+/**
+ * GDELT TV's shortest window. Measured live: 30 minutes is answered, while 29 minutes 59 seconds
+ * (`20240927233000–20240927235959`) and 20 minutes are refused ("Timespan is too short.").
+ */
+const TV_MIN_SPAN_MS = 30 * 60 * 1000;
+
+/**
+ * The window to send GDELT TV's timelines, rankings, and word clouds for a caller's window: as
+ * given, an end exactly on the clock hour a second earlier — the end rule {@link tvRequestWindow}
+ * applies for clips. Every period GDELT TV counts (clock hour, UTC day, Sunday–Saturday week,
+ * month, year) begins on the clock hour, and GDELT counts the whole period an end falls in, so an
+ * end on a period's first second, sent as is, adds that whole period for one second that GDELT
+ * documents as outside the window (ENDDATETIME is exclusive). An on-the-hour end inside a longer
+ * period stays in that period, and its values do not change.
+ *
+ * GDELT picks the period from the span it is sent, and the second taken off moves a span to the
+ * finer period at exactly two lengths: 3 × 365 days (months to days) and 7 days and a second (days
+ * to hours). A window the trim would leave under {@link TV_MIN_SPAN_MS} goes as given: GDELT
+ * refuses the shorter one, so a 30-minute window ending on the hour keeps counting the hour after
+ * its end, which the covered-window notice names.
+ */
+export function tvAnalyticsWindow(window: GdeltWindow): GdeltWindow {
+  const end = lastTvSecond(window);
+  return end - parseGdeltDatetime(window.startDatetime).getTime() < TV_MIN_SPAN_MS
+    ? window
+    : { startDatetime: window.startDatetime, endDatetime: toGdeltDatetime(new Date(end)) };
 }
 
 /**
@@ -486,4 +515,40 @@ export function describeDateRangeFault(
     return `startDatetime ${startDatetime} must be earlier than endDatetime ${endDatetime}`;
   }
   return;
+}
+
+/**
+ * Why the GDELT DOC API would refuse an explicit window as too short, or `undefined` when it would
+ * not: a pair spanning under {@link DOC_MIN_WINDOW_SECONDS}, compared to the second. Only a pair
+ * {@link describeDateRangeFault} passes is judged — a fault there is that check's to report — and
+ * a relative timespan keeps its own 15-minute rule. DOC-only: the TV tools widen a short window
+ * themselves.
+ */
+export function describeShortDocWindow(
+  startDatetime?: string,
+  endDatetime?: string,
+): string | undefined {
+  if (!startDatetime || !endDatetime || describeDateRangeFault(startDatetime, endDatetime)) return;
+  const spanSeconds =
+    (parseGdeltDatetime(endDatetime).getTime() - parseGdeltDatetime(startDatetime).getTime()) /
+    GDELT_RESOLUTION_MS;
+  if (spanSeconds >= DOC_MIN_WINDOW_SECONDS) return;
+  return `The window ${startDatetime}–${endDatetime} spans ${describeSpan(spanSeconds)}, under the ${DOC_MIN_WINDOW_MINUTES} minutes the GDELT DOC API accepts for a startDatetime/endDatetime window.`;
+}
+
+/** The sentence each DOC tool's startDatetime and endDatetime descriptions end with. */
+export const DOC_WINDOW_MINIMUM_NOTE = `The window must span at least ${DOC_MIN_WINDOW_MINUTES} minutes, the shortest the GDELT DOC API accepts; a shorter one is answered from the server's local GKG mirror where one runs, and refused otherwise.`;
+
+/** The recovery for a window {@link describeShortDocWindow} faults. */
+export const DOC_SHORT_WINDOW_HINT = `Set endDatetime at least ${DOC_MIN_WINDOW_MINUTES} minutes after startDatetime, or omit both and use a timespan of ${GDELT_DOC_MIN_TIMESPAN_MINUTES} minutes or more for a window ending now.`;
+
+/** A positive whole number of seconds in minutes and seconds, e.g. `29 minutes 59 seconds`. */
+function describeSpan(seconds: number): string {
+  const count = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'}`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (minutes === 0) return count(rest, 'second');
+  return rest === 0
+    ? count(minutes, 'minute')
+    : `${count(minutes, 'minute')} ${count(rest, 'second')}`;
 }

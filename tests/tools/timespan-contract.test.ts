@@ -113,6 +113,43 @@ describe('DOC explicit-window precedence', () => {
         expect(contentText(result)).toMatch(/startDatetime/);
         expect(fetch).not.toHaveBeenCalled();
       });
+      /**
+       * An explicit window under the 30 minutes DOC accepts (#92) still wins over a timespan beside
+       * it: the window's own floor answers, never the timespan's 15-minute rule or its window.
+       */
+      it.each(['1min', '24h'])(
+        'refuses a window under 30 minutes beside unused %s as invalid_date_range, before I/O',
+        async (timespan) => {
+          const fetch = arrange();
+          const result = await runToolContract(tool, {
+            ...base,
+            timespan,
+            startDatetime: '20261015000000',
+            endDatetime: '20261015002959',
+          });
+          expect(result).toMatchObject({
+            isError: true,
+            structuredContent: { error: { data: { reason: 'invalid_date_range' } } },
+          });
+          expect(contentText(result)).toMatch(/under the 30 minutes the GDELT DOC API accepts/);
+          expect(contentText(result)).not.toMatch(/must be at least 15 minutes/);
+          expect(fetch).not.toHaveBeenCalled();
+        },
+      );
+      it('sends a 30-minute window beside unused 1min once, without the timespan', async () => {
+        const fetch = arrange();
+        const result = await runToolContract(tool, {
+          ...base,
+          timespan: '1min',
+          startDatetime: '20261015000000',
+          endDatetime: '20261015003000',
+        });
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        expect(fetch).toHaveBeenCalledTimes(1);
+        const url = new URL(String(fetch.mock.calls[0]?.[0]));
+        expect(url.searchParams.get('enddatetime')).toBe('20261015003000');
+        expect(url.searchParams.has('timespan')).toBe(false);
+      });
       it('preserves unknown numeric-plus-unit syntax upstream', async () => {
         const fetch = arrange();
         const result = await runToolContract(tool, { ...base, timespan: '1futureunit' });

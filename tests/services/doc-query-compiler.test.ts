@@ -1,7 +1,8 @@
 /**
  * @fileoverview Tests for the GKG mirror's DOC query compiler: the operator table, refusals that
  * name the element as written, the query length bound, the plan's `kinds` / `filterOnly` (DOC-free
- * routing reads them), FTS5 literal safety against a real store, and the scanner's linear cost.
+ * routing reads them), `requiresKeyword` (a mirror answer's notice reads it), FTS5 literal safety
+ * against a real store, and the scanner's linear cost.
  * @module tests/services/doc-query-compiler.test
  */
 
@@ -10,6 +11,7 @@ import {
   compileDocQuery,
   ftsMatchText,
   MAX_PLAN_PREDICATES,
+  requiresKeyword,
 } from '@/services/gkg-mirror/doc-query-compiler.js';
 import { GKG_ARTICLES_FTS } from '@/services/gkg-mirror/gkg-mirror-schema.js';
 import type { MirrorQueryPlan } from '@/services/gkg-mirror/types.js';
@@ -189,6 +191,41 @@ describe('compileDocQuery — kinds and filterOnly', () => {
 
   it('reports each kind once however often it appears', () => {
     expect(plan('theme:A1 theme:B2 (theme:C3 OR theme:D4)').kinds).toEqual(['theme']);
+  });
+});
+
+/**
+ * Whether every row the plan matches had to match a keyword or phrase in a title or entity name:
+ * a mirror answer's notice names `theme:` as the route to translated articles only then, and reads
+ * its keyword sentences only when `filterOnly` is false. Both columns per query.
+ */
+describe('requiresKeyword', () => {
+  it.each([
+    ['earthquake sourcecountry:japan', true, false],
+    ['earthquake theme:NATURAL_DISASTER_EARTHQUAKE', true, false],
+    ['"bird flu" sourcelang:spanish', true, false],
+    ['(flu OR influenza)', true, false],
+    ['(flu OR "bird flu") sourcecountry:japan', true, false],
+    ['earthquake -aftershock', true, false],
+    ['(earthquake OR theme:NATURAL_DISASTER_EARTHQUAKE) aftershock', true, false],
+    ['theme:NATURAL_DISASTER_EARTHQUAKE sourcecountry:japan', false, true],
+    ['(theme:NATURAL_DISASTER_EARTHQUAKE OR theme:TAX_FNCACT) -domain:cnn.com', false, true],
+    ['theme:NATURAL_DISASTER_EARTHQUAKE -aftershock', false, false],
+    ['theme:NATURAL_DISASTER_EARTHQUAKE -"bird flu"', false, false],
+    ['-earthquake', false, false],
+    ['(earthquake OR theme:NATURAL_DISASTER_EARTHQUAKE)', false, false],
+    ['(earthquake OR sourcecountry:japan) theme:NATURAL_DISASTER_EARTHQUAKE', false, false],
+  ] as const)('%s → requiresKeyword %s, filterOnly %s', (query, required, filterOnly) => {
+    const compiled = plan(query);
+    expect(requiresKeyword(compiled)).toBe(required);
+    expect(compiled.filterOnly).toBe(filterOnly);
+  });
+
+  it.each([
+    ['a nested OR group', '((flu OR influenza) OR theme:NATURAL_DISASTER_EARTHQUAKE)'],
+    ['an excluded OR group', '-(flu OR influenza)'],
+  ])('has no plan to read for %s: the mirror never answers one', (_, query) => {
+    expect(compileDocQuery(query).ok).toBe(false);
   });
 });
 

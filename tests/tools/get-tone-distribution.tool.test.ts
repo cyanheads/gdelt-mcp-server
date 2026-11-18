@@ -13,15 +13,23 @@ import {
   attachMirror,
   DOC_429_DETAIL,
   MIRROR_DIVERGENCE_SENTENCE,
+  MIRROR_KEYWORD_CASES,
   MIRROR_NO_MATCH_SENTENCE,
   MIRROR_STANDS_IN_FOR,
+  MIRROR_THEME_ROUTE_SENTENCE,
   mirrorAnswers,
+  mirrorSentences,
   OVERLOAD_RETRY_SENTENCE,
   PARTIAL_COVERAGE,
   PARTIAL_COVERAGE_LINE,
   ROUTED_WINDOW,
   refusedAttemptsLines,
+  SHORT_WINDOW,
+  SHORT_WINDOW_COVERAGE,
+  SHORT_WINDOW_FAULT,
+  SHORT_WINDOW_HINT,
   SOURCE_LINE,
+  shortWindowAttemptsLines,
   useRoutedDoc,
 } from '../helpers/doc-source-fakes.js';
 import { contentText, hrefFor, literalHtml, renderMarkdown } from './markdown-render.js';
@@ -625,7 +633,7 @@ describe('gdelt_get_tone_distribution DOC source routing', () => {
 
     const result = await runToolContract(gdeltGetToneDistribution, INPUT);
 
-    const mirrorNotice = `${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE}`;
+    const mirrorNotice = `${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_THEME_ROUTE_SENTENCE}`;
     expect(result.structuredContent).toEqual({
       histogram: [{ ...MIRROR_BIN, referenceCount: 1 }],
       summary: { peakNegativeBin: -3, neutralPct: 0 },
@@ -654,11 +662,26 @@ describe('gdelt_get_tone_distribution DOC source routing', () => {
 
     const result = await runToolContract(gdeltGetToneDistribution, INPUT);
 
-    expect(notice(result)).toBe(
-      `${EMPTY_NOTICE} ${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_NO_MATCH_SENTENCE}`,
-    );
+    const mirrorNotice = `${EMPTY_NOTICE} ${MIRROR_STANDS_IN_FOR.rate_limited} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_NO_MATCH_SENTENCE} ${MIRROR_THEME_ROUTE_SENTENCE}`;
+    expect(notice(result)).toBe(mirrorNotice);
     expect(contentText(result)).toContain(refusedAttemptsLines('empty'));
+    expect(contentText(result).split('\n')).toContain(`> ${mirrorNotice}`);
   });
+
+  it.each(MIRROR_KEYWORD_CASES)(
+    'ends the notice with the mirror sentences for a query holding $holds, $matched matched, on both surfaces',
+    async ({ query, matched, sentences }) => {
+      attachMirror(
+        mirrorAnswers(matched > 0 ? MIRROR_TONECHART : { kind: 'tonechart', result: [] }, matched),
+      );
+      doc.answerDoc('refuse');
+
+      const result = await runToolContract(gdeltGetToneDistribution, { ...INPUT, query });
+
+      expect(result.structuredContent).toMatchObject({ source: 'gkg_mirror' });
+      expect(mirrorSentences(result)).toEqual({ structuredContent: sentences, content: sentences });
+    },
+  );
 
   it("keeps DOC's empty answer with the overload sentence when the mirror has no match either", async () => {
     attachMirror(mirrorAnswers({ kind: 'tonechart', result: [] }, 0));
@@ -675,5 +698,67 @@ describe('gdelt_get_tone_distribution DOC source routing', () => {
       ],
       notice: `${EMPTY_NOTICE} ${OVERLOAD_RETRY_SENTENCE}`,
     });
+  });
+
+  /** A window under the 30 minutes DOC accepts (#92); the router's table is in doc-source-router.test.ts. */
+  it('with no mirror, fails a window under 30 minutes invalid_date_range before any request, on both surfaces', async () => {
+    const fetch = doc.answerDoc({ body: DOC_TONECHART });
+
+    const result = await runToolContract(gdeltGetToneDistribution, { ...INPUT, ...SHORT_WINDOW });
+
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: JsonRpcErrorCode.ValidationError,
+          message: SHORT_WINDOW_FAULT,
+          data: { reason: 'invalid_date_range', recovery: { hint: SHORT_WINDOW_HINT } },
+        },
+      },
+    });
+    expect(contentText(result)).toContain(SHORT_WINDOW_FAULT);
+    expect(contentText(result)).toContain(`Recovery: ${SHORT_WINDOW_HINT}`);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('answers a window under 30 minutes from the mirror without asking DOC, saying why on both surfaces', async () => {
+    attachMirror(mirrorAnswers(MIRROR_TONECHART, 7, SHORT_WINDOW_COVERAGE));
+    const fetch = doc.answerDoc({ body: DOC_TONECHART });
+
+    const result = await runToolContract(gdeltGetToneDistribution, { ...INPUT, ...SHORT_WINDOW });
+
+    const mirrorNotice = `${MIRROR_STANDS_IN_FOR.window_too_short} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_THEME_ROUTE_SENTENCE}`;
+    expect(result.structuredContent).toEqual({
+      histogram: [{ ...MIRROR_BIN, referenceCount: 1 }],
+      summary: { peakNegativeBin: -3, neutralPct: 0 },
+      effectiveQuery: 'climate',
+      totalCount: 7,
+      ...SHORT_WINDOW,
+      source: 'gkg_mirror',
+      attempts: [
+        { source: 'doc_api', outcome: 'window_too_short', detail: SHORT_WINDOW_FAULT },
+        { source: 'gkg_mirror', outcome: 'answered' },
+      ],
+      notice: mirrorNotice,
+    });
+    const text = contentText(result);
+    expect(text).toContain(SOURCE_LINE.gkg_mirror);
+    expect(text).toContain(shortWindowAttemptsLines('answered'));
+    expect(text).toContain(`> ${mirrorNotice}`);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("returns the mirror's empty answer for a window under 30 minutes, not an error", async () => {
+    attachMirror(mirrorAnswers({ kind: 'tonechart', result: [] }, 0, SHORT_WINDOW_COVERAGE));
+    const fetch = doc.answerDoc({ body: DOC_TONECHART });
+
+    const result = await runToolContract(gdeltGetToneDistribution, { ...INPUT, ...SHORT_WINDOW });
+
+    const mirrorNotice = `${EMPTY_NOTICE} ${MIRROR_STANDS_IN_FOR.window_too_short} ${MIRROR_DIVERGENCE_SENTENCE} ${MIRROR_NO_MATCH_SENTENCE} ${MIRROR_THEME_ROUTE_SENTENCE}`;
+    expect(result.isError).toBeFalsy();
+    expect(notice(result)).toBe(mirrorNotice);
+    expect(contentText(result)).toContain(shortWindowAttemptsLines('empty'));
+    expect(contentText(result).split('\n')).toContain(`> ${mirrorNotice}`);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

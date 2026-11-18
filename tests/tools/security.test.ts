@@ -140,9 +140,9 @@ function mockContextService(methods: Record<string, unknown>) {
 beforeEach(() => {
   vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
     searchArticles: vi.fn().mockResolvedValue({ articles: [ARTICLE], totalReturned: 1 }),
-    getTimeline: vi.fn().mockResolvedValue(TIMELINE_SERIES),
+    getTimeline: vi.fn().mockResolvedValue({ series: TIMELINE_SERIES }),
     getToneDistribution: vi.fn().mockResolvedValue([]),
-    getBreakdown: vi.fn().mockResolvedValue([]),
+    getBreakdown: vi.fn().mockResolvedValue({ series: [] }),
   } as unknown as docServiceModule.GdeltDocService);
 
   vi.spyOn(tvServiceModule, 'getGdeltTvService').mockReturnValue({
@@ -493,18 +493,20 @@ describe('upstream text rendered into content[]', () => {
 
   it('get-coverage-timeline renders a hostile article title as an inert link label', async () => {
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
-      getTimeline: vi.fn().mockResolvedValue([
-        {
-          label: 'Volume Intensity',
-          data: [
-            {
-              date: '2024-01-01T00:00:00Z',
-              value: 1,
-              articles: [{ url: 'https://example.com/a', title: PAYLOAD }],
-            },
-          ],
-        },
-      ]),
+      getTimeline: vi.fn().mockResolvedValue({
+        series: [
+          {
+            label: 'Volume Intensity',
+            data: [
+              {
+                date: '2024-01-01T00:00:00Z',
+                value: 1,
+                articles: [{ url: 'https://example.com/a', title: PAYLOAD }],
+              },
+            ],
+          },
+        ],
+      }),
     } as unknown as docServiceModule.GdeltDocService);
     const result = await runToolContract(gdeltGetCoverageTimeline, {
       query: 'x',
@@ -606,7 +608,7 @@ describe('caller text quoted into notices, hints, and echoes', () => {
       'gdelt_get_coverage_timeline',
       true,
       (query) => {
-        mockDoc({ getTimeline: vi.fn().mockResolvedValue([]) });
+        mockDoc({ getTimeline: vi.fn().mockResolvedValue({ series: [] }) });
         return runToolContract(gdeltGetCoverageTimeline, { query });
       },
     ],
@@ -622,7 +624,7 @@ describe('caller text quoted into notices, hints, and echoes', () => {
       'gdelt_get_coverage_breakdown',
       true,
       (query) => {
-        mockDoc({ getBreakdown: vi.fn().mockResolvedValue([]) });
+        mockDoc({ getBreakdown: vi.fn().mockResolvedValue({ series: [] }) });
         return runToolContract(gdeltGetCoverageBreakdown, { query, breakdownBy: 'country' });
       },
     ],
@@ -979,9 +981,9 @@ describe('caller text quoted into notices, hints, and echoes', () => {
       'gdelt_get_coverage_breakdown unknown_series',
       () => {
         mockDoc({
-          getBreakdown: vi
-            .fn()
-            .mockResolvedValue([{ label: UPSTREAM, data: [{ date: '2024-01-01', value: 1 }] }]),
+          getBreakdown: vi.fn().mockResolvedValue({
+            series: [{ label: UPSTREAM, data: [{ date: '2024-01-01', value: 1 }] }],
+          }),
         });
         return runToolContract(gdeltGetCoverageBreakdown, {
           query: HOSTILE_QUERY,
@@ -998,11 +1000,9 @@ describe('caller text quoted into notices, hints, and echoes', () => {
       'gdelt_get_coverage_timeline unknown_point',
       () => {
         mockDoc({
-          getTimeline: vi
-            .fn()
-            .mockResolvedValue([
-              { label: 'Volume Intensity', data: [{ date: UPSTREAM, value: 1 }] },
-            ]),
+          getTimeline: vi.fn().mockResolvedValue({
+            series: [{ label: 'Volume Intensity', data: [{ date: UPSTREAM, value: 1 }] }],
+          }),
         });
         return runToolContract(gdeltGetCoverageTimeline, {
           query: 'x',

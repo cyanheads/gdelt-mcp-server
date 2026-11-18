@@ -3,7 +3,8 @@
  * table (DOC answered, answered empty, or refused; the mirror answered, answered empty, or could
  * not answer), the gate-first refusal and the 45 s / 55 s bounds that keep each row under the 60 s
  * client timeout, the caller's cancellation in each phase, a stale DOC answer winning over the
- * mirror, and the unchanged path with no mirror attached. The real `gdeltFetch`, retry ladder,
+ * mirror, the unchanged path with no mirror attached, and an explicit window under DOC's 30-minute
+ * minimum, decided against the mirror before DOC is asked. The real `gdeltFetch`, retry ladder,
  * pacer (at production spacing), and response cache run with the global `fetch` stubbed; the mirror
  * is a fake honoring the client's contract.
  * @module tests/services/doc-source-router.test
@@ -91,6 +92,13 @@ const SEARCH_COVERAGE = {
   missingSlots: 0,
 };
 
+/** An explicit window a second short of the 30 minutes DOC accepts, inside the mirror's slots. */
+const SHORT = { startDatetime: '20261031120000', endDatetime: '20261031122959' } as const;
+const SHORT_FAULT =
+  'The window 20261031120000–20261031122959 spans 29 minutes 59 seconds, under the 30 minutes the GDELT DOC API accepts for a startDatetime/endDatetime window.';
+const SHORT_HINT =
+  'Set endDatetime at least 30 minutes after startDatetime, or omit both and use a timespan of 15 minutes or more for a window ending now.';
+
 const MIRROR_ARTLIST: MirrorResult = {
   kind: 'artlist',
   result: { articles: [MIRROR_ARTICLE], totalReturned: 1 },
@@ -131,11 +139,14 @@ function iso(stamp: string): string {
   return `${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-${stamp.slice(6, 8)}T${stamp.slice(8, 10)}:${stamp.slice(10, 12)}:${stamp.slice(12, 14)}Z`;
 }
 
-/** An `answered` response over `window` clipped to the slots the fake holds. */
+/**
+ * An `answered` response over `window` clipped to the slots the fake holds, carrying a copy of
+ * `result` so a routed answer compared with `result` shows a change made on the way.
+ */
 function answered(result: MirrorResult, matched: number) {
   return ({ window }: { window: MirrorWindow }): MirrorResponse => ({
     outcome: 'answered',
-    answer: result,
+    answer: structuredClone(result),
     matched,
     coverage: {
       requestedStart: iso(window.startDatetime),
@@ -238,7 +249,7 @@ async function settle<T>(pending: Promise<T>) {
   return watched.result();
 }
 
-/** Close the cooldown gate with one refused request for another query. */
+/** Close DOC's cooldown with one refused request for another query. */
 async function closeCooldownGate(): Promise<void> {
   const refusal = gdeltFetch(
     `${BASE_URL}/doc/doc`,
@@ -249,7 +260,7 @@ async function closeCooldownGate(): Promise<void> {
   ).catch((error: unknown) => error);
   await vi.advanceTimersByTimeAsync(0);
   await refusal;
-  expect(getGdeltPacer().cooldown.remainingMs).toBe(5_000);
+  expect(getGdeltPacer(`${BASE_URL}/doc/doc`).cooldown.remainingMs).toBe(5_000);
 }
 
 beforeEach(() => {
@@ -374,7 +385,7 @@ describe('DOC answers empty', () => {
 
     expect(value).toEqual({
       result: MIRROR_ARTLIST.result,
-      standIn: { standsInFor: 'empty', matched: 1 },
+      standIn: { standsInFor: 'empty', matched: 1, keywords: 'required' },
     });
     expect(getEnrichment(ctx)).toEqual({
       source: 'gkg_mirror',
@@ -547,7 +558,7 @@ describe('DOC refuses', () => {
       expect(afterMs).toBeLessThan(60_000);
       expect(value).toEqual({
         result: MIRROR_ARTLIST.result,
-        standIn: { standsInFor: row.outcome, matched: 1 },
+        standIn: { standsInFor: row.outcome, matched: 1, keywords: 'required' },
       });
       expect(getEnrichment(ctx)).toEqual({
         source: 'gkg_mirror',
@@ -571,7 +582,7 @@ describe('DOC refuses', () => {
 
     expect(value).toEqual({
       result: MIRROR_NO_ARTICLES.result,
-      standIn: { standsInFor: 'rate_limited', matched: 0 },
+      standIn: { standsInFor: 'rate_limited', matched: 0, keywords: 'required' },
     });
     expect(getEnrichment(ctx)).toMatchObject({
       source: 'gkg_mirror',
@@ -581,6 +592,23 @@ describe('DOC refuses', () => {
       ],
     });
   });
+
+  /** The plan's own table is `requiresKeyword` in doc-query-compiler.test.ts; one row per value. */
+  it.each([
+    ['earthquake sourcecountry:japan', 'required'],
+    ['theme:NATURAL_DISASTER_EARTHQUAKE -aftershock', 'unrequired'],
+    ['theme:NATURAL_DISASTER_EARTHQUAKE sourcecountry:japan', 'none'],
+  ] as const)(
+    'reads the keywords of %s from the plan the mirror answered: %s',
+    async (query, keywords) => {
+      attachMirror();
+      answerDoc(() => refused);
+
+      const { value } = await settle(routeArticleSearch({ ...SEARCH, query }, createMockContext()));
+
+      expect(value?.standIn).toEqual({ standsInFor: 'rate_limited', matched: 1, keywords });
+    },
+  );
 
   it('omits coverage when the mirror answered the whole requested window', async () => {
     attachMirror();
@@ -820,6 +848,342 @@ describe('DOC refuses', () => {
   });
 });
 
+// ─── A window under DOC's minimum ─────────────────────────────────────────────
+
+/**
+ * An explicit window under the 30 minutes DOC accepts (#92) is decided before DOC is touched:
+ * no request, no pacing wait, no response-cache lookup — the DOC service is never called. The
+ * mirror answers it whatever DOC would have done; otherwise it fails `invalid_date_range`.
+ */
+describe('an explicit window under the 30 minutes DOC accepts', () => {
+  const SHORT_SEARCH = { ...UNTIMED, ...SHORT };
+  const DOC_STATES = [
+    ['answering', ok({ articles: [DOC_ARTICLE] })],
+    ['refusing', refused],
+  ] as const;
+
+  it.each(DOC_STATES)(
+    'with no mirror, fails invalid_date_range at once, sending nothing (DOC %s)',
+    async (_, response) => {
+      answerDoc(() => response);
+      const search = vi.spyOn(getGdeltDocService(), 'searchArticles');
+      const ctx = createMockContext();
+
+      const { error, afterMs } = await settle(routeArticleSearch(SHORT_SEARCH, ctx));
+
+      expect(error).toBeInstanceOf(McpError);
+      expect(error?.code).toBe(JsonRpcErrorCode.ValidationError);
+      expect(error?.message).toBe(SHORT_FAULT);
+      expect(error?.data).toEqual({ reason: 'invalid_date_range', recovery: { hint: SHORT_HINT } });
+      expect(afterMs).toBe(0);
+      expect(upstream).not.toHaveBeenCalled();
+      expect(search).not.toHaveBeenCalled();
+      expect(getEnrichment(ctx)).toEqual({});
+    },
+  );
+
+  it.each(DOC_STATES)(
+    'answers from a ready mirror without asking DOC (DOC %s)',
+    async (_, response) => {
+      const mirror = attachMirror();
+      answerDoc(() => response);
+      const search = vi.spyOn(getGdeltDocService(), 'searchArticles');
+      const ctx = createMockContext();
+
+      const { value, afterMs } = await settle(routeArticleSearch(SHORT_SEARCH, ctx));
+
+      expect(value).toEqual({
+        result: MIRROR_ARTLIST.result,
+        standIn: { standsInFor: 'window_too_short', matched: 1, keywords: 'required' },
+      });
+      // The mirror answered the whole window, so no coverage is disclosed.
+      expect(getEnrichment(ctx)).toEqual({
+        source: 'gkg_mirror',
+        attempts: [
+          { source: 'doc_api', outcome: 'window_too_short', detail: SHORT_FAULT },
+          { source: 'gkg_mirror', outcome: 'answered' },
+        ],
+      });
+      expect(mirror.execute).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ kind: 'artlist', window: SHORT }),
+        expect.any(AbortSignal),
+      );
+      expect(afterMs).toBe(0);
+      expect(upstream).not.toHaveBeenCalled();
+      expect(search).not.toHaveBeenCalled();
+    },
+  );
+
+  it("returns the mirror's empty answer, not an error, when it matched nothing", async () => {
+    attachMirror({ respond: answered(MIRROR_NO_ARTICLES, 0) });
+    answerDoc(() => ok({ articles: [DOC_ARTICLE] }));
+    const ctx = createMockContext();
+
+    const { value, error } = await settle(routeArticleSearch(SHORT_SEARCH, ctx));
+
+    expect(error).toBeUndefined();
+    expect(value).toEqual({
+      result: MIRROR_NO_ARTICLES.result,
+      standIn: { standsInFor: 'window_too_short', matched: 0, keywords: 'required' },
+    });
+    expect(getEnrichment(ctx)).toEqual({
+      source: 'gkg_mirror',
+      attempts: [
+        { source: 'doc_api', outcome: 'window_too_short', detail: SHORT_FAULT },
+        { source: 'gkg_mirror', outcome: 'empty' },
+      ],
+    });
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it('discloses the slots missing inside the window, as any mirror answer does', async () => {
+    const coverage = {
+      requestedStart: '2026-10-31T12:00:00Z',
+      requestedEnd: '2026-10-31T12:29:59Z',
+      answeredStart: '2026-10-31T12:00:00Z',
+      answeredEnd: '2026-10-31T12:29:59Z',
+      missingSlots: 1,
+    };
+    attachMirror({
+      respond: () => ({ outcome: 'answered', answer: MIRROR_ARTLIST, matched: 1, coverage }),
+    });
+    const ctx = createMockContext();
+
+    await settle(routeArticleSearch(SHORT_SEARCH, ctx));
+
+    expect(getEnrichment(ctx)).toMatchObject({ source: 'gkg_mirror', coverage });
+  });
+
+  it("takes no pacing wait and passes DOC's closed gate untouched", async () => {
+    const mirror = attachMirror({ status: { ready: false } });
+    answerDoc(() => refused);
+    await closeCooldownGate();
+
+    const { error, afterMs } = await settle(routeArticleSearch(SHORT_SEARCH, createMockContext()));
+
+    // An open DOC request would wait out the gate: 5.3 s, then a request for "climate".
+    expect(afterMs).toBe(0);
+    expect(requestsFor('climate')).toBe(0);
+    expect(error?.data).toMatchObject({ reason: 'invalid_date_range' });
+    expect(mirror.execute).not.toHaveBeenCalled();
+  });
+
+  describe('and the mirror cannot answer', () => {
+    const OUTSIDE = { startDatetime: '20261001120000', endDatetime: '20261001122959' };
+    const OUTSIDE_FAULT =
+      'The window 20261001120000–20261001122959 spans 29 minutes 59 seconds, under the 30 minutes the GDELT DOC API accepts for a startDatetime/endDatetime window.';
+    const ROWS: Array<{
+      name: string;
+      mirror: FakeMirrorOptions;
+      params?: Partial<Parameters<typeof routeArticleSearch>[0]>;
+      fault?: string;
+      outcome: string;
+      detail: string;
+      hint: string;
+      executes: number;
+    }> = [
+      {
+        name: 'a query it cannot compile',
+        mirror: {},
+        params: { query: 'climate near20:"flu virus"' },
+        outcome: 'not_compiled',
+        detail:
+          'It cannot evaluate "near20:\\"flu virus\\"": Proximity and repeat operators need article text, which the GKG mirror does not store.',
+        hint: 'Without "near20:\\"flu virus\\"" in the query, the local GKG mirror could answer while GDELT refuses.',
+        executes: 0,
+      },
+      {
+        name: 'no completed sync',
+        mirror: { status: { ready: false } },
+        outcome: 'not_ready',
+        detail: 'The local GKG mirror has not completed an init run.',
+        hint: "The local GKG mirror answers once the server operator's first sync (mirror:init) has completed.",
+        executes: 0,
+      },
+      {
+        name: 'a window before its oldest slot',
+        mirror: {},
+        params: OUTSIDE,
+        fault: OUTSIDE_FAULT,
+        outcome: 'outside_coverage',
+        detail:
+          'The requested window 20261001120000–20261001122959 lies outside the slots the local GKG mirror holds, 20261025120000 to 20261101113000.',
+        hint: 'A startDatetime/endDatetime window inside 20261025120000–20261101113000 lets the local GKG mirror answer while GDELT refuses.',
+        executes: 0,
+      },
+      {
+        name: 'a window holding no slot it ingested',
+        mirror: {
+          respond: () => ({
+            outcome: 'outside_coverage',
+            detail: 'The requested window shares no slot with the GKG mirror.',
+            oldestSlot: OLDEST,
+            newestSlot: NEWEST,
+          }),
+        },
+        outcome: 'outside_coverage',
+        detail: 'The requested window shares no slot with the GKG mirror.',
+        hint: 'A startDatetime/endDatetime window inside 20261025120000–20261101113000 lets the local GKG mirror answer while GDELT refuses.',
+        executes: 1,
+      },
+      {
+        name: 'a status read that fails',
+        mirror: { status: new Error('worker gone') },
+        outcome: 'store_error',
+        detail: 'The local GKG mirror did not report its status.',
+        hint: 'The local GKG mirror is unavailable for now.',
+        executes: 0,
+      },
+      {
+        name: 'a store error while answering',
+        mirror: {
+          respond: () => ({
+            outcome: 'store_error',
+            detail: 'The local GKG mirror did not answer.',
+          }),
+        },
+        outcome: 'store_error',
+        detail: 'The local GKG mirror did not answer.',
+        hint: 'The local GKG mirror is unavailable for now.',
+        executes: 1,
+      },
+    ];
+
+    describe.each(ROWS)('because of $name', (row) => {
+      it.each(DOC_STATES)(
+        'fails invalid_date_range with both attempts and what lets the mirror answer, sending nothing (DOC %s)',
+        async (_, response) => {
+          const mirror = attachMirror(row.mirror);
+          answerDoc(() => response);
+          const search = vi.spyOn(getGdeltDocService(), 'searchArticles');
+          const ctx = createMockContext();
+          const fault = row.fault ?? SHORT_FAULT;
+
+          const { error, afterMs } = await settle(
+            routeArticleSearch({ ...SHORT_SEARCH, ...row.params }, ctx),
+          );
+
+          expect(error).toBeInstanceOf(McpError);
+          expect(error?.code).toBe(JsonRpcErrorCode.ValidationError);
+          expect(error?.message).toBe(
+            `${fault} The local GKG mirror could not answer instead: ${row.detail}`,
+          );
+          expect(error?.data).toEqual({
+            reason: 'invalid_date_range',
+            attempts: [
+              { source: 'doc_api', outcome: 'window_too_short', detail: fault },
+              { source: 'gkg_mirror', outcome: row.outcome, detail: row.detail },
+            ],
+            recovery: { hint: `${SHORT_HINT} ${row.hint}` },
+          });
+          expect(afterMs).toBe(0);
+          expect(upstream).not.toHaveBeenCalled();
+          expect(search).not.toHaveBeenCalled();
+          expect(mirror.execute).toHaveBeenCalledTimes(row.executes);
+          expect(getEnrichment(ctx)).toEqual({});
+        },
+      );
+    });
+  });
+
+  it('gives the mirror the whole answer deadline: an answer at 54.999 s is returned', async () => {
+    attachMirror({ delayMs: 54_999 });
+
+    const { value, afterMs } = await settle(routeArticleSearch(SHORT_SEARCH, createMockContext()));
+
+    expect(afterMs).toBe(54_999);
+    expect(value?.standIn).toMatchObject({ standsInFor: 'window_too_short', matched: 1 });
+  });
+
+  it('stops waiting at 55 s and fails invalid_date_range with a store_error attempt', async () => {
+    const mirror = attachMirror({ delayMs: 55_001 });
+
+    const { error, afterMs } = await settle(routeArticleSearch(SHORT_SEARCH, createMockContext()));
+
+    expect(afterMs).toBe(55_000);
+    expect(mirror.signals[0]?.aborted).toBe(true);
+    expect(error?.data).toEqual({
+      reason: 'invalid_date_range',
+      attempts: [
+        { source: 'doc_api', outcome: 'window_too_short', detail: SHORT_FAULT },
+        {
+          source: 'gkg_mirror',
+          outcome: 'store_error',
+          detail: "The local GKG mirror did not answer within 55s of the call's start.",
+        },
+      ],
+      recovery: { hint: `${SHORT_HINT} The local GKG mirror is unavailable for now.` },
+    });
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("rejects with the caller's abort reason untouched while the mirror answers", async () => {
+    attachMirror({ delayMs: 20_000 });
+    const controller = new AbortController();
+    const ctx = createMockContext({ signal: controller.signal });
+
+    const watched = timed(routeArticleSearch(SHORT_SEARCH, ctx));
+    await vi.advanceTimersByTimeAsync(5_000);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    const { error, afterMs } = await watched.result();
+
+    expect(error).toBe(controller.signal.reason);
+    expect(afterMs).toBe(5_000);
+    expect(upstream).not.toHaveBeenCalled();
+    expect(getEnrichment(ctx)).toEqual({});
+  });
+
+  it("rejects with the caller's abort reason untouched while the mirror status is read", async () => {
+    const status = Promise.withResolvers<MirrorCoverageStatus>();
+    const mirror = attachMirror({ status: () => status.promise });
+    const controller = new AbortController();
+
+    const pending = settle(
+      routeArticleSearch(SHORT_SEARCH, createMockContext({ signal: controller.signal })),
+    );
+    controller.abort();
+    status.resolve(READY);
+    const { error } = await pending;
+
+    expect(error).toBe(controller.signal.reason);
+    expect(upstream).not.toHaveBeenCalled();
+    expect(mirror.execute).not.toHaveBeenCalled();
+  });
+
+  describe.each([
+    ['exactly 30 minutes on a quarter hour', '20261031120000', '20261031123000'],
+    ['exactly 30 minutes off a quarter hour', '20261031120500', '20261031123500'],
+    ['60 minutes', '20261031120000', '20261031130000'],
+  ])('a window of %s', (_, startDatetime, endDatetime) => {
+    const params = { ...UNTIMED, startDatetime, endDatetime };
+
+    it('goes to DOC as before with no mirror: one request, nothing added', async () => {
+      answerDoc(() => ok({ articles: [DOC_ARTICLE] }));
+      const ctx = createMockContext();
+
+      const { value } = await settle(routeArticleSearch(params, ctx));
+
+      expect(value).toEqual({ result: { articles: [DOC_ARTICLE], totalReturned: 1 } });
+      expect(requestsFor('climate')).toBe(1);
+      expect(getEnrichment(ctx)).toEqual({});
+    });
+
+    it('goes to DOC first with a mirror attached, answering doc_api', async () => {
+      const mirror = attachMirror();
+      answerDoc(() => ok({ articles: [DOC_ARTICLE] }));
+      const ctx = createMockContext();
+
+      const { value } = await settle(routeArticleSearch(params, ctx));
+
+      expect(value).toEqual({ result: { articles: [DOC_ARTICLE], totalReturned: 1 } });
+      expect(requestsFor('climate')).toBe(1);
+      expect(getEnrichment(ctx)).toEqual({ source: 'doc_api' });
+      expect(mirror.execute).not.toHaveBeenCalled();
+    });
+  });
+});
+
 // ─── Bounds ───────────────────────────────────────────────────────────────────
 
 describe('under the 60 s client timeout', () => {
@@ -831,7 +1195,11 @@ describe('under the 60 s client timeout', () => {
     const { value, afterMs } = await settle(routeArticleSearch(SEARCH, ctx));
 
     expect(afterMs).toBe(54_999);
-    expect(value?.standIn).toEqual({ standsInFor: 'unavailable', matched: 1 });
+    expect(value?.standIn).toEqual({
+      standsInFor: 'unavailable',
+      matched: 1,
+      keywords: 'required',
+    });
   });
 
   it('stops waiting on the mirror at 55 s and rejects with both attempts', async () => {
@@ -993,8 +1361,14 @@ describe('each DOC call', () => {
           { query: 'theme:TAX_FNCACT', mode: 'timelinevolraw', timespan: '24h', smoothing: 3 },
           ctx,
         ),
+      short: (ctx: ReturnType<typeof createMockContext>) =>
+        routeTimeline(
+          { query: 'theme:TAX_FNCACT', mode: 'timelinevolraw', ...SHORT, smoothing: 3 },
+          ctx,
+        ),
       empty: { timeline: [{ series: 'Volume Intensity', data: [] }] },
       request: { kind: 'timeline', mode: 'timelinevolraw', smoothing: 3 },
+      seriesAnswer: true,
       answer: {
         kind: 'timeline',
         result: [
@@ -1009,6 +1383,8 @@ describe('each DOC call', () => {
       name: 'routeToneDistribution',
       run: (ctx: ReturnType<typeof createMockContext>) =>
         routeToneDistribution({ query: 'theme:TAX_FNCACT', timespan: '24h' }, ctx),
+      short: (ctx: ReturnType<typeof createMockContext>) =>
+        routeToneDistribution({ query: 'theme:TAX_FNCACT', ...SHORT }, ctx),
       empty: { tonechart: [] },
       request: { kind: 'tonechart' },
       answer: { kind: 'tonechart', result: [{ bin: 0, count: 400, articles: [] }] },
@@ -1020,8 +1396,11 @@ describe('each DOC call', () => {
           { query: 'theme:TAX_FNCACT', mode: 'timelinesourcecountry', timespan: '24h' },
           ctx,
         ),
+      short: (ctx: ReturnType<typeof createMockContext>) =>
+        routeBreakdown({ query: 'theme:TAX_FNCACT', mode: 'timelinesourcecountry', ...SHORT }, ctx),
       empty: {},
       request: { kind: 'breakdown', mode: 'timelinesourcecountry' },
+      seriesAnswer: true,
       answer: {
         kind: 'breakdown',
         result: [
@@ -1038,6 +1417,11 @@ describe('each DOC call', () => {
       run: (ctx: ReturnType<typeof createMockContext>) =>
         routeArticleSearch(
           { ...SEARCH, query: 'theme:TAX_FNCACT', sort: 'dateDesc', maxRecords: 250 },
+          ctx,
+        ),
+      short: (ctx: ReturnType<typeof createMockContext>) =>
+        routeArticleSearch(
+          { ...UNTIMED, ...SHORT, query: 'theme:TAX_FNCACT', sort: 'dateDesc', maxRecords: 250 },
           ctx,
         ),
       empty: { articles: [] },
@@ -1061,11 +1445,13 @@ describe('each DOC call', () => {
       const { kind: _, ...mapped } = call.answer as MirrorResult & {
         excludedWithoutCountry?: number;
       };
+      // A timeline or breakdown answer is its series, with no resolution DOC reported.
       expect(value).toEqual({
-        result: mapped.result,
+        result: 'seriesAnswer' in call ? { series: mapped.result } : mapped.result,
         standIn: {
           standsInFor: 'rate_limited',
           matched: 3,
+          keywords: 'none',
           ...('excludedWithoutCountry' in mapped && {
             excludedWithoutCountry: mapped.excludedWithoutCountry,
           }),
@@ -1083,6 +1469,38 @@ describe('each DOC call', () => {
 
       expect(mirror.execute).toHaveBeenCalledOnce();
       expect(value?.standIn).toMatchObject({ standsInFor: 'empty', matched: 3 });
+    });
+
+    it('answers a window under 30 minutes from the mirror, never asking DOC', async () => {
+      const mirror = attachMirror({ respond: answered(call.answer as MirrorResult, 3) });
+      answerDoc(() => ok(call.empty));
+      const ctx = createMockContext();
+
+      const { value } = await settle<DocRouted<unknown>>(call.short(ctx));
+
+      expect(upstream).not.toHaveBeenCalled();
+      expect(mirror.execute).toHaveBeenCalledExactlyOnceWith(
+        { ...call.request, plan: PLAN, window: SHORT },
+        expect.any(AbortSignal),
+      );
+      expect(value?.standIn).toMatchObject({ standsInFor: 'window_too_short', matched: 3 });
+      expect(getEnrichment(ctx)).toMatchObject({
+        source: 'gkg_mirror',
+        attempts: [
+          { source: 'doc_api', outcome: 'window_too_short', detail: SHORT_FAULT },
+          { source: 'gkg_mirror', outcome: 'answered' },
+        ],
+      });
+    });
+
+    it('fails a window under 30 minutes invalid_date_range with no mirror, never asking DOC', async () => {
+      answerDoc(() => ok(call.empty));
+
+      const { error } = await settle<DocRouted<unknown>>(call.short(createMockContext()));
+
+      expect(error?.code).toBe(JsonRpcErrorCode.ValidationError);
+      expect(error?.data).toEqual({ reason: 'invalid_date_range', recovery: { hint: SHORT_HINT } });
+      expect(upstream).not.toHaveBeenCalled();
     });
   });
 

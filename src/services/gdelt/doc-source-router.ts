@@ -6,6 +6,10 @@
  * (`gdelt_rate_limited`, `gdelt_unavailable`) or answers empty; every answer then carries `source`,
  * and `attempts` and `coverage` when the mirror was consulted.
  *
+ * An explicit window shorter than DOC accepts is decided before DOC is touched: it is never sent,
+ * paced, or looked up in the response cache. The mirror answers it when it can, with `attempts`
+ * opening `window_too_short`; otherwise the call fails `invalid_date_range`.
+ *
  * Before DOC is asked, the call is checked against the mirror: the query compiles, the mirror has
  * completed a sync, and the requested window overlaps the slots it holds. Only then is DOC held to
  * its fallback budget (`hasFallback`), so a refusal leaves the mirror time to answer inside the
@@ -14,11 +18,16 @@
  */
 
 import type { Context } from '@cyanheads/mcp-ts-core';
-import { McpError } from '@cyanheads/mcp-ts-core/errors';
+import { McpError, validationError } from '@cyanheads/mcp-ts-core/errors';
 import { logger, requestContextService } from '@cyanheads/mcp-ts-core/utils';
-import { articleSearchTimespan, resolveEffectiveWindow } from '@/mcp-server/tools/date-range.js';
+import {
+  articleSearchTimespan,
+  DOC_SHORT_WINDOW_HINT,
+  describeShortDocWindow,
+  resolveEffectiveWindow,
+} from '@/mcp-server/tools/date-range.js';
 import { quoteText } from '@/mcp-server/tools/markdown-escape.js';
-import { compileDocQuery } from '../gkg-mirror/doc-query-compiler.js';
+import { compileDocQuery, requiresKeyword } from '../gkg-mirror/doc-query-compiler.js';
 import type { GkgMirrorClient } from '../gkg-mirror/gkg-mirror-client.js';
 import type {
   MirrorCoverageStatus,
@@ -34,6 +43,7 @@ import {
   type DocBreakdownParams,
   type DocFetchOptions,
   type DocSearchParams,
+  type DocSeriesAnswer,
   type DocTimelineParams,
   type DocToneParams,
   getGdeltDocService,
@@ -105,14 +115,17 @@ export function routeArticleSearch(
   });
 }
 
-/** Fetch a coverage or tone timeline. */
+/**
+ * Fetch a coverage or tone timeline. Only a DOC answer carries a `reportedResolution`; the
+ * mirror's carries its series alone.
+ */
 export function routeTimeline(
   params: DocTimelineParams,
   ctx: Context,
-): Promise<DocRouted<TimelineSeries[]>> {
+): Promise<DocRouted<DocSeriesAnswer<TimelineSeries>>> {
   return route(ctx, params, {
     doc: (...options) => getGdeltDocService().getTimeline(params, ctx, ...options),
-    isEmpty: (series) => series.every((s) => s.data.length === 0),
+    isEmpty: ({ series }) => series.every((s) => s.data.length === 0),
     mirrorRequest: (plan, window) => ({
       kind: 'timeline',
       plan,
@@ -122,7 +135,7 @@ export function routeTimeline(
     }),
     fromMirror: (answer) => {
       if (answer.kind !== 'timeline') throw mismatchedAnswer('timeline', answer);
-      return { result: answer.result };
+      return { result: { series: answer.result } };
     },
   });
 }
@@ -143,14 +156,17 @@ export function routeToneDistribution(
   });
 }
 
-/** Fetch a language or source-country breakdown. */
+/**
+ * Fetch a language or source-country breakdown. Only a DOC answer carries a `reportedResolution`;
+ * the mirror's carries its series alone.
+ */
 export function routeBreakdown(
   params: DocBreakdownParams,
   ctx: Context,
-): Promise<DocRouted<BreakdownSeries[]>> {
+): Promise<DocRouted<DocSeriesAnswer<BreakdownSeries>>> {
   return route(ctx, params, {
     doc: (...options) => getGdeltDocService().getBreakdown(params, ctx, ...options),
-    isEmpty: (series) => series.every((s) => s.data.length === 0),
+    isEmpty: ({ series }) => series.every((s) => s.data.length === 0),
     mirrorRequest: (plan, window) => ({
       kind: 'breakdown',
       plan,
@@ -161,7 +177,7 @@ export function routeBreakdown(
     fromMirror: (answer) => {
       if (answer.kind !== 'breakdown') throw mismatchedAnswer('breakdown', answer);
       return {
-        result: answer.result,
+        result: { series: answer.result },
         ...(answer.excludedWithoutCountry !== undefined && {
           excludedWithoutCountry: answer.excludedWithoutCountry,
         }),
@@ -199,8 +215,13 @@ type MirrorReadiness =
   | { ready: true; request: MirrorRequest }
   | { ready: false; refusal: MirrorRefusal };
 
+/** The mirror's answer and the request it answered, or why it did not answer. */
 type MirrorConsulted =
-  | { answered: true; response: Extract<MirrorResponse, { outcome: 'answered' }> }
+  | {
+      answered: true;
+      request: MirrorRequest;
+      response: Extract<MirrorResponse, { outcome: 'answered' }>;
+    }
   | { answered: false; refusal: MirrorRefusal };
 
 async function route<T>(
@@ -209,6 +230,8 @@ async function route<T>(
   call: DocCall<T>,
 ): Promise<DocRouted<T>> {
   const mirror = mirrorHandle?.();
+  const tooShort = describeShortDocWindow(params.startDatetime, params.endDatetime);
+  if (tooShort) return routeShortWindow(ctx, mirror, params, call, tooShort);
   if (!mirror) return { result: await call.doc() };
 
   const startedAt = Date.now();
@@ -221,7 +244,7 @@ async function route<T>(
     const docAttempt = docRefusal(error);
     if (!docAttempt) throw error;
     const consulted = await consultMirror(mirror, readiness, startedAt, ctx);
-    if (consulted.answered) return answerFromMirror(ctx, call, docAttempt, consulted.response);
+    if (consulted.answered) return answerFromMirror(ctx, call, docAttempt, consulted);
     throw refusalError(error, [docAttempt, refusalAttempt(consulted.refusal)], consulted.refusal);
   }
 
@@ -232,7 +255,7 @@ async function route<T>(
   const docAttempt: DocStandInAttempt = { source: 'doc_api', outcome: 'empty' };
   const consulted = await consultMirror(mirror, readiness, startedAt, ctx);
   if (consulted.answered && consulted.response.matched > 0) {
-    return answerFromMirror(ctx, call, docAttempt, consulted.response);
+    return answerFromMirror(ctx, call, docAttempt, consulted);
   }
   ctx.enrich({
     source: 'doc_api',
@@ -244,6 +267,31 @@ async function route<T>(
     ],
   });
   return { result: answer };
+}
+
+/**
+ * A window DOC refuses as too short (`fault` says why), never sent to DOC: the mirror's answer,
+ * a match or none, with the whole answer deadline to give it; otherwise `invalid_date_range`,
+ * carrying why the mirror could not answer when one is attached.
+ */
+async function routeShortWindow<T>(
+  ctx: Context,
+  mirror: DocMirror | undefined,
+  params: DocQueryParams,
+  call: DocCall<T>,
+  fault: string,
+): Promise<DocRouted<T>> {
+  if (!mirror) throw shortWindowError(fault);
+  const startedAt = Date.now();
+  const readiness = await mirrorReadiness(mirror, params, call, ctx);
+  const consulted = await consultMirror(mirror, readiness, startedAt, ctx);
+  const docAttempt: DocStandInAttempt = {
+    source: 'doc_api',
+    outcome: 'window_too_short',
+    detail: fault,
+  };
+  if (consulted.answered) return answerFromMirror(ctx, call, docAttempt, consulted);
+  throw shortWindowError(fault, [docAttempt, refusalAttempt(consulted.refusal)], consulted.refusal);
 }
 
 /**
@@ -355,7 +403,7 @@ async function consultMirror(
 
   switch (response.outcome) {
     case 'answered':
-      return { answered: true, response };
+      return { answered: true, request: readiness.request, response };
     case 'not_ready':
       return {
         answered: false,
@@ -387,7 +435,10 @@ function answerFromMirror<T>(
   ctx: Context,
   call: DocCall<T>,
   docAttempt: DocStandInAttempt,
-  { answer, coverage, matched }: Extract<MirrorResponse, { outcome: 'answered' }>,
+  {
+    request: { plan },
+    response: { answer, coverage, matched },
+  }: Extract<MirrorConsulted, { answered: true }>,
 ): DocRouted<T> {
   const { result, excludedWithoutCountry } = call.fromMirror(answer);
   ctx.enrich({
@@ -404,6 +455,7 @@ function answerFromMirror<T>(
     standIn: {
       standsInFor: docAttempt.outcome,
       matched,
+      keywords: plan.filterOnly ? 'none' : requiresKeyword(plan) ? 'required' : 'unrequired',
       ...(excludedWithoutCountry !== undefined && { excludedWithoutCountry }),
     },
   };
@@ -462,6 +514,27 @@ function refusalError(error: McpError, attempts: DocAttempt[], refusal: MirrorRe
       recovery: { hint: docHint ? `${docHint} ${refusal.hint}` : refusal.hint },
     },
     { cause: error },
+  );
+}
+
+/**
+ * The `invalid_date_range` failure of a window too short for DOC: with a mirror attached, both
+ * attempts, the message adding why the mirror could not answer, and the hint what would let it.
+ */
+function shortWindowError(
+  fault: string,
+  attempts?: DocAttempt[],
+  refusal?: MirrorRefusal,
+): McpError {
+  return validationError(
+    refusal ? `${fault} The local GKG mirror could not answer instead: ${refusal.detail}` : fault,
+    {
+      reason: 'invalid_date_range',
+      ...(attempts && { attempts }),
+      recovery: {
+        hint: refusal ? `${DOC_SHORT_WINDOW_HINT} ${refusal.hint}` : DOC_SHORT_WINDOW_HINT,
+      },
+    },
   );
 }
 

@@ -1,0 +1,22 @@
+{
+  "query_details": {
+    "title": "hurricane helene station:CNN",
+    "time": "Daily +00:00: 09/20/2024 - 09/27/2024",
+    "date_resolution": "day"
+  },
+  "timeline": [
+    {
+      "series": "CNN",
+      "data": [
+        { "date": "20240920T120000Z", "value": 0 },
+        { "date": "20240921T120000Z", "value": 0 },
+        { "date": "20240922T120000Z", "value": 0 },
+        { "date": "20240923T120000Z", "value": 1 },
+        { "date": "20240924T120000Z", "value": 14 },
+        { "date": "20240925T120000Z", "value": 34 },
+        { "date": "20240926T120000Z", "value": 153 },
+        { "date": "20240927T120000Z", "value": 158 }
+      ]
+    }
+  ]
+}

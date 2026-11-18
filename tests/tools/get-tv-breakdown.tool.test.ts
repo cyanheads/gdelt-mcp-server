@@ -8,6 +8,7 @@ import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetTvBreakdown } from '@/mcp-server/tools/definitions/get-tv-breakdown.tool.js';
 import * as service from '@/services/gdelt/gdelt-tv-service.js';
+import { recordedTvAnswer, replayTvExchanges } from '../helpers/tv-answer-replay.js';
 import { contentText } from './markdown-render.js';
 import { CNN_RANGE, expectNotice, freezeClock } from './station-range-fixtures.js';
 
@@ -251,11 +252,12 @@ describe('gdeltGetTvBreakdown', () => {
       endDatetime: '20200201000000',
     });
     expect(response.isError).toBeFalsy();
+    // An end exactly on the hour is sent a second earlier (tabled in date-range.test.ts).
     expect(get).toHaveBeenCalledWith(
       expect.objectContaining({
         stations,
         startDatetime: '20200101000000',
-        endDatetime: '20200201000000',
+        endDatetime: '20200131235959',
       }),
       expect.anything(),
     );
@@ -516,8 +518,85 @@ describe('gdeltGetTvBreakdown covered window', () => {
         /whole UTC periods at the resolution GDELT picks from the window length — clock hours up to 7 days, days under 3 years, months beyond/,
       );
     }
+    expect(shape.endDatetime.description).toMatch(
+      /An end exactly on the clock hour counts as the second before it/,
+    );
     expect(gdeltGetTvBreakdown.enrichment?.notice?.description).toMatch(
       /the resolution and the UTC window the values cover/,
     );
+  });
+});
+
+/**
+ * GDELT counts the whole period an end falls in, and every period starts on the clock hour, so an
+ * end exactly on the hour is sent a second earlier. Each request gets the answer GDELT gave that
+ * exact request (`tests/fixtures/tv/`); the end rule itself is tabled in date-range.test.ts.
+ */
+describe('gdeltGetTvBreakdown window sent to GDELT', () => {
+  it('drops the hour starting at an end on midnight, and names no wider window', async () => {
+    const query = 'hurricane helene (station:CNN OR station:FOXNEWS OR station:MSNBC)';
+    const window = { mode: 'stationchart', datanorm: 'raw', startdatetime: '20240926000000' };
+    const sent = replayTvExchanges([
+      {
+        request: { query, ...window, enddatetime: '20240928000000' },
+        answer: recordedTvAnswer('helene-3st-stationchart-raw-20240926000000-20240928000000'),
+      },
+      {
+        request: { query, ...window, enddatetime: '20240927235959' },
+        answer: recordedTvAnswer('helene-3st-stationchart-raw-20240926000000-20240927235959'),
+      },
+    ]);
+    const result = await runToolContract(gdeltGetTvBreakdown, {
+      query: 'hurricane helene',
+      breakdownBy: 'station',
+      normalize: false,
+      stations: ['CNN', 'FOXNEWS', 'MSNBC'],
+      startDatetime: '20240926000000',
+      endDatetime: '20240928000000',
+    });
+    expect(result.isError).toBeFalsy();
+    expect(sent.map((params) => params.get('enddatetime'))).toEqual(['20240927235959']);
+    expect(result.structuredContent).toMatchObject({
+      rows: [
+        { label: 'CNN', value: 311, station: 'CNN' },
+        { label: 'FOX News', value: 132, station: 'FOXNEWS' },
+        { label: 'MSNBC', value: 105, station: 'MSNBC' },
+      ],
+      totalRows: 3,
+    });
+    expect(result.structuredContent).not.toHaveProperty('notice');
+    expect(contentText(result)).toContain('- **CNN** (CNN): 311');
+  });
+
+  /** Exactly 3 × 365 days, a second short, is ranked over days: exactly the requested window. */
+  it('sends no dateres over exactly 3 × 365 days, and names no wider window', async () => {
+    const sent = replayTvExchanges([
+      {
+        request: {
+          query: 'impeachment station:CNN',
+          mode: 'stationchart',
+          datanorm: 'raw',
+          startdatetime: '20170302000000',
+          enddatetime: '20200229235959',
+        },
+        // Synthetic: a station chart reporting the daily resolution GDELT picks for this span.
+        answer: {
+          query_details: { title: 'impeachment station:CNN', date_resolution: 'day' },
+          stationchart: [{ station: 'CNN', count: 1 }],
+        },
+      },
+    ]);
+    const result = await runToolContract(gdeltGetTvBreakdown, {
+      query: 'impeachment',
+      breakdownBy: 'station',
+      normalize: false,
+      stations: ['CNN'],
+      startDatetime: '20170302000000',
+      endDatetime: '20200301000000',
+    });
+    expect(result.isError).toBeFalsy();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.has('dateres')).toBe(false);
+    expect(result.structuredContent).not.toHaveProperty('notice');
   });
 });

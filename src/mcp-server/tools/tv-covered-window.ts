@@ -4,11 +4,13 @@
  * startdatetime/enddatetime window outward to them: the start back to its period's first second,
  * the end through its period's last. A timeline point, a station or show ranking, and a word cloud
  * computed over that wider window carry no sign of it, so the TV tools name the window they cover.
+ * The tools send an end exactly on the clock hour as the second before it, so it adds no period,
+ * except where that would leave the window under GDELT TV's 30 minutes.
  * @module mcp-server/tools/tv-covered-window
  */
 
 import type { TvDateResolution } from '@/services/gdelt/date-resolution.js';
-import { type GdeltWindow, parseGdeltDatetime } from './date-range.js';
+import { type GdeltWindow, parseGdeltDatetime, tvAnalyticsWindow } from './date-range.js';
 
 const SECOND_MS = 1000;
 const HOUR_MS = 3_600_000;
@@ -94,8 +96,9 @@ function isoSecond(ms: number): string {
  * startDatetime/endDatetime window to whole periods — of the resolution the answer `reported`, or
  * else of {@link defaultTvResolution} — or `undefined` when both edges already sit on period
  * boundaries or the call set no explicit window. A timespan is resolved on GDELT's own clock,
- * which this server cannot observe, so it gets no sentence. An end exactly on a period's first
- * second counts that whole period, as GDELT answers it.
+ * which this server cannot observe, so it gets no sentence. The edges and the fallback resolution
+ * are read off the window the TV analytics tools send ({@link tvAnalyticsWindow}), so an end
+ * exactly on the clock hour adds no period; the sentence quotes the window as the caller wrote it.
  */
 export function describeTvCoveredWindow(
   subject: string,
@@ -103,13 +106,16 @@ export function describeTvCoveredWindow(
   reported?: TvDateResolution,
 ): string | undefined {
   if (!args.startDatetime || !args.endDatetime) return;
-  const window = { startDatetime: args.startDatetime, endDatetime: args.endDatetime };
-  const resolution = reported ?? defaultTvResolution(window);
+  const sent = tvAnalyticsWindow({
+    startDatetime: args.startDatetime,
+    endDatetime: args.endDatetime,
+  });
+  const resolution = reported ?? defaultTvResolution(sent);
   const { startOf, nextAfter } = PERIODS[resolution];
-  const start = parseGdeltDatetime(window.startDatetime).getTime();
-  const end = parseGdeltDatetime(window.endDatetime).getTime();
+  const start = parseGdeltDatetime(sent.startDatetime).getTime();
+  const end = parseGdeltDatetime(sent.endDatetime).getTime();
   const coveredStart = startOf(start);
   const coveredEnd = nextAfter(startOf(end)) - SECOND_MS;
   if (coveredStart === start && coveredEnd === end) return;
-  return `${subject} cover whole ${TV_PERIOD_NAMES[resolution]}, ${isoSecond(coveredStart)} – ${isoSecond(coveredEnd)}, wider than the requested ${window.startDatetime}–${window.endDatetime}.`;
+  return `${subject} cover whole ${TV_PERIOD_NAMES[resolution]}, ${isoSecond(coveredStart)} – ${isoSecond(coveredEnd)}, wider than the requested ${args.startDatetime}–${args.endDatetime}.`;
 }

@@ -524,11 +524,11 @@ describe('framework error envelope as a caller receives it', () => {
 describe('empty/sparse payload edge cases', () => {
   it('get-coverage-timeline: single data point series resolves without throwing', async () => {
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
-      getTimeline: vi
-        .fn()
-        .mockResolvedValue([
+      getTimeline: vi.fn().mockResolvedValue({
+        series: [
           { label: 'Volume Intensity', data: [{ date: '2024-01-01T00:00:00Z', value: 0.5 }] },
-        ]),
+        ],
+      }),
     } as unknown as docServiceModule.GdeltDocService);
     const ctx = createMockContext({ errors: gdeltGetCoverageTimeline.errors });
     const input = gdeltGetCoverageTimeline.input.parse({ query: 'test', mode: 'volume' });
@@ -550,9 +550,9 @@ describe('empty/sparse payload edge cases', () => {
 
   it('get-coverage-breakdown: series with all-zero data still returns results', async () => {
     vi.spyOn(docServiceModule, 'getGdeltDocService').mockReturnValue({
-      getBreakdown: vi
-        .fn()
-        .mockResolvedValue([{ label: 'English', data: [{ date: '2024-01-01', value: 0 }] }]),
+      getBreakdown: vi.fn().mockResolvedValue({
+        series: [{ label: 'English', data: [{ date: '2024-01-01', value: 0 }] }],
+      }),
     } as unknown as docServiceModule.GdeltDocService);
     const ctx = createMockContext({ errors: gdeltGetCoverageBreakdown.errors });
     const input = gdeltGetCoverageBreakdown.input.parse({

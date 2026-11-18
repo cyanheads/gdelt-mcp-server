@@ -8,7 +8,9 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { inferDateResolution } from '@/services/gdelt/date-resolution.js';
 import { routeTimeline } from '@/services/gdelt/doc-source-router.js';
+import { DOC_MIN_WINDOW_MINUTES } from '@/services/gdelt/types.js';
 import {
+  DOC_WINDOW_MINIMUM_NOTE,
   describeDateRangeFault,
   GDELT_DATETIME_PATTERN,
   refineDocTimespan,
@@ -26,6 +28,7 @@ import {
   renderNotice,
   renderQueryEcho,
 } from '../markdown-escape.js';
+import { timestepGaps } from '../missing-timesteps.js';
 import { peakOf } from '../peak-of.js';
 import { queryInputSchema } from '../query-input.js';
 import {
@@ -89,7 +92,8 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
     'this is the primary signal-detection mode: a single call reveals both the spike and its cause, ' +
     'avoiding a follow-up gdelt_search_articles call. ' +
     'Use mode "tone" for average sentiment score per timestep (negative = hostile/fearful, positive = celebratory). ' +
-    'Date resolution is inferred from returned intervals: 15 minutes or hours for short windows, days for longer ones. ' +
+    'Date resolution is the one GDELT reports, or else inferred from returned intervals: 15 minutes or hours for short windows, days for longer ones. ' +
+    'GDELT answers a timestep without matching coverage with 0 and leaves out a timestep its own data lacks; missingTimesteps counts those left out between the first and last returned. ' +
     'In volume_with_articles mode each timestep carries its first 3 article links and referenceCount, the number of references GDELT supplied (up to ten), not all matching articles; ' +
     "name timesteps' dates in points to get only those timesteps, each with its full supplied list. " +
     'A response carries limit timesteps (default 10, cap 400); when more remain it returns nextOffset — ' +
@@ -115,9 +119,8 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
     {
       reason: 'invalid_date_range',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'Only one of startDatetime / endDatetime was supplied, one of them is not a real UTC calendar timestamp, or startDatetime is not earlier than endDatetime.',
-      recovery:
-        'Supply both startDatetime and endDatetime as real UTC calendar timestamps, with startDatetime earlier than endDatetime, or omit both and use timespan instead.',
+      when: `Only one of startDatetime / endDatetime was supplied, one of them is not a real UTC calendar timestamp, startDatetime is not earlier than endDatetime, or the window spans under the ${DOC_MIN_WINDOW_MINUTES} minutes the GDELT DOC API accepts and no local GKG mirror answers it in DOC's place.`,
+      recovery: `Supply both startDatetime and endDatetime as real UTC calendar timestamps, with startDatetime at least ${DOC_MIN_WINDOW_MINUTES} minutes earlier than endDatetime, or omit both and use timespan instead.`,
     },
     {
       reason: 'invalid_query',
@@ -171,18 +174,14 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
         .regex(GDELT_DATETIME_PATTERN, 'startDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
         .optional()
         .describe(
-          'Start datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-            '(e.g. 20240101000000). Must pair with endDatetime; supplying only one of the two is rejected. ' +
-            'In "volume" and "tone" modes the window may predate the last 3 months; "volume_raw" and "volume_with_articles" cover only the last 3 months.',
+          `Start datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators (e.g. 20240101000000). Must pair with endDatetime; supplying only one of the two is rejected. In "volume" and "tone" modes the window may predate the last 3 months; "volume_raw" and "volume_with_articles" cover only the last 3 months. ${DOC_WINDOW_MINIMUM_NOTE}`,
         ),
       endDatetime: z
         .string()
         .regex(GDELT_DATETIME_PATTERN, 'endDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
         .optional()
         .describe(
-          'End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-            '(e.g. 20240131235959). Must pair with startDatetime; supplying only one of the two is rejected. ' +
-            'In "volume" and "tone" modes the window may predate the last 3 months; "volume_raw" and "volume_with_articles" cover only the last 3 months.',
+          `End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators (e.g. 20240131235959). Must pair with startDatetime; supplying only one of the two is rejected. In "volume" and "tone" modes the window may predate the last 3 months; "volume_raw" and "volume_with_articles" cover only the last 3 months. ${DOC_WINDOW_MINIMUM_NOTE}`,
         ),
       smoothing: z
         .number()
@@ -225,8 +224,17 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
       .enum(['15min', 'hour', 'day'])
       .optional()
       .describe(
-        'Temporal resolution of the data points — 15min, hour, or day — inferred from the spacing ' +
-          'of the returned timesteps. Omitted when fewer than two distinct timesteps came back.',
+        'Temporal resolution of the data points — 15min, hour, or day — as GDELT reports it, or else ' +
+          'inferred from the spacing of the returned timesteps. Omitted when GDELT reports none and ' +
+          'fewer than two distinct timesteps came back.',
+      ),
+    missingTimesteps: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        "Timesteps GDELT left out between the first and last timestep of the whole timeline, at dateResolution — gaps in GDELT's data, not zero coverage, which GDELT returns as 0. The notice names each missing run. The same on every page and under points. Omitted when none are missing, and never reported for an answer from the local GKG mirror.",
       ),
     series: z
       .array(
@@ -347,9 +355,10 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
       .describe(
         'Guidance when the query matched no coverage in the window — how to broaden the query or ' +
           'extend the window — or, when this response is one page of several, which timesteps it ' +
-          "returned out of how many. When the server's local GKG mirror answered (source: gkg_mirror), " +
-          "why, and how its figures differ from the DOC API's. Absent when the DOC API answered and " +
-          'the whole timeline fit in one response.',
+          'returned out of how many. Which timesteps GDELT left out of the timeline (see ' +
+          "missingTimesteps), and what smoothing omits. When the server's local GKG mirror answered " +
+          "(source: gkg_mirror), why, and how its figures differ from the DOC API's. Absent when the " +
+          'DOC API answered a complete, unsmoothed timeline that fit in one response.',
       ),
     ...docProvenanceEnrichment,
   },
@@ -377,7 +386,10 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
       tone: 'timelinetone',
     } as const;
 
-    const { result: series, standIn } = await routeTimeline(
+    const {
+      result: { series, reportedResolution },
+      standIn,
+    } = await routeTimeline(
       {
         query: input.query,
         mode: modeMap[input.mode],
@@ -389,9 +401,12 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
       ctx,
     );
 
-    // Infer date resolution from data point spacing
+    // The resolution DOC reports, else the one the spacing of every timestep implies.
     const allDates = series.flatMap((s) => s.data.map((d) => d.date));
-    const dateResolution = inferDateResolution(allDates);
+    const dateResolution = reportedResolution ?? inferDateResolution(allDates);
+    // Over the whole answer, so every page and points selection reports the same gaps. The mirror
+    // builds its own steps, so its answer cannot tell a gap in GDELT's data from no coverage.
+    const gaps = !standIn && dateResolution ? timestepGaps(allDates, dateResolution) : undefined;
     const totalPoints = allDates.length;
     const isEmpty = totalPoints === 0;
     // An empty timeline has no timesteps to name, so there a points selection is moot, not wrong.
@@ -498,6 +513,7 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
         `Returned timesteps ${input.offset + 1}–${end} of ${units.length} timesteps${nextOffset != null ? `; continue with offset ${nextOffset} (nextOffset) and otherwise identical inputs.` : ' — the last page.'}`,
       );
     }
+    if (gaps) notices.push(gaps.notice);
     if ((input.smoothing ?? 0) > 1) {
       notices.push(
         `A trailing moving average of width ${input.smoothing} needs that many source steps; leading steps without a full window are omitted and peaks may appear later.${input.mode === 'volume_raw' ? ' Raw-volume norm remains unsmoothed.' : ''}`,
@@ -514,6 +530,7 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
 
     return {
       ...(dateResolution && { dateResolution }),
+      ...(gaps && { missingTimesteps: gaps.missingTimesteps }),
       series: pagedSeries,
       ...(expandedPoints && { expandedPoints }),
       ...(nextOffset != null && { nextOffset }),
@@ -529,6 +546,7 @@ export const gdeltGetCoverageTimeline = tool('gdelt_get_coverage_timeline', {
     const expanded = new Set(result.expandedPoints ?? []);
     const lines: string[] = [`## GDELT Coverage Timeline`];
     if (result.dateResolution) lines.push(`**Date Resolution:** ${result.dateResolution}`);
+    if (result.missingTimesteps) lines.push(`**Missing timesteps:** ${result.missingTimesteps}`);
     if (result.series.every((s) => s.data.length === 0)) lines.push('No timeline data returned.');
 
     const capped = result.series.some((s) =>

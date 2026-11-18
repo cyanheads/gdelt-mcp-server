@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { gdeltSearchTv } from '@/mcp-server/tools/definitions/search-tv.tool.js';
 import * as gdeltFetchModule from '@/services/gdelt/gdelt-fetch.js';
 import * as tvServiceModule from '@/services/gdelt/gdelt-tv-service.js';
+import { recordedTvAnswer, replayTvExchanges } from '../helpers/tv-answer-replay.js';
 import { contentText, literalHtml, renderMarkdown } from './markdown-render.js';
 import { CNN_RANGE, expectNotice, freezeClock } from './station-range-fixtures.js';
 
@@ -1286,8 +1287,335 @@ describe('gdeltSearchTv', () => {
       expect(shape.dateres.description).toMatch(/Sunday–Saturday week/);
       expect(shape.startDatetime.description).toMatch(/back to the start of its UTC period/);
       expect(shape.endDatetime.description).toMatch(/through the end of its UTC period/);
+      expect(shape.endDatetime.description).toMatch(
+        /an end exactly on the clock hour counts as the second before it/,
+      );
       expect(gdeltSearchTv.enrichment?.notice?.description).toMatch(
         /the resolution and the UTC window the values cover/,
+      );
+    });
+  });
+
+  /**
+   * GDELT counts the whole period an end falls in, and every period starts on the clock hour, so
+   * an end exactly on the hour is sent a second earlier. Each request gets the answer GDELT gave
+   * that exact request (`tests/fixtures/tv/`); the end rule itself is tabled in date-range.test.ts.
+   */
+  describe('the window sent to GDELT', () => {
+    type Timeline = { timeline: [{ data: Array<{ date: string; value: number }> }] };
+    type Page = {
+      dateResolution?: string;
+      timeRange?: { start: string; end: string };
+      totalPoints: number;
+      series: Array<{ data: Array<{ date: string; value: number }> }>;
+    };
+    const HELENE_CNN = { query: 'hurricane helene', stations: ['CNN'] };
+    const IMPEACHMENT_CNN = { query: 'impeachment', stations: ['CNN'] };
+    const valuesOf = (answer: unknown) =>
+      (answer as Timeline).timeline[0].data.map((point) => point.value);
+    const pageValues = (result: { structuredContent?: unknown }) =>
+      (result.structuredContent as Page).series[0]?.data.map((point) => point.value);
+
+    function request(query: string, params: Record<string, string>) {
+      return { query, mode: 'timelinevol', ...params };
+    }
+
+    it('drops the day starting at an end on midnight, and names no wider window', async () => {
+      const untrimmed = recordedTvAnswer(
+        'helene-cnn-timelinevol-perc-day-20240924000000-20241004000000',
+      );
+      const window = { datanorm: 'perc', dateres: 'day', startdatetime: '20240924000000' };
+      const sent = replayTvExchanges([
+        {
+          request: request('hurricane helene station:CNN', {
+            ...window,
+            enddatetime: '20241004000000',
+          }),
+          answer: untrimmed,
+        },
+        {
+          request: request('hurricane helene station:CNN', {
+            ...window,
+            enddatetime: '20241003235959',
+          }),
+          answer: recordedTvAnswer('helene-cnn-timelinevol-perc-day-20240924000000-20241003235959'),
+        },
+      ]);
+      const result = await runToolContract(gdeltSearchTv, {
+        ...HELENE_CNN,
+        startDatetime: '20240924000000',
+        endDatetime: '20241004000000',
+        dateres: 'day',
+      });
+      expect(result.isError).toBeFalsy();
+      expect(sent.map((params) => params.get('enddatetime'))).toEqual(['20241003235959']);
+      expect(result.structuredContent).toMatchObject({
+        dateResolution: 'day',
+        totalPoints: 10,
+        timeRange: { start: '2024-09-24T12:00:00Z', end: '2024-10-03T12:00:00Z' },
+      });
+      expect(pageValues(result)).toEqual(valuesOf(untrimmed).slice(0, -1));
+      expect(result.structuredContent).not.toHaveProperty('notice');
+      expect(contentText(result)).toContain('**Points 1–10 of 10**');
+      expect(contentText(result)).not.toContain('2024-10-04');
+    });
+
+    /**
+     * The window sent ends on a period's last second, so its values name no wider window; an end
+     * off the hour goes as given and keeps the sentence for the period it falls in.
+     */
+    it.each<
+      [string, string, string, string, 'day' | 'week' | 'month' | 'year' | undefined, string?]
+    >([
+      [
+        'dateres week, a Sunday midnight',
+        '20240922000000',
+        '20241006000000',
+        '20241005235959',
+        'week',
+      ],
+      ['dateres month, the 1st', '20161201000000', '20191201000000', '20191130235959', 'month'],
+      ['dateres year, 1 January', '20190101000000', '20210101000000', '20201231235959', 'year'],
+      ['no dateres, a midnight', '20240924000000', '20241004000000', '20241003235959', undefined],
+      [
+        'dateres day, half past the hour',
+        '20240924000000',
+        '20241004063000',
+        '20241004063000',
+        'day',
+        'Values cover whole UTC days, 2024-09-24T00:00:00Z – 2024-10-04T23:59:59Z, wider than the requested 20240924000000–20241004063000.',
+      ],
+      [
+        "dateres month, a day's last second",
+        '20191215000000',
+        '20200115235959',
+        '20200115235959',
+        'month',
+        'Values cover whole UTC months, 2019-12-01T00:00:00Z – 2020-01-31T23:59:59Z, wider than the requested 20191215000000–20200115235959.',
+      ],
+    ])('%s: sends %s–%s as ending %s', async (_label, start, end, sentEnd, dateres, notice) => {
+      const sent = replayTvExchanges([
+        {
+          request: request('hurricane helene station:CNN', {
+            datanorm: 'perc',
+            ...(dateres && { dateres }),
+            startdatetime: start,
+            enddatetime: sentEnd,
+          }),
+          // Synthetic: one point on the window's first day, with no query_details, so the values
+          // are read at the dateres sent or else at the window-length default.
+          answer: {
+            timeline: [
+              { series: 'CNN', data: [{ date: `${start.slice(0, 8)}T120000Z`, value: 1 }] },
+            ],
+          },
+        },
+      ]);
+      const result = await runToolContract(gdeltSearchTv, {
+        ...HELENE_CNN,
+        startDatetime: start,
+        endDatetime: end,
+        ...(dateres && { dateres }),
+      });
+      expect(result.isError).toBeFalsy();
+      expect(sent).toHaveLength(1);
+      expect(sent[0]?.get('startdatetime')).toBe(start);
+      expect(sent[0]?.get('enddatetime')).toBe(sentEnd);
+      expect(sent[0]?.get('dateres')).toBe(dateres ?? null);
+      expect(result.structuredContent).toMatchObject({ totalPoints: 1 });
+      if (notice) expectNotice(result, notice);
+      else expect(result.structuredContent).not.toHaveProperty('notice');
+    });
+
+    /**
+     * Measured on station charts (408 clips for an end at 06:00:00 and at 05:59:59), GDELT answers
+     * an on-the-hour end inside a day as it answers the second before it, so both requests replay
+     * one recorded answer.
+     */
+    it('keeps the notice an end on the hour inside a day draws, whose values do not change', async () => {
+      const answer = recordedTvAnswer(
+        'helene-cnn-timelinevol-perc-day-20240924000000-20241003235959',
+      );
+      const window = { datanorm: 'perc', dateres: 'day', startdatetime: '20240924000000' };
+      const sent = replayTvExchanges(
+        ['20241003060000', '20241003055959'].map((enddatetime) => ({
+          request: request('hurricane helene station:CNN', { ...window, enddatetime }),
+          answer,
+        })),
+      );
+      const result = await runToolContract(gdeltSearchTv, {
+        ...HELENE_CNN,
+        startDatetime: '20240924000000',
+        endDatetime: '20241003060000',
+        dateres: 'day',
+      });
+      expect(sent.map((params) => params.get('enddatetime'))).toEqual(['20241003055959']);
+      expectNotice(
+        result,
+        'Values cover whole UTC days, 2024-09-24T00:00:00Z – 2024-10-03T23:59:59Z, wider than the requested 20240924000000–20241003060000.',
+      );
+    });
+
+    /**
+     * Exactly 3 × 365 days, a second short, is answered daily: 1,095 points where the caller's
+     * span asks for 37 months. The caller's monthly resolution goes as dateres, and the answer is
+     * the untrimmed one less its last month (December 2019, 12,181 clips).
+     */
+    it('pins monthly points over exactly 3 × 365 days ending on the 1st', async () => {
+      const untrimmed = recordedTvAnswer(
+        'impeachment-cnn-timelinevol-raw-20161201000000-20191201000000',
+      );
+      const window = { datanorm: 'raw', startdatetime: '20161201000000' };
+      const sent = replayTvExchanges([
+        {
+          request: request('impeachment station:CNN', {
+            ...window,
+            enddatetime: '20191201000000',
+          }),
+          answer: untrimmed,
+        },
+        {
+          request: request('impeachment station:CNN', {
+            ...window,
+            dateres: 'month',
+            enddatetime: '20191130235959',
+          }),
+          answer: recordedTvAnswer(
+            'impeachment-cnn-timelinevol-raw-month-20161201000000-20191130235959',
+          ),
+        },
+      ]);
+      const result = await runToolContract(gdeltSearchTv, {
+        ...IMPEACHMENT_CNN,
+        normalize: false,
+        startDatetime: '20161201000000',
+        endDatetime: '20191201000000',
+      });
+      expect(result.isError).toBeFalsy();
+      expect(sent).toHaveLength(1);
+      expect(sent[0]?.get('enddatetime')).toBe('20191130235959');
+      expect(sent[0]?.get('dateres')).toBe('month');
+      expect(result.structuredContent).toMatchObject({
+        dateResolution: 'month',
+        totalPoints: 36,
+        timeRange: { start: '2016-12-01T12:00:00Z', end: '2019-11-01T12:00:00Z' },
+      });
+      expect(pageValues(result)).toEqual(valuesOf(untrimmed).slice(0, -1));
+      expect(pageValues(result)?.reduce((sum, value) => sum + value, 0)).toBe(37_301);
+      expect(result.structuredContent).not.toHaveProperty('notice');
+      expect(contentText(result)).toContain('**Date Resolution:** month');
+      expect(contentText(result)).toContain('**Points 1–36 of 36**');
+    });
+
+    /** 7 days and a second, a second short, is answered hourly; the caller's span asks for days. */
+    it('pins daily points over 7 days and a second ending at midnight', async () => {
+      const untrimmed = recordedTvAnswer(
+        'helene-cnn-timelinevol-raw-20240920235959-20240928000000',
+      );
+      const window = { datanorm: 'raw', startdatetime: '20240920235959' };
+      const sent = replayTvExchanges([
+        {
+          request: request('hurricane helene station:CNN', {
+            ...window,
+            enddatetime: '20240928000000',
+          }),
+          answer: untrimmed,
+        },
+        {
+          request: request('hurricane helene station:CNN', {
+            ...window,
+            dateres: 'day',
+            enddatetime: '20240927235959',
+          }),
+          answer: recordedTvAnswer('helene-cnn-timelinevol-raw-day-20240920235959-20240927235959'),
+        },
+      ]);
+      const result = await runToolContract(gdeltSearchTv, {
+        ...HELENE_CNN,
+        normalize: false,
+        startDatetime: '20240920235959',
+        endDatetime: '20240928000000',
+      });
+      expect(sent.map((params) => [params.get('enddatetime'), params.get('dateres')])).toEqual([
+        ['20240927235959', 'day'],
+      ]);
+      expect(result.structuredContent).toMatchObject({ dateResolution: 'day', totalPoints: 8 });
+      expect(pageValues(result)).toEqual(valuesOf(untrimmed).slice(0, -1));
+      expect(contentText(result)).toContain('- 2024-09-27T12:00:00Z: 158');
+      expect(contentText(result)).not.toContain('2024-09-28T12:00:00Z');
+      expectNotice(
+        result,
+        'Values cover whole UTC days, 2024-09-20T00:00:00Z – 2024-09-27T23:59:59Z, wider than the requested 20240920235959–20240928000000.',
+      );
+    });
+
+    it.each<['week' | 'hour', string, string, string]>([
+      ['week', '20161201000000', '20191201000000', '20191130235959'],
+      ['hour', '20240920235959', '20240928000000', '20240927235959'],
+    ])(
+      'never replaces a caller dateres %s at a threshold span',
+      async (dateres, start, end, sentEnd) => {
+        const sent = replayTvExchanges([
+          {
+            request: request('hurricane helene station:CNN', {
+              datanorm: 'perc',
+              dateres,
+              startdatetime: start,
+              enddatetime: sentEnd,
+            }),
+            answer: {},
+          },
+        ]);
+        const result = await runToolContract(gdeltSearchTv, {
+          ...HELENE_CNN,
+          startDatetime: start,
+          endDatetime: end,
+          dateres,
+        });
+        expect(result.isError).toBeFalsy();
+        expect(sent.map((params) => params.get('dateres'))).toEqual([dateres]);
+      },
+    );
+
+    it('sends a timespan call as given, with no window and no dateres', async () => {
+      const sent = replayTvExchanges([
+        {
+          request: request('hurricane helene station:CNN', { datanorm: 'perc', timespan: '1m' }),
+          answer: {},
+        },
+      ]);
+      const result = await runToolContract(gdeltSearchTv, { ...HELENE_CNN, timespan: '1m' });
+      expect(result.isError).toBeFalsy();
+      expect(sent).toHaveLength(1);
+    });
+
+    /**
+     * A second less than 30 minutes is under GDELT TV's minimum and refused ("Timespan is too
+     * short."), so a 30-minute window ending on the hour goes as given, as before: GDELT answers
+     * the hour after it too, and the notice names it.
+     */
+    it('sends a 30-minute window ending on the hour as given, and names the hour it adds', async () => {
+      const sent = replayTvExchanges([
+        {
+          request: request('hurricane helene station:CNN', {
+            datanorm: 'raw',
+            startdatetime: '20240927233000',
+            enddatetime: '20240928000000',
+          }),
+          answer: recordedTvAnswer('helene-cnn-timelinevol-raw-20240927233000-20240928000000'),
+        },
+      ]);
+      const result = await runToolContract(gdeltSearchTv, {
+        ...HELENE_CNN,
+        normalize: false,
+        startDatetime: '20240927233000',
+        endDatetime: '20240928000000',
+      });
+      expect(sent[0]?.has('dateres')).toBe(false);
+      expect(result.structuredContent).toMatchObject({ dateResolution: 'hour', totalPoints: 2 });
+      expectNotice(
+        result,
+        'Values cover whole clock hours, 2024-09-27T23:00:00Z – 2024-09-28T00:59:59Z, wider than the requested 20240927233000–20240928000000.',
       );
     });
   });

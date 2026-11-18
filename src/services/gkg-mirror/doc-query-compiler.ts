@@ -1,7 +1,8 @@
 /**
- * @fileoverview Compiles a GDELT DOC query string into the GKG mirror's query plan, and renders
- * keyword and theme predicates as FTS5 MATCH text. Runs on the main thread with no store access;
- * the plan it returns crosses to the mirror worker by structured clone.
+ * @fileoverview Compiles a GDELT DOC query string into the GKG mirror's query plan, says whether a
+ * plan requires a keyword match, and renders keyword and theme predicates as FTS5 MATCH text. Runs
+ * on the main thread with no store access; the plan it returns crosses to the mirror worker by
+ * structured clone.
  *
  * Grammar (GDELT DOC 2.0): space-separated elements, all required. An element is a word, a
  * `"quoted phrase"`, an operator (`name:value`, `name:"value"`), or a tone comparison
@@ -21,6 +22,7 @@ import type {
   MirrorCompileResult,
   MirrorPredicate,
   MirrorPredicateKind,
+  MirrorQueryPlan,
 } from './types.js';
 
 /** Most predicates one plan may hold, OR-group members included. */
@@ -403,6 +405,16 @@ export function compileDocQuery(query: string): MirrorCompileResult {
       filterOnly: !used.has('keyword'),
     },
   };
+}
+
+/**
+ * True when the plan holds a required keyword clause: a keyword or phrase that is not excluded, or
+ * an OR group of keywords and phrases alone. Every row the plan matches then matched a keyword in a
+ * title or entity name. An excluded keyword only removes rows, and one OR-ed with an operator
+ * leaves the operator's matches standing, so neither holds the answer back.
+ */
+export function requiresKeyword(plan: MirrorQueryPlan): boolean {
+  return plan.clauses.some((c) => !c.negated && c.anyOf.every((p) => p.kind === 'keyword'));
 }
 
 // ─── FTS rendering ────────────────────────────────────────────────────────────

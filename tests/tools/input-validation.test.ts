@@ -21,6 +21,7 @@ import { gdeltListTvStations } from '@/mcp-server/tools/definitions/list-tv-stat
 import { gdeltSearchArticles } from '@/mcp-server/tools/definitions/search-articles.tool.js';
 import { gdeltSearchThemes } from '@/mcp-server/tools/definitions/search-themes.tool.js';
 import { gdeltSearchTv } from '@/mcp-server/tools/definitions/search-tv.tool.js';
+import { attemptsSchema, sourceSchema } from '@/mcp-server/tools/source-provenance.js';
 import { disposeGdeltPacer, initGdeltPacer } from '@/services/gdelt/gdelt-pacer.js';
 import {
   disposeGdeltResponseCache,
@@ -729,6 +730,116 @@ describe('date-range validity — enforced in the handler', () => {
       });
     });
   }
+});
+
+/**
+ * The DOC API's 30-minute explicit-window minimum (#92) applies only to a pair the validity check
+ * passes, and only on the four DOC tools. With no mirror attached the DOC tools refuse a shorter
+ * window before any service is resolved, like the checks above. The TV tools widen a short window
+ * themselves, so their contract names no minimum.
+ */
+describe('DOC explicit-window minimum — judged after validity', () => {
+  const SHORT_MESSAGE = /under the 30 minutes the GDELT DOC API accepts/;
+
+  for (const { name, tool, base } of DOC_TIMESPAN_TOOLS) {
+    describe(name, () => {
+      const wire = (input: Record<string, unknown>) =>
+        callWire(tool as unknown as DateRangeTool, { ...base, ...input });
+
+      it('reports a reversed 20-minute window by its order, not its length', async () => {
+        const result = await wire({
+          startDatetime: '20261113122000',
+          endDatetime: '20261113120000',
+        });
+        expect(result).toMatchObject({
+          isError: true,
+          structuredContent: { error: { data: { reason: 'invalid_date_range' } } },
+        });
+        expect(contentText(result)).toMatch(/must be earlier than endDatetime/);
+        expect(contentText(result)).not.toMatch(SHORT_MESSAGE);
+      });
+
+      it('reports an impossible date in a 10-minute window as a calendar fault', async () => {
+        const result = await wire({
+          startDatetime: '20261131120000',
+          endDatetime: '20261131121000',
+        });
+        expect(contentText(result)).toMatch(/is not a real UTC calendar timestamp/);
+        expect(contentText(result)).not.toMatch(SHORT_MESSAGE);
+      });
+
+      it('refuses a valid 29-minute-59-second window, naming the minimum on both surfaces', async () => {
+        const result = await wire({
+          startDatetime: '20261113120000',
+          endDatetime: '20261113122959',
+        });
+        expect(result).toMatchObject({
+          isError: true,
+          structuredContent: {
+            error: {
+              code: JsonRpcErrorCode.ValidationError,
+              message: expect.stringMatching(SHORT_MESSAGE),
+              data: {
+                reason: 'invalid_date_range',
+                recovery: {
+                  hint: expect.stringMatching(/at least 30 minutes after startDatetime/),
+                },
+              },
+            },
+          },
+        });
+        expect(contentText(result)).toMatch(SHORT_MESSAGE);
+      });
+
+      it('names the 30-minute minimum in its invalid_date_range contract', () => {
+        const entry = tool.errors?.find((e) => e.reason === 'invalid_date_range');
+        expect(entry?.when).toMatch(/the window spans under the 30 minutes the GDELT DOC API/);
+        expect(entry?.recovery).toBe(
+          'Supply both startDatetime and endDatetime as real UTC calendar timestamps, with startDatetime at least 30 minutes earlier than endDatetime, or omit both and use timespan instead.',
+        );
+      });
+
+      it.each(['startDatetime', 'endDatetime'])(
+        'names the 30-minute minimum in the %s description',
+        (field) => {
+          const { properties } = z.toJSONSchema(tool.input as unknown as z.ZodType) as {
+            properties: Record<string, { description?: string }>;
+          };
+          expect(properties[field]?.description).toContain(
+            "The window must span at least 30 minutes, the shortest the GDELT DOC API accepts; a shorter one is answered from the server's local GKG mirror where one runs, and refused otherwise.",
+          );
+        },
+      );
+    });
+  }
+
+  it('describes the mirror answering a short window on source, and window_too_short on attempts', () => {
+    expect(sourceSchema.description).toContain(
+      'and in its place when the startDatetime/endDatetime window is under the 30 minutes the DOC API accepts',
+    );
+    expect(z.toJSONSchema(attemptsSchema)).toMatchObject({
+      items: {
+        properties: {
+          outcome: {
+            description: expect.stringContaining(
+              'window_too_short when the DOC API was not asked because the window is under the 30 minutes it accepts',
+            ),
+          },
+        },
+      },
+    });
+  });
+
+  it.each([gdeltSearchTv, gdeltGetTvClips, gdeltGetTvContext, gdeltGetTvBreakdown])(
+    'leaves $name with no DOC minimum in its invalid_date_range contract',
+    (tool) => {
+      const entry = tool.errors?.find((e) => e.reason === 'invalid_date_range');
+      expect(entry?.recovery).toBe(
+        'Supply both startDatetime and endDatetime as real UTC calendar timestamps, with startDatetime earlier than endDatetime, or omit both and use timespan instead.',
+      );
+      expect(entry?.when).not.toMatch(/30 minutes/);
+    },
+  );
 });
 
 /** The four TV tools that splice `stations` into the query, with the minimum valid input for each. */

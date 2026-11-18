@@ -1,0 +1,12 @@
+{
+  "query_details": {
+    "title": "hurricane helene (station:CNN OR station:FOXNEWS OR station:MSNBC)",
+    "time": "Hourly +00:00: 09/26/2024 0am - 09/28/2024 0am",
+    "date_resolution": "hour"
+  },
+  "stationchart": [
+    { "station": "CNN", "count": 317 },
+    { "station": "FOX News", "count": 133 },
+    { "station": "MSNBC", "count": 106 }
+  ]
+}

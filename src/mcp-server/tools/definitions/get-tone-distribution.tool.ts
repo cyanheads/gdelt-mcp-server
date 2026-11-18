@@ -7,7 +7,9 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { routeToneDistribution } from '@/services/gdelt/doc-source-router.js';
+import { DOC_MIN_WINDOW_MINUTES } from '@/services/gdelt/types.js';
 import {
+  DOC_WINDOW_MINIMUM_NOTE,
   describeDateRangeFault,
   GDELT_DATETIME_PATTERN,
   refineDocTimespan,
@@ -107,9 +109,8 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
     {
       reason: 'invalid_date_range',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'Only one of startDatetime / endDatetime was supplied, one of them is not a real UTC calendar timestamp, or startDatetime is not earlier than endDatetime.',
-      recovery:
-        'Supply both startDatetime and endDatetime as real UTC calendar timestamps, with startDatetime earlier than endDatetime, or omit both and use timespan instead.',
+      when: `Only one of startDatetime / endDatetime was supplied, one of them is not a real UTC calendar timestamp, startDatetime is not earlier than endDatetime, or the window spans under the ${DOC_MIN_WINDOW_MINUTES} minutes the GDELT DOC API accepts and no local GKG mirror answers it in DOC's place.`,
+      recovery: `Supply both startDatetime and endDatetime as real UTC calendar timestamps, with startDatetime at least ${DOC_MIN_WINDOW_MINUTES} minutes earlier than endDatetime, or omit both and use timespan instead.`,
     },
     {
       reason: 'invalid_query',
@@ -154,18 +155,14 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
         .regex(GDELT_DATETIME_PATTERN, 'startDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
         .optional()
         .describe(
-          'Start datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-            '(e.g. 20240101000000). Must pair with endDatetime; supplying only one of the two is rejected. ' +
-            'The window may predate the last 3 months.',
+          `Start datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators (e.g. 20240101000000). Must pair with endDatetime; supplying only one of the two is rejected. The window may predate the last 3 months. ${DOC_WINDOW_MINIMUM_NOTE}`,
         ),
       endDatetime: z
         .string()
         .regex(GDELT_DATETIME_PATTERN, 'endDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
         .optional()
         .describe(
-          'End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators ' +
-            '(e.g. 20240131235959). Must pair with startDatetime; supplying only one of the two is rejected. ' +
-            'The window may predate the last 3 months.',
+          `End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators (e.g. 20240131235959). Must pair with startDatetime; supplying only one of the two is rejected. The window may predate the last 3 months. ${DOC_WINDOW_MINIMUM_NOTE}`,
         ),
       bins: z
         .array(z.number().int())

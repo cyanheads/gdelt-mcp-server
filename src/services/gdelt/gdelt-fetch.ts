@@ -18,12 +18,7 @@ import { defaultIsTransient, fetchWithTimeout, withRetry } from '@cyanheads/mcp-
 import { getServerConfig } from '@/config/server-config.js';
 import { quoteText } from '@/mcp-server/tools/markdown-escape.js';
 import type { StaleResponse } from '@/mcp-server/tools/stale-response.js';
-import {
-  GDELT_MAX_QUEUE_WAIT_MS,
-  getGdeltPacer,
-  holdForGdeltRequestGap,
-  recordGdeltRequestSettled,
-} from './gdelt-pacer.js';
+import { type GdeltEndpointPacer, getGdeltPacer } from './gdelt-pacer.js';
 import {
   type FetchedAnswer,
   GDELT_CACHE_MAX_ENTRY_BYTES,
@@ -33,6 +28,7 @@ import {
   type GdeltSharedFetch,
   getGdeltResponseCache,
 } from './gdelt-response-cache.js';
+import { DOC_MIN_WINDOW_MINUTES } from './types.js';
 
 /** Stable public recovery for every GDELT rate-limit response shape. */
 const GDELT_RATE_LIMIT_RECOVERY = {
@@ -174,14 +170,14 @@ export type GdeltFetchOptions = {
   freshOnly?: boolean;
   /**
    * The caller holds its own answer to fall back on, such as the local GKG mirror. A call made
-   * while the pacer's cooldown gate is closed rejects at once with `gdelt_rate_limited`, spending
+   * while its endpoint's cooldown is closed rejects at once with `gdelt_rate_limited`, spending
    * no request and no queue slot. Otherwise the call stops waiting on GDELT
    * {@link GDELT_FALLBACK_BUDGET_MS} after it started and rejects with the classified reason, so
    * the fallback still answers inside the client's timeout: `gdelt_rate_limited` while no request
    * has gone upstream (queued, or held behind the request gap), `gdelt_unavailable` once one has.
    * Code, reason, and recovery hint are those of every other failure with that reason. A stored
-   * answer that can be served stale still wins: the call serves it, at once behind a closed gate
-   * or at the budget, instead of rejecting.
+   * answer that can be served stale still wins: the call serves it, at once behind a closed
+   * cooldown or at the budget, instead of rejecting.
    */
   hasFallback?: boolean;
 };
@@ -211,8 +207,9 @@ const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder();
 
 /**
- * Fetch a GDELT endpoint through the process-wide response cache and the shared pacer, with
- * retries and JSON parsing.
+ * Fetch a GDELT endpoint through the process-wide response cache and that endpoint's pacer (its
+ * own cooldown in front of the request slot and gap every endpoint shares), with retries and JSON
+ * parsing.
  *
  * **Cache.** The key is the exact URL, no further normalization: a `timespan` goes upstream
  * verbatim, so its key does not move with the clock, and the freshness window bounds its
@@ -236,11 +233,12 @@ const utf8Decoder = new TextDecoder();
  * `freshOnly` call.
  *
  * **Under the client timeout.** A call holding a servable answer never waits past what a client
- * will: while the pacer's cooldown gate is closed, GDELT is rate-limiting this server, so the
- * answer is served at once as `gdelt_rate_limited`, spending no request and no queue slot.
+ * will: while its endpoint's cooldown is closed, GDELT is rate-limiting this server on that
+ * endpoint, so the answer is served at once as `gdelt_rate_limited`, spending no request and no
+ * queue slot. Another endpoint's closed cooldown does not count: that call goes upstream.
  * Otherwise the call waits at most {@link GDELT_FALLBACK_BUDGET_MS} from its start, then serves it
  * as `gdelt_rate_limited` if its request never went upstream or `gdelt_unavailable` if it did. A
- * caller passing {@link GdeltFetchOptions.hasFallback} is held to the same gate and budget,
+ * caller passing {@link GdeltFetchOptions.hasFallback} is held to the same cooldown check and budget,
  * rejecting where a stored answer would be served. Leaving at the budget aborts the shared fetch
  * only when no other caller still waits on it. A call with neither waits exactly as long as the
  * fetch takes.
@@ -262,9 +260,10 @@ export async function gdeltFetch<T>(
     return parseStored<T>(stored);
   }
 
+  const pacer = getGdeltPacer(baseUrl);
   const servable = servableEntry(cache, url, ctx, freshOnly);
   if (servable || hasFallback) {
-    const cooldownRemainingMs = getGdeltPacer().cooldown.remainingMs;
+    const cooldownRemainingMs = pacer.cooldown.remainingMs;
     if (cooldownRemainingMs > 0) {
       if (servable) {
         return serveStale<T>(servable, 'gdelt_rate_limited', ctx, apiLabel, {
@@ -289,6 +288,7 @@ export async function gdeltFetch<T>(
   try {
     answer = await joinSharedFetch<T>(
       cache,
+      pacer,
       url,
       params,
       ctx,
@@ -382,6 +382,7 @@ function parseStored<T>(entry: GdeltCacheEntry): T {
  */
 async function joinSharedFetch<T>(
   cache: GdeltResponseCache,
+  pacer: GdeltEndpointPacer,
   url: string,
   params: URLSearchParams,
   ctx: Context,
@@ -397,7 +398,7 @@ async function joinSharedFetch<T>(
     const fetchCtx: Context = { ...ctx, signal: controller.signal };
     let sent = false;
     shared = {
-      result: fetchFromGdelt(url, fetchCtx, operation, apiLabel, maxRetries, () => {
+      result: fetchFromGdelt(pacer, url, fetchCtx, operation, apiLabel, maxRetries, () => {
         sent = true;
       }).then((answer) => {
         storeAnswer(cache, url, params, answer);
@@ -472,7 +473,7 @@ function waitForSharedFetch(
         const error = fallbackBudgetElapsed(apiLabel, shared.sent());
         /**
          * Not `error` itself: a fetch held behind the request gap rejects from inside its paced
-         * task with the abort reason, and a `RateLimited` one would close the cooldown gate.
+         * task with the abort reason, and a `RateLimited` one would close the endpoint's cooldown.
          */
         leave(new Error('No caller is still waiting on this GDELT request.'));
         reject(error);
@@ -571,15 +572,15 @@ function staleServableMs(params: URLSearchParams): number {
 }
 
 /**
- * One upstream fetch through the shared pacer, with retries and JSON parsing, under `ctx` —
+ * One upstream fetch through its endpoint's pacer, with retries and JSON parsing, under `ctx` —
  * whose signal is the shared fetch's own, not any single caller's.
  *
- * Retry outside, pacer inside: each attempt re-queues and is re-paced, and the pacer's
- * cooldown gate is an absolute instant rather than a duration counted from dequeue, so a
- * backoff and the gate overlap in wall-clock instead of summing. Both GDELT rate-limit
- * shapes — the HTTP 429 `failFastOnRateLimit` re-throws and the HTTP-200 notice
- * `parseGdeltJson` classifies — are raised inside the paced task as a `RateLimited`
- * `McpError`, which is what closes the gate for every other queued caller.
+ * Retry outside, pacer inside: each attempt re-queues and is re-paced, and the endpoint's
+ * cooldown is an absolute instant rather than a duration counted from dequeue, so a backoff and
+ * the cooldown overlap in wall-clock instead of summing. Both GDELT rate-limit shapes — the HTTP
+ * 429 `failFastOnRateLimit` re-throws and the HTTP-200 notice `parseGdeltJson` classifies — are
+ * raised inside the paced request as a `RateLimited` `McpError`, which is what closes the
+ * endpoint's cooldown for every other caller queued on it.
  *
  * Two clocks bound the call. `GDELT_REQUEST_TIMEOUT_MS` is one attempt's deadline, clamped to
  * whatever is left of the total budget so an attempt cannot overshoot it; the budget itself is
@@ -589,6 +590,7 @@ function staleServableMs(params: URLSearchParams): number {
  * `onSent` runs as each attempt's request goes upstream, past the queue and the request gap.
  */
 function fetchFromGdelt(
+  pacer: GdeltEndpointPacer,
   url: string,
   ctx: Context,
   operation: string,
@@ -600,27 +602,21 @@ function fetchFromGdelt(
   return withRetry(
     ({ signal, remainingMs }) => {
       const enqueuedAt = Date.now();
-      return getGdeltPacer()
+      return pacer
         .run(
-          async (runSignal) => {
-            await holdForGdeltRequestGap(runSignal);
+          async (requestSignal) => {
             onSent();
             ctx.log.debug(`${apiLabel} API request`, { url });
-            let text: string;
-            try {
-              const response = await fetchWithTimeout(
-                url,
-                Math.min(requestTimeoutMs, remainingMs),
-                ctx,
-                { signal: runSignal, expectedStatuses: [429] },
-              ).catch(failFastOnRateLimit);
-              text = await response.text();
-            } finally {
-              recordGdeltRequestSettled();
-            }
+            const response = await fetchWithTimeout(
+              url,
+              Math.min(requestTimeoutMs, remainingMs),
+              ctx,
+              { signal: requestSignal, expectedStatuses: [429] },
+            ).catch(failFastOnRateLimit);
+            const text = await response.text();
             return { text, value: parseGdeltJson<unknown>(text, apiLabel) };
           },
-          { signal, maxWaitMs: GDELT_MAX_QUEUE_WAIT_MS },
+          { signal },
         )
         .catch((error: unknown) => declareShedAsRateLimited(error, Date.now() - enqueuedAt));
     },
@@ -830,11 +826,12 @@ const GDELT_REJECTIONS: ReadonlyArray<{ marker: string; hint: string; api?: stri
       'more specific keyword, or quote a multi-word phrase such as "bird flu".',
   },
   {
-    // One body for both: a sub-15-minute timespan and a 16-minute explicit window draw it, while
-    // one- and two-hour explicit windows are answered. The exact explicit floor is unmeasured.
+    // One body for both: a sub-15-minute timespan and an explicit window under 30 minutes draw it.
+    // The tools never send such a window, so this reaches a caller for a timespan in syntax the
+    // server does not resolve.
     marker: 'timespan is too short',
     api: 'GDELT DOC',
-    hint: 'The GDELT DOC API rejects a relative timespan under 15 minutes and an explicit window it considers too short. Lengthen the window the call set: a timespan of at least 15 minutes, or a startDatetime/endDatetime window of an hour or more.',
+    hint: `The GDELT DOC API rejects a relative timespan under 15 minutes and a startDatetime/endDatetime window under ${DOC_MIN_WINDOW_MINUTES} minutes. Lengthen the window the call set: a timespan of at least 15 minutes, or a startDatetime/endDatetime window of at least ${DOC_MIN_WINDOW_MINUTES} minutes.`,
   },
   {
     // Measured live: a 20-minute explicit window is rejected, a 30-minute one accepted.

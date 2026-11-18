@@ -7,6 +7,7 @@ import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mc
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltGetTvContext } from '@/mcp-server/tools/definitions/get-tv-context.tool.js';
 import * as tvServiceModule from '@/services/gdelt/gdelt-tv-service.js';
+import { recordedTvAnswer, replayTvExchanges } from '../helpers/tv-answer-replay.js';
 import { contentText, literalHtml, renderMarkdown } from './markdown-render.js';
 import { CNN_RANGE, expectNotice, freezeClock } from './station-range-fixtures.js';
 
@@ -537,9 +538,118 @@ describe('gdeltGetTvContext', () => {
           /whole UTC periods at the resolution GDELT picks from the window length — clock hours up to 7 days, days under 3 years, months beyond/,
         );
       }
+      expect(shape.endDatetime.description).toMatch(
+        /An end exactly on the clock hour counts as the second before it/,
+      );
       expect(gdeltGetTvContext.enrichment?.notice?.description).toMatch(
         /the resolution and the UTC window the terms and scores cover/,
       );
+    });
+
+    /**
+     * GDELT counts the whole period an end falls in, and every period starts on the clock hour,
+     * so an end exactly on the hour is sent a second earlier. Each request gets the answer GDELT
+     * gave that exact request (`tests/fixtures/tv/`); the end rule is tabled in date-range.test.ts.
+     */
+    it('drops the hour starting at an end on midnight, and names no wider window', async () => {
+      const window = { mode: 'wordcloud', startdatetime: '20240927220000' };
+      const query = 'hurricane helene station:CNN';
+      const sent = replayTvExchanges([
+        {
+          request: { query, ...window, enddatetime: '20240928000000' },
+          answer: recordedTvAnswer('helene-cnn-wordcloud-20240927220000-20240928000000'),
+        },
+        {
+          request: { query, ...window, enddatetime: '20240927235959' },
+          answer: recordedTvAnswer('helene-cnn-wordcloud-20240927220000-20240927235959'),
+        },
+      ]);
+      const result = await runToolContract(gdeltGetTvContext, {
+        query: 'hurricane helene',
+        stations: ['CNN'],
+        startDatetime: '20240927220000',
+        endDatetime: '20240928000000',
+      });
+      expect(sent.map((params) => params.get('enddatetime'))).toEqual(['20240927235959']);
+      const page = result.structuredContent as {
+        totalTerms: number;
+        words: Array<{ label: string; score: number }>;
+      };
+      expect(page.totalTerms).toBe(14);
+      expect(page.words.slice(0, 4)).toEqual([
+        { label: 'Hurricane', score: 100 },
+        { label: 'Helene', score: 93.3333 },
+        { label: 'Florida', score: 60 },
+        { label: 'Storm', score: 60 },
+      ]);
+      expect(contentText(result)).toContain('- **Hurricane**: 100 ');
+      // A term only the hour after the window carried.
+      expect(contentText(result)).not.toContain('**Beirut**');
+      expectNotice(result, SAMPLING);
+    });
+
+    /**
+     * The end on midnight goes a second earlier, and the start inside its hour still widens to
+     * that hour: the notice names the covered window and quotes the window the caller wrote.
+     */
+    it('quotes the requested window, not the one sent, when an end on the hour draws a wider window', async () => {
+      const sent = replayTvExchanges([
+        {
+          request: {
+            query: 'hurricane helene station:CNN',
+            mode: 'wordcloud',
+            startdatetime: '20240927223000',
+            enddatetime: '20240927235959',
+          },
+          // Synthetic: one term, in the shape of the recorded word clouds.
+          answer: {
+            query_details: { title: 'hurricane helene station:CNN' },
+            wordcloud: [{ label: 'Hurricane', count: 100 }],
+          },
+        },
+      ]);
+      const result = await runToolContract(gdeltGetTvContext, {
+        query: 'hurricane helene',
+        stations: ['CNN'],
+        startDatetime: '20240927223000',
+        endDatetime: '20240928000000',
+      });
+      expect(sent.map((params) => params.get('enddatetime'))).toEqual(['20240927235959']);
+      expectNotice(
+        result,
+        `${SAMPLING} Terms and scores cover whole clock hours, 2024-09-27T22:00:00Z – 2024-09-27T23:59:59Z, wider than the requested 20240927223000–20240928000000.`,
+      );
+    });
+
+    /**
+     * Exactly 3 × 365 days, a second short, is answered in days. The word cloud reports no
+     * resolution, so the notice reads the day default of the window sent: exactly the requested one.
+     */
+    it('sends no dateres over exactly 3 × 365 days, and names no wider window', async () => {
+      const sent = replayTvExchanges([
+        {
+          request: {
+            query: 'impeachment station:CNN',
+            mode: 'wordcloud',
+            startdatetime: '20170302000000',
+            enddatetime: '20200229235959',
+          },
+          // Synthetic: a word cloud carries no resolution in its query_details.
+          answer: {
+            query_details: { title: 'impeachment station:CNN' },
+            wordcloud: [{ label: 'Impeachment', count: 100 }],
+          },
+        },
+      ]);
+      const result = await runToolContract(gdeltGetTvContext, {
+        query: 'impeachment',
+        stations: ['CNN'],
+        startDatetime: '20170302000000',
+        endDatetime: '20200301000000',
+      });
+      expect(sent).toHaveLength(1);
+      expect(sent[0]?.has('dateres')).toBe(false);
+      expectNotice(result, SAMPLING);
     });
   });
 });

@@ -9,6 +9,7 @@
 import { z } from '@cyanheads/mcp-ts-core';
 import {
   DOC_ATTEMPT_OUTCOMES,
+  DOC_MIN_WINDOW_MINUTES,
   DOC_SOURCES,
   type DocAttempt,
   type DocCoverage,
@@ -24,7 +25,7 @@ export const sourceSchema = z
   .enum(DOC_SOURCES)
   .optional()
   .describe(
-    "Where this answer came from: doc_api, the GDELT DOC API, or gkg_mirror, the server's local mirror of GDELT's Global Knowledge Graph, which answers when the DOC API refuses the request or returns nothing. Present on every answer while the server runs a mirror; absent otherwise.",
+    `Where this answer came from: doc_api, the GDELT DOC API, or gkg_mirror, the server's local mirror of GDELT's Global Knowledge Graph, which answers when the DOC API refuses the request or returns nothing, and in its place when the startDatetime/endDatetime window is under the ${DOC_MIN_WINDOW_MINUTES} minutes the DOC API accepts. Present on every answer while the server runs a mirror; absent otherwise.`,
   );
 
 /** The `attempts` enrichment field each DOC tool declares. */
@@ -36,7 +37,7 @@ export const attemptsSchema = z
         outcome: z
           .enum(DOC_ATTEMPT_OUTCOMES)
           .describe(
-            'What the source did: answered, empty (answered with no matches), rate_limited, or unavailable; or why the mirror could not answer: not_ready (no completed sync), not_compiled (the query or its timespan is in a form the mirror cannot evaluate), outside_coverage (the window lies outside the days it holds), store_error.',
+            `What the source did: answered, empty (answered with no matches), rate_limited, or unavailable; window_too_short when the DOC API was not asked because the window is under the ${DOC_MIN_WINDOW_MINUTES} minutes it accepts; or why the mirror could not answer: not_ready (no completed sync), not_compiled (the query or its timespan is in a form the mirror cannot evaluate), outside_coverage (the window lies outside the days it holds), store_error.`,
           ),
         detail: z
           .string()
@@ -124,27 +125,44 @@ const STOOD_IN_FOR: Record<DocStoodInFor, string> = {
   rate_limited: 'GDELT rate-limited the DOC API request',
   unavailable: 'the GDELT DOC API did not answer with data',
   empty: 'the GDELT DOC API returned no results, which GDELT also does under load',
+  window_too_short: `the window is under the ${DOC_MIN_WINDOW_MINUTES} minutes the GDELT DOC API accepts, so DOC was not asked`,
 };
 
-/** How a mirror answer differs from DOC's, joined into the notice of every mirror answer. */
-const MIRROR_DIVERGENCE =
-  "Keywords matched article titles and entity names, not article text (translated articles keep their source-language titles), and shares and counts are computed over mirrored articles, so they differ from DOC's.";
+/**
+ * How a mirror answer differs from DOC's, and what an answer with zero matches does not prove: the
+ * keyword sentences when the query holds a keyword or phrase, the plain ones when it holds none.
+ */
+const MIRROR_DIVERGENCE = {
+  keywords: {
+    divergence:
+      "Keywords matched article titles and entity names, not article text (translated articles keep their source-language titles), and shares and counts are computed over mirrored articles, so they differ from DOC's.",
+    noMatch:
+      'Matching titles and entity names found nothing, which is not evidence that no coverage exists.',
+  },
+  none: {
+    divergence: "Shares and counts are computed over mirrored articles, so they differ from DOC's.",
+    noMatch: 'The mirror matched nothing, which is not evidence that no coverage exists.',
+  },
+};
+
+/** The route to translated coverage a required keyword clause holds back. */
+const MIRROR_THEME_ROUTE =
+  'GKG themes are tagged on translated articles too, so a theme: element in place of the keyword (identifiers from gdelt_search_themes) reaches non-English coverage the keyword misses.';
 
 /** The notice sentences of an answer the local GKG mirror gave in DOC's place. */
 export function mirrorAnswerNotice({
   standsInFor,
   matched,
+  keywords,
   excludedWithoutCountry,
 }: MirrorStandIn): string {
+  const { divergence, noMatch } = MIRROR_DIVERGENCE[keywords === 'none' ? 'none' : 'keywords'];
   const sentences = [
     `This answer comes from the server's local GKG mirror because ${STOOD_IN_FOR[standsInFor]}.`,
-    MIRROR_DIVERGENCE,
+    divergence,
   ];
-  if (matched === 0) {
-    sentences.push(
-      'Matching titles and entity names found nothing, which is not evidence that no coverage exists.',
-    );
-  }
+  if (matched === 0) sentences.push(noMatch);
+  if (keywords === 'required') sentences.push(MIRROR_THEME_ROUTE);
   if (excludedWithoutCountry) {
     const one = excludedWithoutCountry === 1;
     sentences.push(

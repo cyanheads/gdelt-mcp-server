@@ -13,6 +13,7 @@ import {
   describeTvTimespanFault,
   GDELT_DATETIME_PATTERN,
   resolveEffectiveWindow,
+  tvAnalyticsWindow,
 } from '../date-range.js';
 import {
   clampToCap,
@@ -30,7 +31,7 @@ import {
   stationLabel,
 } from '../station-ids.js';
 import { sumValues } from '../sum-values.js';
-import { describeTvCoveredWindow } from '../tv-covered-window.js';
+import { defaultTvResolution, describeTvCoveredWindow } from '../tv-covered-window.js';
 
 /** Point pages bound the response without altering the selected station population. */
 const MAX_POINTS_PER_PAGE = 20_000;
@@ -126,7 +127,7 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       .regex(GDELT_DATETIME_PATTERN, 'endDatetime must be exactly 14 digits (YYYYMMDDHHMMSS).')
       .optional()
       .describe(
-        'End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators (e.g. 20200131235959). Must pair with startDatetime; supplying only one of the two is rejected. GDELT extends it through the end of its UTC period at the response resolution; notice then names the window the values cover.',
+        'End datetime in GDELT format YYYYMMDDHHMMSS — exactly 14 digits, no separators (e.g. 20200131235959). Must pair with startDatetime; supplying only one of the two is rejected. GDELT extends it through the end of its UTC period at the response resolution — an end exactly on the clock hour counts as the second before it, so it adds no period starting there; notice then names the window the values cover.',
       ),
     smoothing: z
       .number()
@@ -295,15 +296,29 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
     ctx.log.info('gdelt_search_tv', { query: input.query, stations: stationIds });
     const svc = getGdeltTvService();
 
+    const requested =
+      input.startDatetime && input.endDatetime
+        ? { startDatetime: input.startDatetime, endDatetime: input.endDatetime }
+        : undefined;
+    const sent = requested && tvAnalyticsWindow(requested);
+    /**
+     * GDELT picks the points' resolution from the span it is sent. Where the second taken off an
+     * on-the-hour end moves it (exactly 3 × 365 days, or 7 days and a second), the caller's span's
+     * resolution goes as dateres, so the timeline keeps the points the caller's window asks for.
+     */
+    const callerResolution = requested && defaultTvResolution(requested);
+    const dateres =
+      input.dateres ??
+      (sent && defaultTvResolution(sent) !== callerResolution ? callerResolution : undefined);
+
     const result = await svc.searchTv(
       {
         query: input.query,
         ...(stationIds.length > 0 && { stations: stationIds }),
         ...(input.timespan && { timespan: input.timespan }),
-        ...(input.startDatetime && { startDatetime: input.startDatetime }),
-        ...(input.endDatetime && { endDatetime: input.endDatetime }),
+        ...sent,
         ...(input.smoothing != null && { smoothing: input.smoothing }),
-        ...(input.dateres && { dateres: input.dateres }),
+        ...(dateres && { dateres }),
         normalize: input.normalize,
         combined: input.combined,
       },
