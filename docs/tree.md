@@ -1,6 +1,6 @@
 # gdelt-mcp-server - Directory Structure
 
-Generated on: 2026-11-14 21:16:32
+Generated on: 2026-11-18 07:05:26
 
 ```text
 gdelt-mcp-server/
@@ -179,6 +179,7 @@ gdelt-mcp-server/
 │   │       ├── date-range.ts
 │   │       ├── limit-clamp.ts
 │   │       ├── markdown-escape.ts
+│   │       ├── missing-timesteps.ts
 │   │       ├── peak-of.ts
 │   │       ├── query-input.ts
 │   │       ├── source-provenance.ts
@@ -218,6 +219,9 @@ gdelt-mcp-server/
 │   │   │   ├── bird-flu-24h.json
 │   │   │   ├── trump-window-page1.json
 │   │   │   └── trump-window-page2.json
+│   │   ├── doc/
+│   │   │   ├── quokka-timelinetone-20260901-20260908.json
+│   │   │   └── quokka-timelinevol-20260901-20260908.json
 │   │   ├── gkg/
 │   │   │   ├── domains-by-country.txt
 │   │   │   ├── english-rows.tsv
@@ -225,6 +229,18 @@ gdelt-mcp-server/
 │   │   │   ├── lastupdate.txt
 │   │   │   ├── translation-dup-id-rows.tsv
 │   │   │   └── translation-multiline-record.tsv
+│   │   ├── tv/
+│   │   │   ├── helene-3st-stationchart-raw-20240926000000-20240927235959.json
+│   │   │   ├── helene-3st-stationchart-raw-20240926000000-20240928000000.json
+│   │   │   ├── helene-cnn-timelinevol-perc-day-20240924000000-20241003235959.json
+│   │   │   ├── helene-cnn-timelinevol-perc-day-20240924000000-20241004000000.json
+│   │   │   ├── helene-cnn-timelinevol-raw-20240920235959-20240928000000.json
+│   │   │   ├── helene-cnn-timelinevol-raw-20240927233000-20240928000000.json
+│   │   │   ├── helene-cnn-timelinevol-raw-day-20240920235959-20240927235959.json
+│   │   │   ├── helene-cnn-wordcloud-20240927220000-20240927235959.json
+│   │   │   ├── helene-cnn-wordcloud-20240927220000-20240928000000.json
+│   │   │   ├── impeachment-cnn-timelinevol-raw-20161201000000-20191201000000.json
+│   │   │   └── impeachment-cnn-timelinevol-raw-month-20161201000000-20191130235959.json
 │   │   ├── gkg-themes-excerpt.txt
 │   │   └── tv-station-catalog.json
 │   ├── helpers/
@@ -232,7 +248,8 @@ gdelt-mcp-server/
 │   │   ├── gkg-feed-fixtures.ts
 │   │   ├── gkg-mirror-fixture.ts
 │   │   ├── gkg-mirror-test-worker.ts
-│   │   └── linear-cost.ts
+│   │   ├── linear-cost.ts
+│   │   └── tv-answer-replay.ts
 │   ├── prompts/
 │   ├── resources/
 │   ├── scripts/
@@ -274,6 +291,7 @@ gdelt-mcp-server/
 │       ├── list-tv-stations.tool.test.ts
 │       ├── markdown-escape.test.ts
 │       ├── markdown-render.ts
+│       ├── missing-timesteps.test.ts
 │       ├── peak-of.test.ts
 │       ├── query-input.test.ts
 │       ├── search-articles.tool.test.ts

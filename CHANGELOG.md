@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.10.1](changelog/0.10.x/0.10.1.md) — 2026-11-18
+
+Coverage timelines and breakdowns report timesteps GDELT left out as missingTimesteps, breakdown series carry sum, pointCount, and peak, and a DOC window under 30 minutes is never sent to DOC. A rate limit holds only its own API's calls, and TV tools no longer count the period after an on-the-hour end.
+
 ## [0.10.0](changelog/0.10.x/0.10.0.md) — 2026-11-14
 
 Adds gdelt_search_sentences, sentence-level search of the last 72 hours of English-language coverage. The coverage breakdown pages every ranked series, TV results name the UTC window their values cover, and the DOC tools refuse unusable queries and timespans before any request.
