@@ -13,7 +13,7 @@ Use DOC analysis for recent global news and TV analysis for monitored television
 
 ## Identifiers
 
-- Put OR between terms inside parentheses, with everything else outside them: `(climate OR energy) sourcelang:english`. A query that is only terms joined by OR runs as one group, shown in `effectiveQuery`; any other OR outside parentheses is refused. GDELT reads `or` in any case, so quote a phrase that holds the word.
+- Put OR between terms inside parentheses, with everything else outside them: `(climate OR energy) sourcelang:english`. A query that is only terms, or only source filters, joined by OR runs as one group, shown in `effectiveQuery`; any other OR outside parentheses is refused. GDELT reads `or` in any case, so quote a phrase that holds the word.
 - Obtain GKG theme identifiers and paste-ready `theme:` operators from `gdelt_search_themes`. Its listed count is a lookup figure, not a live article total. Search words in identifiers; a zero match does not establish that a concept is absent from the taxonomy.
 - Obtain station IDs, network and market values, and monitoring dates from `gdelt_list_tv_stations`. Use `stationId` or a resolved result's `station` for filtering. A display name or archive URL prefix is not a station ID: `stations` refuses an entry that is not letters and digits before any request, and GDELT rejects one it does not know. If a result omits its station ID, resolve it through the catalog before chaining.
 - Chain a breakdown series into article search with its `operator` (`sourcecountry:<FIPS>` or `sourcelang:<name>`; country codes are FIPS, not ISO, so `AU` is Austria). A series without one maps to no single GDELT code.
