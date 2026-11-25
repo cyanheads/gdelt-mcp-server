@@ -486,6 +486,208 @@ describe('planWindowContinuation', () => {
     ]);
   });
 
+  /** Under 60 minutes the local GKG mirror still answers, one 15-minute slot at a time (#100). */
+  describe('with the mirror holding part of a window under 60 minutes', () => {
+    const at = (time: string) => `20260101${time}`;
+    const win = (start: string, end: string) => ({
+      startDatetime: at(start),
+      endDatetime: at(end),
+    });
+
+    it.each([
+      [
+        'two slots',
+        win('120000', '122900'),
+        undefined,
+        [
+          ['120000', '121459'],
+          ['121500', '122900'],
+        ],
+      ],
+      [
+        'a window opening off a slot',
+        win('120700', '123500'),
+        undefined,
+        [
+          ['120700', '122959'],
+          ['123000', '123500'],
+        ],
+      ],
+      [
+        'three slots',
+        win('120100', '124959'),
+        undefined,
+        [
+          ['120100', '122959'],
+          ['123000', '124459'],
+          ['124500', '124959'],
+        ],
+      ],
+      [
+        'four slots',
+        win('120000', '125959'),
+        undefined,
+        [
+          ['120000', '121459'],
+          ['121500', '122959'],
+          ['123000', '124459'],
+          ['124500', '125959'],
+        ],
+      ],
+      [
+        'a window ending on a slot',
+        win('120000', '123000'),
+        undefined,
+        [
+          ['120000', '121459'],
+          ['121500', '122959'],
+          ['122959', '123000'],
+        ],
+      ],
+      [
+        'slots past its newest',
+        win('120000', '124500'),
+        win('120000', '121500'),
+        [
+          ['120000', '121459'],
+          ['121459', '121500'],
+        ],
+      ],
+      [
+        'slots before its oldest',
+        win('120000', '124459'),
+        win('121500', '124459'),
+        [
+          ['121500', '122959'],
+          ['123000', '124459'],
+        ],
+      ],
+    ])('gives one window per slot it holds: %s', (_label, window, held = window, expected) => {
+      const windows = expected.map(([start, end]) => win(start as string, end as string));
+      const plan = planWindowContinuation(window, { held, answered: true });
+      expect(plan.windows).toEqual(windows);
+      const listed = windows.map((w) => `${w.startDatetime}–${w.endDatetime}`).join(', ');
+      expect(plan.guidance).toBe(
+        `GDELT exposes no offset or cursor, and a half of the window ${window.startDatetime}–${window.endDatetime} would fall under the 30 minutes the GDELT DOC API accepts. The server's local GKG mirror answers one 15-minute slot at a time: re-run this query unchanged against each window in continuationWindows — ${listed} — and de-duplicate by url. A slot the mirror does not hold in full is refused.`,
+      );
+    });
+
+    /** Start and end offsets on and beside each slot of an hour: one slot in each window, all of them covered. */
+    it('puts every held slot in exactly one window inside the requested window', () => {
+      const base = Date.UTC(2026, 0, 1, 12);
+      const stamp = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace(/[-:T]/g, '');
+      const offsets = [0, 1, 7 * 60, 899, 900, 901, 1799, 1800, 1801, 2699, 2700, 2701, 3599];
+      const slotsOf = (start: string, end: string) =>
+        [0, 900, 1800, 2700, 3600]
+          .map((s) => stamp(base + s * 1000))
+          .filter((slot) => slot >= start && slot <= end);
+      for (const from of offsets) {
+        for (const to of offsets.filter((o) => o > from)) {
+          const window = {
+            startDatetime: stamp(base + from * 1000),
+            endDatetime: stamp(base + to * 1000),
+          };
+          const all = slotsOf(window.startDatetime, window.endDatetime);
+          const { windows = [] } = planWindowContinuation(window, {
+            held: window,
+            answered: false,
+          });
+          expect(windows.flatMap((w) => slotsOf(w.startDatetime, w.endDatetime))).toEqual(all);
+          for (const w of windows) {
+            expect(slotsOf(w.startDatetime, w.endDatetime)).toHaveLength(1);
+            expect(w.startDatetime < w.endDatetime).toBe(true);
+            expect(
+              w.startDatetime >= window.startDatetime && w.endDatetime <= window.endDatetime,
+            ).toBe(true);
+          }
+        }
+      }
+    });
+
+    it.each([
+      [
+        'the window is on that slot',
+        win('121500', '122900'),
+        win('121500', '122900'),
+        '20260101T121500Z',
+      ],
+      [
+        'only that slot of it is held',
+        win('120000', '122900'),
+        win('120000', '120000'),
+        '20260101T120000Z',
+      ],
+    ])(
+      'names the one slot of its own answer and gives no window when %s',
+      (_label, window, held, seendate) => {
+        const plan = planWindowContinuation(window, { held, answered: true });
+        expect(plan).toEqual({
+          guidance: `The server's local GKG mirror holds one 15-minute slot of the window ${window.startDatetime}–${window.endDatetime}, and every article in it carries the same seendate, ${seendate}, so no narrower window separates them: narrow the query instead, with another term or a sourcelang:, sourcecountry:, domain:, or theme: filter.`,
+        });
+      },
+    );
+
+    it.each([
+      [
+        'inside the requested window',
+        win('121500', '124459'),
+        win('121500', '121500'),
+        win('121500', '121501'),
+      ],
+      [
+        'at the end of the requested window',
+        win('120000', '121500'),
+        win('121500', '121500'),
+        win('121459', '121500'),
+      ],
+    ])(
+      "gives a DOC answer the one slot's window, one second wide %s",
+      (_label, window, held, expected) => {
+        expect(planWindowContinuation(window, { held, answered: false }).windows).toEqual([
+          expected,
+        ]);
+      },
+    );
+
+    it.each([
+      ['past its newest', win('120000', '124500'), win('120000', '121500')],
+      ['before its oldest', win('120000', '124459'), win('121500', '124459')],
+    ])('says what a DOC answer’s windows leave out: slots %s', (_label, window, held) => {
+      const rest = `The mirror holds only ${held.startDatetime}–${held.endDatetime} of that window, and no narrower window reaches the rest of it.`;
+      const { guidance } = planWindowContinuation(window, { held, answered: false });
+      expect(
+        guidance.endsWith(` A slot the mirror does not hold in full is refused. ${rest}`),
+      ).toBe(true);
+      // The mirror's own answer covers that part alone, and its coverage says so.
+      expect(planWindowContinuation(window, { held, answered: true }).guidance).not.toContain(rest);
+    });
+
+    it('says nothing of the rest when the part it holds has every slot of the window', () => {
+      const { guidance } = planWindowContinuation(win('120700', '123500'), {
+        held: win('120709', '123459'),
+        answered: false,
+      });
+      expect(guidance).toMatch(/A slot the mirror does not hold in full is refused\.$/);
+    });
+
+    it('keeps the records not retrievable when no slot falls in the part it holds', () => {
+      const window = win('120100', '121400');
+      expect(planWindowContinuation(window, { held: window, answered: false })).toEqual(
+        planWindowContinuation(window),
+      );
+      expect(planWindowContinuation(window).guidance).toMatch(
+        /not retrievable through this API\.$/,
+      );
+    });
+
+    it('halves a 60-minute window as it does without a mirror', () => {
+      const window = win('120000', '130000');
+      expect(planWindowContinuation(window, { held: window, answered: true })).toEqual(
+        planWindowContinuation(window),
+      );
+    });
+  });
+
   it('names both halves in the guidance, not just in the structured windows', () => {
     const plan = planWindowContinuation({
       startDatetime: '20240101000000',

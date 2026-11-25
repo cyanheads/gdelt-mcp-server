@@ -66,8 +66,13 @@ const DOC_DEFAULT_TIMESPAN = '3months';
 /** What the router needs of the mirror client. */
 export type DocMirror = Pick<GkgMirrorClient, 'status' | 'execute'>;
 
-/** A routed DOC call's answer, and — when the mirror gave it — the facts its notice discloses. */
-export type DocRouted<T> = { result: T; standIn?: MirrorStandIn };
+/**
+ * A routed DOC call's answer, and — when the mirror gave it — the facts its notice discloses.
+ * `held`, present while the mirror can answer this query over some of the requested window, except
+ * on DOC's own empty answer, is that part: the window clipped to the mirror's oldest and newest
+ * slot. A slot inside it can still be a gap, held in one feed or neither.
+ */
+export type DocRouted<T> = { result: T; standIn?: MirrorStandIn; held?: MirrorWindow };
 
 let mirrorHandle: (() => DocMirror | undefined) | undefined;
 
@@ -210,9 +215,12 @@ type MirrorRefusal = {
   hint: string;
 };
 
-/** Whether the mirror can answer a call: the request it would answer, or why it cannot. */
+/**
+ * Whether the mirror can answer a call: the request it would answer and the part of the requested
+ * window it holds, or why it cannot.
+ */
 type MirrorReadiness =
-  | { ready: true; request: MirrorRequest }
+  | { ready: true; request: MirrorRequest; held: MirrorWindow }
   | { ready: false; refusal: MirrorRefusal };
 
 /** The mirror's answer and the request it answered, or why it did not answer. */
@@ -220,6 +228,7 @@ type MirrorConsulted =
   | {
       answered: true;
       request: MirrorRequest;
+      held: MirrorWindow;
       response: Extract<MirrorResponse, { outcome: 'answered' }>;
     }
   | { answered: false; refusal: MirrorRefusal };
@@ -250,7 +259,7 @@ async function route<T>(
 
   if (!call.isEmpty(answer)) {
     ctx.enrich({ source: 'doc_api' });
-    return { result: answer };
+    return { result: answer, ...(readiness.ready && { held: readiness.held }) };
   }
   const docAttempt: DocStandInAttempt = { source: 'doc_api', outcome: 'empty' };
   const consulted = await consultMirror(mirror, readiness, startedAt, ctx);
@@ -366,7 +375,13 @@ async function mirrorReadiness<T>(
       hint: coverageHint(oldestSlot, newestSlot),
     });
   }
-  return { ready: true, request: call.mirrorRequest(compiled.plan, window) };
+  // Fixed-width digits: lexical order is calendar order.
+  const clamp = (at: string) => (at < oldestSlot ? oldestSlot : at > newestSlot ? newestSlot : at);
+  return {
+    ready: true,
+    request: call.mirrorRequest(compiled.plan, window),
+    held: { startDatetime: clamp(window.startDatetime), endDatetime: clamp(window.endDatetime) },
+  };
 }
 
 /**
@@ -403,7 +418,7 @@ async function consultMirror(
 
   switch (response.outcome) {
     case 'answered':
-      return { answered: true, request: readiness.request, response };
+      return { answered: true, request: readiness.request, held: readiness.held, response };
     case 'not_ready':
       return {
         answered: false,
@@ -437,6 +452,7 @@ function answerFromMirror<T>(
   docAttempt: DocStandInAttempt,
   {
     request: { plan },
+    held,
     response: { answer, coverage, matched },
   }: Extract<MirrorConsulted, { answered: true }>,
 ): DocRouted<T> {
@@ -452,6 +468,7 @@ function answerFromMirror<T>(
   });
   return {
     result,
+    held,
     standIn: {
       standsInFor: docAttempt.outcome,
       matched,

@@ -92,6 +92,9 @@ const SEARCH_COVERAGE = {
   missingSlots: 0,
 };
 
+/** The part of SEARCH's window the mirror holds. */
+const SEARCH_HELD = { startDatetime: '20261031120000', endDatetime: NEWEST };
+
 /** An explicit window a second short of the 30 minutes DOC accepts, inside the mirror's slots. */
 const SHORT = { startDatetime: '20261031120000', endDatetime: '20261031122959' } as const;
 const SHORT_FAULT =
@@ -347,7 +350,10 @@ describe('DOC answers with data', () => {
 
     const { value, afterMs } = await settle(routeArticleSearch(SEARCH, ctx));
 
-    expect(value).toEqual({ result: { articles: [DOC_ARTICLE], totalReturned: 1 } });
+    expect(value).toEqual({
+      result: { articles: [DOC_ARTICLE], totalReturned: 1 },
+      held: SEARCH_HELD,
+    });
     expect(getEnrichment(ctx)).toEqual({ source: 'doc_api' });
     expect(mirror.execute).not.toHaveBeenCalled();
     // The mirror could answer, so DOC was held to its fallback budget.
@@ -365,7 +371,10 @@ describe('DOC answers with data', () => {
 
     const { value } = await settle(routeArticleSearch(SEARCH, ctx));
 
-    expect(value).toEqual({ result: { articles: [DOC_ARTICLE], totalReturned: 1 } });
+    expect(value).toEqual({
+      result: { articles: [DOC_ARTICLE], totalReturned: 1 },
+      held: { ...SEARCH_HELD, startDatetime: '20261031121730' },
+    });
     expect(getEnrichment(ctx)).toEqual({
       source: 'doc_api',
       staleResponse: expect.objectContaining({ reason: 'gdelt_rate_limited' }),
@@ -386,6 +395,7 @@ describe('DOC answers empty', () => {
     expect(value).toEqual({
       result: MIRROR_ARTLIST.result,
       standIn: { standsInFor: 'empty', matched: 1, keywords: 'required' },
+      held: SEARCH_HELD,
     });
     expect(getEnrichment(ctx)).toEqual({
       source: 'gkg_mirror',
@@ -559,6 +569,7 @@ describe('DOC refuses', () => {
       expect(value).toEqual({
         result: MIRROR_ARTLIST.result,
         standIn: { standsInFor: row.outcome, matched: 1, keywords: 'required' },
+        held: SEARCH_HELD,
       });
       expect(getEnrichment(ctx)).toEqual({
         source: 'gkg_mirror',
@@ -583,6 +594,7 @@ describe('DOC refuses', () => {
     expect(value).toEqual({
       result: MIRROR_NO_ARTICLES.result,
       standIn: { standsInFor: 'rate_limited', matched: 0, keywords: 'required' },
+      held: SEARCH_HELD,
     });
     expect(getEnrichment(ctx)).toMatchObject({
       source: 'gkg_mirror',
@@ -895,6 +907,7 @@ describe('an explicit window under the 30 minutes DOC accepts', () => {
       expect(value).toEqual({
         result: MIRROR_ARTLIST.result,
         standIn: { standsInFor: 'window_too_short', matched: 1, keywords: 'required' },
+        held: SHORT,
       });
       // The mirror answered the whole window, so no coverage is disclosed.
       expect(getEnrichment(ctx)).toEqual({
@@ -925,6 +938,7 @@ describe('an explicit window under the 30 minutes DOC accepts', () => {
     expect(value).toEqual({
       result: MIRROR_NO_ARTICLES.result,
       standIn: { standsInFor: 'window_too_short', matched: 0, keywords: 'required' },
+      held: SHORT,
     });
     expect(getEnrichment(ctx)).toEqual({
       source: 'gkg_mirror',
@@ -1176,7 +1190,10 @@ describe('an explicit window under the 30 minutes DOC accepts', () => {
 
       const { value } = await settle(routeArticleSearch(params, ctx));
 
-      expect(value).toEqual({ result: { articles: [DOC_ARTICLE], totalReturned: 1 } });
+      expect(value).toEqual({
+        result: { articles: [DOC_ARTICLE], totalReturned: 1 },
+        held: { startDatetime, endDatetime },
+      });
       expect(requestsFor('climate')).toBe(1);
       expect(getEnrichment(ctx)).toEqual({ source: 'doc_api' });
       expect(mirror.execute).not.toHaveBeenCalled();
@@ -1185,6 +1202,60 @@ describe('an explicit window under the 30 minutes DOC accepts', () => {
 });
 
 // ─── Bounds ───────────────────────────────────────────────────────────────────
+
+/** What a capped article search reads to continue through the mirror's slots (#100). */
+describe('the part of the requested window the mirror holds', () => {
+  const run = async (window: { startDatetime: string; endDatetime: string }, query = 'climate') => {
+    answerDoc(() => ok({ articles: [DOC_ARTICLE] }));
+    const { value } = await settle(
+      routeArticleSearch({ ...UNTIMED, query, ...window }, createMockContext()),
+    );
+    expect(value?.result.articles).toEqual([DOC_ARTICLE]);
+    return value?.held;
+  };
+
+  it.each([
+    ['inside its slots', '20261031120000', '20261031124500', '20261031120000', '20261031124500'],
+    ['reaching past its newest slot', '20261101111000', '20261101114500', '20261101111000', NEWEST],
+    [
+      'reaching before its oldest slot',
+      '20261025114500',
+      '20261025122000',
+      OLDEST,
+      '20261025122000',
+    ],
+    ['reaching past both', '20261001000000', '20261130000000', OLDEST, NEWEST],
+  ])('a window %s', async (_, startDatetime, endDatetime, heldStart, heldEnd) => {
+    attachMirror();
+    expect(await run({ startDatetime, endDatetime })).toEqual({
+      startDatetime: heldStart,
+      endDatetime: heldEnd,
+    });
+  });
+
+  it.each([
+    ['cannot evaluate the query', { query: 'near20:"a b"' }],
+    [
+      'does not hold the window',
+      { startDatetime: '20261101114500', endDatetime: '20261101122000' },
+    ],
+  ])('is absent where the mirror %s', async (_, params) => {
+    attachMirror();
+    const { query, ...window } = {
+      query: 'climate',
+      startDatetime: '20261031120000',
+      endDatetime: '20261031124500',
+      ...params,
+    };
+    expect(await run(window, query)).toBeUndefined();
+  });
+
+  it('is absent with no mirror', async () => {
+    expect(
+      await run({ startDatetime: '20261031120000', endDatetime: '20261031124500' }),
+    ).toBeUndefined();
+  });
+});
 
 describe('under the 60 s client timeout', () => {
   it('gives the mirror until 55 s after the start: an answer at 54.999 s is returned', async () => {
@@ -1456,6 +1527,7 @@ describe('each DOC call', () => {
             excludedWithoutCountry: mapped.excludedWithoutCountry,
           }),
         },
+        held: SEARCH_HELD,
       });
       expect(getEnrichment(ctx)).toMatchObject({ source: 'gkg_mirror' });
     });

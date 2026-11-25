@@ -14,6 +14,7 @@ import {
   resolveTimespan,
 } from '@/services/gdelt/gdelt-fetch.js';
 import { DOC_MIN_WINDOW_MINUTES, DOC_MIN_WINDOW_SECONDS } from '@/services/gdelt/types.js';
+import { GKG_SLOT_MS } from '@/services/gkg-mirror/gkg-feed.js';
 import { quoteText } from './markdown-escape.js';
 
 /**
@@ -237,21 +238,32 @@ export function splitWindow(window: GdeltWindow): [GdeltWindow, GdeltWindow] | u
 
 /** The next-call windows and the prose explaining them, for a record cap at its ceiling. */
 export type WindowContinuation = {
-  windows?: [GdeltWindow, GdeltWindow];
+  windows?: GdeltWindow[];
   guidance: string;
 };
+
+/**
+ * The local GKG mirror behind a capped DOC answer: the part of the window it holds, and whether the
+ * capped answer is its own. It answers windows shorter than the DOC API searches.
+ */
+type MirrorReach = { held: GdeltWindow; answered: boolean };
 
 /**
  * How a DOC caller retrieves records left behind once `maxRecords` is already at its ceiling.
  *
  * GDELT exposes no offset or cursor, so narrowing the time window is the only lever, and
  * each outcome is stated rather than implied: halves to re-query when the window divides,
- * how to pin a window when the call never set one, and — when a half would fall under the
- * shortest window the DOC API accepts — that the remaining records are unreachable.
+ * how to pin a window when the call never set one, and, when a half would fall under the
+ * shortest window the DOC API accepts, one window per 15-minute slot the mirror holds, or that
+ * nothing narrower reaches the rest: its one slot cannot be divided, or no mirror can answer
+ * the query there.
  *
  * Callers own the record-noun prose; this covers only the window reasoning.
  */
-export function planWindowContinuation(window: GdeltWindow | undefined): WindowContinuation {
+export function planWindowContinuation(
+  window: GdeltWindow | undefined,
+  mirror?: MirrorReach,
+): WindowContinuation {
   if (!window) {
     return {
       guidance:
@@ -262,6 +274,26 @@ export function planWindowContinuation(window: GdeltWindow | undefined): WindowC
 
   const windows = splitWindow(window);
   if (!windows) {
+    const slots = mirror ? slotsIn(mirror.held) : [];
+    if (mirror && slots.length > (mirror.answered ? 1 : 0)) {
+      const slotWindows = windowPerSlot(slots, mirror.held, window);
+      const listed = slotWindows.map((w) => `${w.startDatetime}–${w.endDatetime}`).join(', ');
+      // The mirror's own answer covers the part it holds alone, and its `coverage` says so.
+      const rest =
+        !mirror.answered && slots.length < slotsIn(window).length
+          ? ` The mirror holds only ${mirror.held.startDatetime}–${mirror.held.endDatetime} of that window, and no narrower window reaches the rest of it.`
+          : '';
+      return {
+        windows: slotWindows,
+        guidance: `GDELT exposes no offset or cursor, and a half of the window ${window.startDatetime}–${window.endDatetime} would fall under the ${DOC_MIN_WINDOW_MINUTES} minutes the GDELT DOC API accepts. The server's local GKG mirror answers one 15-minute slot at a time: re-run this query unchanged against each window in continuationWindows — ${listed} — and de-duplicate by url. A slot the mirror does not hold in full is refused.${rest}`,
+      };
+    }
+    const [slot] = slots;
+    if (slot !== undefined) {
+      return {
+        guidance: `The server's local GKG mirror holds one 15-minute slot of the window ${window.startDatetime}–${window.endDatetime}, and every article in it carries the same seendate, ${toSeendate(slot)}, so no narrower window separates them: narrow the query instead, with another term or a sourcelang:, sourcecountry:, domain:, or theme: filter.`,
+      };
+    }
     return {
       guidance: `The window ${window.startDatetime}–${window.endDatetime} is under ${2 * DOC_MIN_WINDOW_MINUTES} minutes, so either half would fall under the ${DOC_MIN_WINDOW_MINUTES} minutes the GDELT DOC API accepts: it does not search a narrower window, and the remaining records are not retrievable through this API.`,
     };
@@ -277,6 +309,48 @@ export function planWindowContinuation(window: GdeltWindow | undefined): WindowC
       'The halves overlap by one second so nothing falls through the seam, so a record on that second can ' +
       'appear in both: de-duplicate on re-assembly.',
   };
+}
+
+/** The 15-minute GKG slots, in epoch milliseconds, a window holds, both its boundaries included. */
+function slotsIn({ startDatetime, endDatetime }: GdeltWindow): number[] {
+  const end = parseGdeltDatetime(endDatetime).getTime();
+  const slots: number[] = [];
+  for (
+    let slot = Math.ceil(parseGdeltDatetime(startDatetime).getTime() / GKG_SLOT_MS) * GKG_SLOT_MS;
+    slot <= end;
+    slot += GKG_SLOT_MS
+  ) {
+    slots.push(slot);
+  }
+  return slots;
+}
+
+/**
+ * One window per slot, together spanning `held` with one slot in each: a window ends a second
+ * before the next slot. Its two boundaries must differ, so one holding its slot's instant alone
+ * takes a second beside it, inside the requested `window`.
+ */
+function windowPerSlot(
+  slots: readonly number[],
+  held: GdeltWindow,
+  window: GdeltWindow,
+): GdeltWindow[] {
+  return slots.map((slot, i) => {
+    const next = slots[i + 1];
+    const startDatetime = i === 0 ? held.startDatetime : toGdeltDatetime(new Date(slot));
+    const endDatetime =
+      next === undefined ? held.endDatetime : toGdeltDatetime(new Date(next - GDELT_RESOLUTION_MS));
+    if (startDatetime < endDatetime) return { startDatetime, endDatetime };
+    return startDatetime > window.startDatetime
+      ? { startDatetime: toGdeltDatetime(new Date(slot - GDELT_RESOLUTION_MS)), endDatetime }
+      : { startDatetime, endDatetime: toGdeltDatetime(new Date(slot + GDELT_RESOLUTION_MS)) };
+  });
+}
+
+/** A slot as the `seendate` its articles carry (`20261117T121500Z`). */
+function toSeendate(slot: number): string {
+  const digits = toGdeltDatetime(new Date(slot));
+  return `${digits.slice(0, 8)}T${digits.slice(8)}Z`;
 }
 
 /**
