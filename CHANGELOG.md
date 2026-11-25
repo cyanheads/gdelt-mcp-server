@@ -4,7 +4,7 @@ All notable changes to this project. Each entry links to its full per-version fi
 
 ## [0.10.2](changelog/0.10.x/0.10.2.md) — 2026-11-24
 
-A query of terms joined by OR outside parentheses runs as one group on all nine query tools, and other bare OR is refused before any request. A capped DOC window under 60 minutes continues through the mirror's 15-minute slots, and the mirror states its match count.
+A query that is only terms, or only source filters, joined by OR outside parentheses runs as one group on all nine query tools; any other OR there is refused before any request. A capped article search under 60 minutes continues through the local mirror's 15-minute slots, and a capped mirror answer states its match count.
 
 ## [0.10.1](changelog/0.10.x/0.10.1.md) — 2026-11-18
 
