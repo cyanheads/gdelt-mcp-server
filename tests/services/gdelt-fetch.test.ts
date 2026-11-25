@@ -248,6 +248,12 @@ describe('parseGdeltJson', () => {
         hint: /climate OR energy/,
       },
       {
+        trigger: 'a station selector in an OR group with a term (TV, measured live)',
+        body: 'You cannot combine station/show/network/market selectors with other selectors in an OR block.',
+        apiLabel: 'GDELT TV',
+        hint: /^GDELT TV accepts an OR group of terms or one of station:, network:, show:, or market: selectors, never both\. Leave the selector outside the group, e\.g\. \(climate OR energy\) station:CNN, or group selectors alone, e\.g\. \(station:CNN OR station:MSNBC\)\.$/,
+      },
+      {
         trigger: 'unquoted special character (DOC artlist)',
         body:
           'One or more of your keywords contained an illegal character. ' +

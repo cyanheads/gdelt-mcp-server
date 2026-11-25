@@ -860,6 +860,12 @@ const GDELT_REJECTIONS: ReadonlyArray<{ marker: string; hint: string; api?: stri
     hint: 'Wrap terms joined by OR in parentheses, e.g. (climate OR energy).',
   },
   {
+    // Measured live: (climate OR station:CNN) draws this rejection.
+    marker: 'in an or block',
+    api: 'GDELT TV',
+    hint: 'GDELT TV accepts an OR group of terms or one of station:, network:, show:, or market: selectors, never both. Leave the selector outside the group, e.g. (climate OR energy) station:CNN, or group selectors alone, e.g. (station:CNN OR station:MSNBC).',
+  },
+  {
     marker: 'illegal character',
     hint:
       'A keyword contains a character GDELT reserves. Wrap the term in double quotes to use it ' +
