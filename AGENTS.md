@@ -366,6 +366,8 @@ When you complete a skill's checklist, check the boxes and add a completion time
 
 **CI is one file.** `.github/workflows/codeql.yml` (scaffolded) is the only GitHub Actions workflow: CodeQL is GitHub-owned end to end, and the file runs only while the repo's CodeQL *default setup* is turned off. Verification — `devcheck`, tests, the release gates — runs locally; don't add a workflow that re-runs it.
 
+**Dependency hold.** `vitest` stays pinned at exactly `5.1.0`. The forks pool in 5.1.1 calls `child.channel.unref()`, which Bun lacks ([oven-sh/bun#33593](https://github.com/oven-sh/bun/issues/33593)), so no test file starts under the Bun lane (`bun --bun run test`). Bun's threads pool is no substitute: `tests/services/gkg-mirror-client.test.ts` spawns a worker thread, which ends a Bun thread worker, and the daylight-saving cases in `tests/services/gdelt-fetch.test.ts` switch `TZ` inside one file. Lift the pin once a Vitest or Bun release runs the forks pool under Bun.
+
 ---
 
 ## Bundling

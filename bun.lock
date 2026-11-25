@@ -22,7 +22,7 @@
         "micromark-extension-gfm": "^3.0.0",
         "tsc-alias": "^1.9.10",
         "typescript": "^7.0.2",
-        "vitest": "^5.1.0",
+        "vitest": "5.1.0",
       },
     },
   },
