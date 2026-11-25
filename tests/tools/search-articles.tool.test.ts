@@ -5,7 +5,7 @@
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gdeltSearchArticles } from '@/mcp-server/tools/definitions/search-articles.tool.js';
 import * as docServiceModule from '@/services/gdelt/gdelt-doc-service.js';
 import { initGdeltDocService } from '@/services/gdelt/gdelt-doc-service.js';
@@ -14,6 +14,10 @@ import {
   disposeGdeltResponseCache,
   initGdeltResponseCache,
 } from '@/services/gdelt/gdelt-response-cache.js';
+import {
+  executeMirrorRequest,
+  readMirrorCoverage,
+} from '@/services/gkg-mirror/gkg-mirror-queries.js';
 import type { MirrorResult } from '@/services/gkg-mirror/types.js';
 import {
   attachMirror,
@@ -40,6 +44,14 @@ import {
   shortWindowAttemptsLines,
   useRoutedDoc,
 } from '../helpers/doc-source-fakes.js';
+import {
+  type GkgMirrorFixture,
+  gkgRow,
+  gkgSlotsBetween,
+  openGkgMirrorFixture,
+  seedGkgBothFeeds,
+  seedGkgRows,
+} from '../helpers/gkg-mirror-fixture.js';
 import { contentText, hrefFor, literalHtml, renderMarkdown } from './markdown-render.js';
 
 const ARTICLE = {
@@ -191,7 +203,7 @@ describe('gdeltSearchArticles', () => {
      */
     it('counts an out-of-window drop and a mirror answer among the cases the notice is present for', () => {
       expect(gdeltSearchArticles.enrichment?.notice?.description).toMatch(
-        /Absent when a non-empty result set from the DOC API is below the cap and no article was dropped as out of window\.$/,
+        /Absent when the query ran as given, a non-empty result set from the DOC API is below the cap, and no article was dropped as out of window\.$/,
       );
     });
   });
@@ -972,7 +984,16 @@ describe('gdelt_search_articles DOC source routing', () => {
   it.each(MIRROR_KEYWORD_CASES.filter(({ matched }) => matched > 0))(
     'writes nothing ahead of the mirror sentences for a matched query holding $holds',
     async ({ query, matched, sentences }) => {
-      attachMirror(mirrorAnswers(MIRROR_ARTLIST, matched));
+      const articles = Array.from({ length: matched }, (_, i) => ({
+        ...MIRROR_ARTICLE,
+        url: `${MIRROR_ARTICLE.url}/${i}`,
+      }));
+      attachMirror(
+        mirrorAnswers(
+          { kind: 'artlist', result: { articles, totalReturned: articles.length } },
+          matched,
+        ),
+      );
       doc.answerDoc('refuse');
 
       const result = await runToolContract(gdeltSearchArticles, { ...INPUT, query });
@@ -1064,6 +1085,293 @@ describe('gdelt_search_articles DOC source routing', () => {
     expect(text).toContain(shortWindowAttemptsLines('answered'));
     expect(text).toContain(`> ${mirrorNotice}`);
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A capped answer for a window under 60 minutes while the mirror can answer narrower ones (#100):
+ * the real router, DOC service with `fetch` stubbed, compiler, and SQL over a fixture store. The
+ * store holds slots from 10:30 to 13:00 on 2026-10-31, 300 articles in each slot but the last.
+ */
+describe('gdelt_search_articles continuation through mirror slots', () => {
+  const doc = useRoutedDoc();
+  const PER_SLOT = 300;
+  const OLDEST = '20261031103000';
+  const NEWEST = '20261031130000';
+  let fixture: GkgMirrorFixture;
+
+  beforeAll(async () => {
+    fixture = await openGkgMirrorFixture();
+    const slots = gkgSlotsBetween(OLDEST, NEWEST);
+    seedGkgBothFeeds(fixture.handle, slots);
+    await seedGkgRows(
+      fixture.store,
+      slots.flatMap((slot) =>
+        Array.from({ length: slot === NEWEST ? 250 : PER_SLOT }, (_, i) =>
+          gkgRow({
+            url: `https://example.com/${slot}/${i}`,
+            date: slot,
+            domain: 'example.com',
+            title: `Climate ${i}`,
+          }),
+        ),
+      ),
+    );
+  });
+
+  afterAll(async () => {
+    await fixture.cleanup();
+  });
+
+  beforeEach(() => {
+    attachMirror((req) => executeMirrorRequest(fixture.handle, req), {
+      ready: true,
+      ...readMirrorCoverage(fixture.handle),
+    });
+  });
+
+  const day = (time: string) => `20261031${time}`;
+  const search = (start: string, end: string, query = 'sourcelang:english') =>
+    runToolContract(gdeltSearchArticles, {
+      query,
+      startDatetime: day(start),
+      endDatetime: day(end),
+      maxRecords: 250,
+    });
+  type Page = ArticlePage & { source: string };
+  const page = (result: Awaited<ReturnType<typeof search>>) => {
+    expect(result.isError).toBeFalsy();
+    return result.structuredContent as Page;
+  };
+
+  it('hands back one window per slot for a capped mirror answer, and each is answered', async () => {
+    const fetch = doc.answerDoc('refuse');
+
+    const result = await search('120000', '122900');
+
+    const first = page(result);
+    expect(first.source).toBe('gkg_mirror');
+    expect(new Set(first.articles.map((a) => a.seendate))).toEqual(new Set(['20261031T121500Z']));
+    const windows = [
+      { startDatetime: day('120000'), endDatetime: day('121459') },
+      { startDatetime: day('121500'), endDatetime: day('122900') },
+    ];
+    expect(first.continuationWindows).toEqual(windows);
+    const guidance =
+      "Returned 250 of the 600 articles the local GKG mirror matched — maxRecords is already at its 250 ceiling. GDELT exposes no offset or cursor, and a half of the window 20261031120000–20261031122900 would fall under the 30 minutes the GDELT DOC API accepts. The server's local GKG mirror answers one 15-minute slot at a time: re-run this query unchanged against each window in continuationWindows — 20261031120000–20261031121459, 20261031121500–20261031122900 — and de-duplicate by url. A slot the mirror does not hold in full is refused.";
+    expect(first.notice?.startsWith(`${guidance} `)).toBe(true);
+    const text = contentText(result);
+    expect(text).toContain(`> ${guidance} `);
+    expect(text).toContain(
+      '**Continuation windows:**\n- startDatetime: 20261031120000, endDatetime: 20261031121459\n- startDatetime: 20261031121500, endDatetime: 20261031122900',
+    );
+
+    const urls: string[] = [];
+    for (const [i, window] of windows.entries()) {
+      const next = page(
+        await runToolContract(gdeltSearchArticles, {
+          query: 'sourcelang:english',
+          maxRecords: 250,
+          ...window,
+        }),
+      );
+      expect(next.articles).toHaveLength(250);
+      expect(new Set(next.articles.map((a) => a.seendate))).toEqual(
+        new Set([`20261031T12${i === 0 ? '00' : '15'}00Z`]),
+      );
+      urls.push(...next.articles.map((a) => a.url));
+    }
+    expect(new Set(urls).size).toBe(500);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('says one slot is left, names it, and turns to the query instead of a window', async () => {
+    doc.answerDoc('refuse');
+
+    const result = await search('121500', '122900');
+
+    const only = page(result);
+    expect(only).not.toHaveProperty('continuationWindows');
+    const guidance =
+      "Returned 250 of the 300 articles the local GKG mirror matched — maxRecords is already at its 250 ceiling. The server's local GKG mirror holds one 15-minute slot of the window 20261031121500–20261031122900, and every article in it carries the same seendate, 20261031T121500Z, so no narrower window separates them: narrow the query instead, with another term or a sourcelang:, sourcecountry:, domain:, or theme: filter.";
+    expect(only.notice?.startsWith(`${guidance} `)).toBe(true);
+    expect(contentText(result)).toContain(`> ${guidance} `);
+    expect(contentText(result)).not.toContain('Continuation windows');
+  });
+
+  it('reports no cap when the mirror matched exactly the ceiling', async () => {
+    doc.answerDoc('refuse');
+
+    const exact = page(await search('125959', '130000'));
+
+    expect(exact.articles).toHaveLength(250);
+    expect(exact).not.toHaveProperty('continuationWindows');
+    expect(exact.notice).toMatch(/^This answer comes from the server's local GKG mirror/);
+  });
+
+  it('states the match count below the ceiling too', async () => {
+    doc.answerDoc('refuse');
+
+    const result = await runToolContract(gdeltSearchArticles, {
+      query: 'climate',
+      startDatetime: day('121500'),
+      endDatetime: day('122900'),
+    });
+
+    const guidance =
+      'Returned 75 of the 300 articles the local GKG mirror matched. Raise maxRecords (up to 250) to fetch more.';
+    expect(page(result).notice?.startsWith(`${guidance} `)).toBe(true);
+    expect(contentText(result)).toContain(`> ${guidance} `);
+  });
+
+  const DOC_PAGE = {
+    articles: Array.from({ length: 250 }, (_, i) => ({
+      ...ARTICLE,
+      url: `https://doc.example/${i}`,
+      seendate: '20261031T121500Z',
+    })),
+  };
+
+  it('hands back the slot windows for a capped DOC answer the mirror can continue', async () => {
+    doc.answerDoc({ body: DOC_PAGE });
+
+    const capped = page(await search('120000', '124459'));
+
+    expect(capped.source).toBe('doc_api');
+    expect(capped.continuationWindows).toEqual([
+      { startDatetime: day('120000'), endDatetime: day('121459') },
+      { startDatetime: day('121500'), endDatetime: day('122959') },
+      { startDatetime: day('123000'), endDatetime: day('124459') },
+    ]);
+    expect(capped.notice).toMatch(
+      /^Returned 250 articles — maxRecords is already at its 250 ceiling, so more articles almost certainly matched\. GDELT exposes no offset or cursor, and a half of the window 20261031120000–20261031124459 would fall under the 30 minutes/,
+    );
+  });
+
+  it('splits a relative timespan at the instant the call began, however long DOC takes', async () => {
+    vi.stubGlobal('fetch', async () => {
+      vi.setSystemTime(new Date('2026-10-31T12:46:00Z'));
+      return Response.json(DOC_PAGE);
+    });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-31T12:45:10Z'));
+    try {
+      const capped = page(
+        await runToolContract(gdeltSearchArticles, {
+          query: 'sourcelang:english',
+          timespan: '45min',
+          maxRecords: 250,
+        }),
+      );
+
+      expect(capped.source).toBe('doc_api');
+      expect(capped.notice).toContain(
+        'a half of the window 20261031120010–20261031124510 would fall under the 30 minutes',
+      );
+      expect(capped.continuationWindows).toEqual([
+        { startDatetime: day('120010'), endDatetime: day('122959') },
+        { startDatetime: day('123000'), endDatetime: day('124459') },
+        { startDatetime: day('124500'), endDatetime: day('124510') },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('hands back the window of the one slot the mirror holds for a capped DOC answer', async () => {
+    doc.answerDoc({ body: DOC_PAGE });
+
+    const capped = page(await search('125500', '132959'));
+
+    expect(capped.source).toBe('doc_api');
+    expect(capped.continuationWindows).toEqual([
+      { startDatetime: day('125500'), endDatetime: NEWEST },
+    ]);
+  });
+
+  it('gives the slots before the oldest one it holds no window', async () => {
+    doc.answerDoc({ body: DOC_PAGE });
+
+    const capped = page(await search('101500', '105959'));
+
+    expect(capped.continuationWindows).toEqual([
+      { startDatetime: OLDEST, endDatetime: day('104459') },
+      { startDatetime: day('104500'), endDatetime: day('105959') },
+    ]);
+  });
+
+  it('gives the slots past the newest one it holds no window', async () => {
+    doc.answerDoc({ body: DOC_PAGE });
+
+    const capped = page(await search('124000', '133000'));
+
+    expect(capped.continuationWindows).toEqual([
+      { startDatetime: day('124000'), endDatetime: day('125959') },
+      { startDatetime: day('125959'), endDatetime: day('130000') },
+    ]);
+    // DOC searched through 13:30; the notice says the windows stop at 13:00.
+    expect(capped.notice).toMatch(
+      / A slot the mirror does not hold in full is refused\. The mirror holds only 20261031124000–20261031130000 of that window, and no narrower window reaches the rest of it\.( |$)/,
+    );
+  });
+
+  it.each([
+    ['cannot evaluate the query', 'near20:"a b"', '120000', '124459'],
+    ['does not hold the window', 'climate', '140000', '144459'],
+  ])(
+    'keeps the remaining records not retrievable where the mirror %s',
+    async (_l, query, start, end) => {
+      doc.answerDoc({ body: DOC_PAGE });
+
+      const capped = page(await search(start, end, query));
+
+      expect(capped).not.toHaveProperty('continuationWindows');
+      expect(capped.notice).toBe(
+        `Returned 250 articles — maxRecords is already at its 250 ceiling, so more articles almost certainly matched. The window ${day(start)}–${day(end)} is under 60 minutes, so either half would fall under the 30 minutes the GDELT DOC API accepts: it does not search a narrower window, and the remaining records are not retrievable through this API.` +
+          (start === '140000'
+            ? ` GDELT returned 250 articles dated outside ${day(start)}–${day(end)}; they were dropped. At the edges of a window from continuationWindows these belong to the neighboring window — not a sign of missing results. No returned article is dated inside the window. Broaden the query, remove operators, widen the ${day(start)}–${day(end)} window, or try synonym terms.`
+            : ''),
+      );
+    },
+  );
+
+  it('keeps two overlapping halves for a window of 60 minutes', async () => {
+    doc.answerDoc('refuse');
+
+    const capped = page(await search('120000', '130000'));
+
+    expect(capped.continuationWindows).toEqual([
+      { startDatetime: day('120000'), endDatetime: day('123000') },
+      { startDatetime: day('122959'), endDatetime: day('130000') },
+    ]);
+    expect(capped.notice).toMatch(
+      /^Returned 250 of the 1450 articles the local GKG mirror matched — maxRecords is already at its 250 ceiling\. GDELT exposes no offset or cursor\. Re-run this query unchanged against each half/,
+    );
+  });
+
+  /** A slot's articles share one seendate and fill a page, so a walk reads 250 of each slot. */
+  it('reaches every slot of a 60-minute window by walking the continuations', async () => {
+    doc.answerDoc('refuse');
+    const queue = [{ startDatetime: day('115959'), endDatetime: day('125959') }];
+    const perSlot = new Map<string, Set<string>>();
+    let calls = 0;
+    for (let window = queue.shift(); window; window = queue.shift()) {
+      expect(++calls).toBeLessThanOrEqual(9);
+      const next = page(
+        await runToolContract(gdeltSearchArticles, {
+          query: 'sourcelang:english',
+          maxRecords: 250,
+          ...window,
+        }),
+      );
+      for (const { seendate, url } of next.articles) {
+        perSlot.set(seendate, (perSlot.get(seendate) ?? new Set()).add(url));
+      }
+      queue.push(...(next.continuationWindows ?? []));
+    }
+    expect([...perSlot].map(([slot, urls]) => [slot, urls.size]).sort()).toEqual(
+      ['1200', '1215', '1230', '1245'].map((time) => [`20261031T${time}00Z`, 250]),
+    );
   });
 });
 

@@ -35,7 +35,12 @@ import {
   renderNotice,
   renderQueryEcho,
 } from '../markdown-escape.js';
-import { queryInputSchema } from '../query-input.js';
+import {
+  effectiveQuerySchema,
+  GROUPED_QUERY_NOTE,
+  queryInputSchema,
+  resolveEffectiveQuery,
+} from '../query-input.js';
 import {
   DOC_EMPTY_RETRY_NOTE,
   docProvenanceEnrichment,
@@ -106,7 +111,7 @@ function articleTimespanClamp(input: {
 export const gdeltSearchArticles = tool('gdelt_search_articles', {
   title: 'Search GDELT Articles',
   description:
-    'Search the last 3 months of global news coverage (65+ languages) using the GDELT DOC API. Fetches up to 250 articles with URL, title, source domain, language, country, the date GDELT saw each one, and social image URL, and returns every fetched article inside the requested window. Query supports full GDELT syntax: phrases ("bird flu"), boolean OR ((flu OR pandemic)), source country (sourcecountry:china), source language (sourcelang:spanish), domain (domain:who.int), GKG theme (theme:TAX_DISEASE_OUTBREAK — find identifiers with gdelt_search_themes), tone filter (tone<-5 for negative), proximity (near20:"flu virus"), and repeat (repeat3:"outbreak"). 250 is a hard per-call ceiling and GDELT offers no cursor: when a query fills it, re-query narrower startDatetime/endDatetime windows — the response hands back the exact windows to use. Note: this API covers only the most recent 3 months — use gdelt_search_tv for historical TV transcripts back to 2009.',
+    'Search the last 3 months of global news coverage (65+ languages) using the GDELT DOC API. Fetches up to 250 articles with URL, title, source domain, language, country, the date GDELT saw each one, and social image URL, and returns every fetched article inside the requested window. Query supports full GDELT syntax: phrases ("bird flu"), boolean OR ((flu OR pandemic)), source country (sourcecountry:china), source language (sourcelang:spanish), domain (domain:who.int), GKG theme (theme:TAX_DISEASE_OUTBREAK — find identifiers with gdelt_search_themes), tone filter (tone<-5 for negative), proximity (near20:"flu virus"), and repeat (repeat3:"outbreak"). 250 is a hard per-call ceiling and GDELT offers no cursor: when a query fills it, re-query narrower startDatetime/endDatetime windows — the response hands back the exact windows to use where narrower ones exist. Note: this API covers only the most recent 3 months — use gdelt_search_tv for historical TV transcripts back to 2009.',
   annotations: { readOnlyHint: true, openWorldHint: true },
 
   errors: [
@@ -119,9 +124,9 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
     {
       reason: 'invalid_query',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'GDELT rejected the query string as malformed — bad keyword length, unbalanced parentheses, or an illegal character.',
+      when: 'The query has OR outside parentheses with no single reading, or GDELT rejected the query string as malformed — bad keyword length, unbalanced parentheses, or an illegal character.',
       recovery:
-        'Read the recovery hint for the specific rule GDELT rejected, then fix the query and retry.',
+        'Read the recovery hint for the specific rule the query broke, then fix the query and retry.',
       thrownBy: 'service',
     },
     {
@@ -189,7 +194,7 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
 
   // Query echo, returned count, cap continuations, and explicit-window drop notices.
   enrichment: {
-    effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
+    effectiveQuery: effectiveQuerySchema,
     totalCount: z.number().describe('Number of articles returned in this response.'),
     timespan: z.string().optional().describe('Echoed timespan parameter when provided.'),
     windowClamp: windowClampSchema,
@@ -198,7 +203,7 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
       .string()
       .optional()
       .describe(
-        "Guidance on an incomplete or empty result. When no articles matched, how to broaden the query or window. When GDELT returned articles dated outside an explicit startDatetime/endDatetime window, how many were dropped. When the maxRecords cap was reached, raise maxRecords below the 250 ceiling or narrow the date window at it. When the server's local GKG mirror answered (source: gkg_mirror), why, and how its answer differs from the DOC API's. Absent when a non-empty result set from the DOC API is below the cap and no article was dropped as out of window.",
+        `Guidance on an incomplete or empty result. ${GROUPED_QUERY_NOTE} When no articles matched, how to broaden the query or window. When GDELT returned articles dated outside an explicit startDatetime/endDatetime window, how many were dropped. When the maxRecords cap was reached, raise maxRecords below the 250 ceiling or, at it, narrow the date window, or the query where no narrower window helps. When the server's local GKG mirror answered (source: gkg_mirror), why, and how its answer differs from the DOC API's. Absent when the query ran as given, a non-empty result set from the DOC API is below the cap, and no article was dropped as out of window.`,
       ),
     continuationWindows: z
       .array(
@@ -213,7 +218,7 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
       )
       .optional()
       .describe(
-        'Windows to re-run this query against when maxRecords reaches its 250 ceiling: the queried window halved, overlapping by one second so no article falls through the seam. De-duplicate by url. Absent when no window is known or narrowing cannot reach further articles.',
+        'Windows to re-run this query against when maxRecords reaches its 250 ceiling: the queried window halved, overlapping by one second so no article falls through the seam or, for a window under 60 minutes that the local GKG mirror can answer, one window per 15-minute slot it holds. De-duplicate by url. Absent when no window is known or narrowing cannot reach further articles.',
       ),
     ...docProvenanceEnrichment,
   },
@@ -234,11 +239,18 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
       throw ctx.fail('invalid_date_range', dateRangeFault);
     }
 
+    const { query, notice: groupedNotice } = resolveEffectiveQuery(input.query);
     const maxRecords = clampToCap(ctx, 'maxRecords', input.maxRecords, MAX_RECORDS_CEILING);
     ctx.log.info('gdelt_search_articles', { query: input.query, maxRecords });
-    const { result, standIn } = await routeArticleSearch(
+    // Resolved before the request, as the router resolves the part of it the mirror holds. A timespan
+    // longer than DOC's reach resolves as the reach it runs on.
+    const clamp = articleTimespanClamp(input);
+    const searched = clamp ? { ...input, timespan: clamp.applied } : input;
+    const window = resolveEffectiveWindow(searched);
+    const pinned = input.startDatetime && input.endDatetime ? window : undefined;
+    const { result, standIn, held } = await routeArticleSearch(
       {
-        query: input.query,
+        query,
         ...(input.timespan && { timespan: input.timespan }),
         ...(input.startDatetime && { startDatetime: input.startDatetime }),
         ...(input.endDatetime && { endDatetime: input.endDatetime }),
@@ -252,12 +264,8 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
     // dropped: the drop never removes an article inside the caller's window,
     // and it keeps a continuation walk convergent whatever DOC does at the edge. A timespan
     // window is resolved by GDELT against its own clock and is left alone. The cap is judged on
-    // the upstream count. A timespan longer than DOC's reach resolves as the reach it ran on.
+    // the upstream count, or on the mirror's count of its matches.
     const upstream = result.articles;
-    const clamp = articleTimespanClamp(input);
-    const searched = clamp ? { ...input, timespan: clamp.applied } : input;
-    const window = resolveEffectiveWindow(searched);
-    const pinned = input.startDatetime && input.endDatetime ? window : undefined;
     const fetched = pinned
       ? upstream.filter((a) => {
           const seen = parseRecordTimestamp(a.seendate);
@@ -266,38 +274,44 @@ export const gdeltSearchArticles = tool('gdelt_search_articles', {
       : upstream;
     const dropped = upstream.length - fetched.length;
     const articles = fetched;
-    const capHit = upstream.length >= maxRecords;
+    const capHit = standIn ? standIn.matched > upstream.length : upstream.length >= maxRecords;
+    const returned = standIn
+      ? `Returned ${upstream.length} of the ${standIn.matched} articles the local GKG mirror matched`
+      : `Returned ${upstream.length} articles`;
     const broaden = pinned
       ? `Broaden the query, remove operators, widen the ${pinned.startDatetime}–${pinned.endDatetime} window, or try synonym terms.`
       : clamp
         ? 'Broaden the query, remove operators, or try synonym terms; article search reaches back no further than 3 months.'
         : 'Broaden the query, remove operators, extend the timespan, or try synonym terms.';
 
-    ctx.enrich.echo(input.query);
+    ctx.enrich.echo(query);
     ctx.enrich.total(articles.length);
     if (input.timespan) ctx.enrich({ timespan: input.timespan });
     if (clamp) discloseWindowClamp(ctx, clamp);
 
     // Every notice segment for this response accumulates here and is flushed once —
     // ctx.enrich.notice is last-wins, so a second call would silently drop the first.
-    const notices: string[] = [];
+    const notices: string[] = groupedNotice ? [groupedNotice] : [];
     if (upstream.length === 0) {
       notices.push(
-        `No articles matched ${quoteText(input.query)}.${describeResolvedTimespan(searched)} ${broaden}`,
+        `No articles matched ${quoteText(query)}.${describeResolvedTimespan(searched)} ${broaden}`,
       );
       if (!standIn) notices.push(DOC_EMPTY_RETRY_NOTE);
     } else if (capHit) {
       if (maxRecords < MAX_RECORDS_CEILING) {
         notices.push(
-          `Returned ${upstream.length} articles (maxRecords cap reached — there may be more). ` +
+          `${returned}${standIn ? '' : ' (maxRecords cap reached — there may be more)'}. ` +
             `Raise maxRecords (up to ${MAX_RECORDS_CEILING}) to fetch more.`,
         );
       } else {
-        const continuation = planWindowContinuation(window);
+        const continuation = planWindowContinuation(
+          window,
+          held && { held, answered: standIn !== undefined },
+        );
         if (continuation.windows) ctx.enrich({ continuationWindows: continuation.windows });
         notices.push(
-          `Returned ${upstream.length} articles — maxRecords is already at its ${MAX_RECORDS_CEILING} ceiling, ` +
-            `so more articles almost certainly matched. ${continuation.guidance}`,
+          `${returned} — maxRecords is already at its ${MAX_RECORDS_CEILING} ceiling` +
+            `${standIn ? '' : ', so more articles almost certainly matched'}. ${continuation.guidance}`,
         );
       }
     }
