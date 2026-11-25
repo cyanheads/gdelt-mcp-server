@@ -32,6 +32,7 @@ import {
   renderNotice,
   renderQueryEcho,
 } from '../markdown-escape.js';
+import { effectiveQuerySchema, GROUPED_QUERY_NOTE, resolveEffectiveQuery } from '../query-input.js';
 import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
 import {
   describeStationRangeMisses,
@@ -125,9 +126,9 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
     {
       reason: 'invalid_query',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'A stations entry is not a station ID, GDELT rejected the query — no station was selected, or the query string is malformed — or the TV timespan is malformed.',
+      when: 'A stations entry is not a station ID, the query has OR outside parentheses with no single reading, GDELT rejected the query — no station was selected, or the query string is malformed — or the TV timespan is malformed.',
       recovery:
-        'Read the recovery hint for the specific rule GDELT rejected; when no station was selected, list valid IDs with gdelt_list_tv_stations.',
+        'Read the recovery hint for the specific rule the query broke; when no station was selected, list valid IDs with gdelt_list_tv_stations.',
       thrownBy: 'service',
     },
     {
@@ -204,14 +205,14 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
 
   // Query echo, returned count, cap continuations, and explicit-window drop notices.
   enrichment: {
-    effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
+    effectiveQuery: effectiveQuerySchema,
     totalCount: z.number().describe('Number of clips returned.'),
     limitClamp: limitClampSchema,
     notice: z
       .string()
       .optional()
       .describe(
-        'Guidance on an incomplete or empty result. When no clips matched, or every returned clip aired outside the requested window: the resolved timespan window; for each selected station whose monitoring range the window misses, that range and how to search inside it; and how to check station monitoring dates and choose an explicit window. When GDELT returned clips aired outside the requested window, how many were dropped. When the maxRecords cap was reached, raise maxRecords below the 3000 ceiling or narrow the date window at it. When a returned clip has no station ID, why: GDELT returned it without a station label, or its station catalog did not load or has no entry for the named label — with how to look the ID up. Absent when a non-empty result set is below the cap, no clip was dropped as out of window, and every clip carries its station ID.',
+        `Guidance on an incomplete or empty result. ${GROUPED_QUERY_NOTE} When no clips matched, or every returned clip aired outside the requested window: the resolved timespan window; for each selected station whose monitoring range the window misses, that range and how to search inside it; and how to check station monitoring dates and choose an explicit window. When GDELT returned clips aired outside the requested window, how many were dropped. When the maxRecords cap was reached, raise maxRecords below the 3000 ceiling or narrow the date window at it. When a returned clip has no station ID, why: GDELT returned it without a station label, or its station catalog did not load or has no entry for the named label — with how to look the ID up. Absent when the query ran as given, a non-empty result set is below the cap, no clip was dropped as out of window, and every clip carries its station ID.`,
       ),
     continuationWindows: z
       .array(
@@ -253,6 +254,7 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
       });
     }
 
+    const { query, notice: groupedNotice } = resolveEffectiveQuery(input.query);
     const maxRecords = clampToCap(ctx, 'maxRecords', input.maxRecords, MAX_RECORDS_CEILING);
     ctx.log.info('gdelt_get_tv_clips', { query: input.query, maxRecords });
     const svc = getGdeltTvService();
@@ -271,7 +273,7 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
         : undefined;
     const { clips: upstream, stationCatalogUnavailable } = await svc.getTvClips(
       {
-        query: input.query,
+        query,
         ...(stationIds.length > 0 && { stations: stationIds }),
         ...(input.timespan && { timespan: input.timespan }),
         ...requested,
@@ -298,7 +300,7 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
     const clips = fetched;
     const capHit = upstream.length >= maxRecords;
     const belowCeiling = maxRecords < MAX_RECORDS_CEILING;
-    ctx.enrich.echo(input.query);
+    ctx.enrich.echo(query);
     ctx.enrich.total(clips.length);
 
     // Either empty answer — nothing returned, or every clip aired outside the window — names the
@@ -313,10 +315,10 @@ export const gdeltGetTvClips = tool('gdelt_get_tv_clips', {
 
     // Every notice segment for this response accumulates here and is flushed once —
     // ctx.enrich.notice is last-wins, so a second call would silently drop the first.
-    const notices: string[] = [];
+    const notices: string[] = groupedNotice ? [groupedNotice] : [];
     if (upstream.length === 0) {
       notices.push(
-        `No TV clips matched ${quoteText(input.query)}.${describeResolvedTimespan(input)}${rangeMisses} ${noClipGuidance(input)}`,
+        `No TV clips matched ${quoteText(query)}.${describeResolvedTimespan(input)}${rangeMisses} ${noClipGuidance(input)}`,
       );
     } else if (capHit) {
       if (belowCeiling) {

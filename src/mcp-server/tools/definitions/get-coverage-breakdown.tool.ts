@@ -26,7 +26,12 @@ import {
 import { escapeMarkdown, quoteText, renderNotice, renderQueryEcho } from '../markdown-escape.js';
 import { timestepGaps } from '../missing-timesteps.js';
 import { peakOf } from '../peak-of.js';
-import { queryInputSchema } from '../query-input.js';
+import {
+  effectiveQuerySchema,
+  GROUPED_QUERY_NOTE,
+  queryInputSchema,
+  resolveEffectiveQuery,
+} from '../query-input.js';
 import {
   DOC_EMPTY_RETRY_NOTE,
   docProvenanceEnrichment,
@@ -161,9 +166,9 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
     {
       reason: 'invalid_query',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'GDELT rejected the query string as malformed — bad keyword length, unbalanced parentheses, or an illegal character.',
+      when: 'The query has OR outside parentheses with no single reading, or GDELT rejected the query string as malformed — bad keyword length, unbalanced parentheses, or an illegal character.',
       recovery:
-        'Read the recovery hint for the specific rule GDELT rejected, then fix the query and retry.',
+        'Read the recovery hint for the specific rule the query broke, then fix the query and retry.',
       thrownBy: 'service',
     },
     {
@@ -188,7 +193,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
   input: z
     .object({
       query: queryInputSchema(
-        'Search query using GDELT syntax. Same operators as gdelt_search_articles: phrases, boolean OR, sourcecountry:, sourcelang:, domain:, theme: (GKG theme identifiers come from gdelt_search_themes).',
+        'Search query using GDELT syntax. Same operators as gdelt_search_articles: phrases, boolean OR in parentheses, sourcecountry:, sourcelang:, domain:, theme: (GKG theme identifiers come from gdelt_search_themes).',
       ),
       breakdownBy: z
         .enum(['language', 'country'])
@@ -303,7 +308,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
   // in the domain return.
   enrichment: {
     limitClamp: limitClampSchema,
-    effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
+    effectiveQuery: effectiveQuerySchema,
     breakdownBy: z
       .enum(['language', 'country'])
       .describe('Breakdown dimension used for this response.'),
@@ -320,14 +325,15 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       .string()
       .optional()
       .describe(
-        'Guidance when the query matched no coverage in the window — how to broaden the query or ' +
+        `${GROUPED_QUERY_NOTE} ` +
+          'Guidance when the query matched no coverage in the window — how to broaden the query or ' +
           'extend the window — or, when this response is one page of several, which series it ' +
           'returned out of how many. Which timesteps GDELT left out of the breakdown (see ' +
           "missingTimesteps), and what smoothing omits. When the server's local GKG mirror answered " +
           "(source: gkg_mirror), why, how its figures differ from the DOC API's, and how many " +
           'matching articles a country breakdown left out for having no known source country. Absent ' +
-          'when the DOC API answered a complete, unsmoothed breakdown whose every series fit in one ' +
-          'response.',
+          'when the query ran as given and the DOC API answered a complete, unsmoothed breakdown ' +
+          'whose every series fit in one response.',
       ),
     ...docProvenanceEnrichment,
   },
@@ -345,6 +351,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       throw ctx.fail('invalid_date_range', dateRangeFault);
     }
 
+    const { query, notice: groupedNotice } = resolveEffectiveQuery(input.query);
     ctx.log.info('gdelt_get_coverage_breakdown', {
       query: input.query,
       breakdownBy: input.breakdownBy,
@@ -361,7 +368,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
       standIn,
     } = await routeBreakdown(
       {
-        query: input.query,
+        query,
         mode: modeMap[input.breakdownBy],
         ...(input.timespan && { timespan: input.timespan }),
         ...(input.startDatetime && { startDatetime: input.startDatetime }),
@@ -402,7 +409,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
           recovery: {
             hint:
               `This breakdown has no ${input.breakdownBy} series named ${named}. Labels are exact and ` +
-              `case-sensitive. Available for ${quoteText(input.query)}: ${labels}.`,
+              `case-sensitive. Available for ${quoteText(query)}: ${labels}.`,
           },
         });
       }
@@ -450,7 +457,7 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
     const dateResolution = reportedResolution ?? inferDateResolution(allDates);
     const gaps = !standIn && dateResolution ? timestepGaps(allDates, dateResolution) : undefined;
 
-    ctx.enrich.echo(input.query);
+    ctx.enrich.echo(query);
     ctx.enrich.total(allSeries.length);
     ctx.enrich({
       breakdownBy: input.breakdownBy,
@@ -460,10 +467,10 @@ export const gdeltGetCoverageBreakdown = tool('gdelt_get_coverage_breakdown', {
 
     // Every notice segment for this response accumulates here and is flushed once —
     // ctx.enrich.notice is last-wins, so a second call would silently drop the first.
-    const notices: string[] = [];
+    const notices: string[] = groupedNotice ? [groupedNotice] : [];
     if (isEmpty) {
       notices.push(
-        `No breakdown data for ${quoteText(input.query)}. Broaden the query, extend the time window, or verify the query operators are correct.`,
+        `No breakdown data for ${quoteText(query)}. Broaden the query, extend the time window, or verify the query operators are correct.`,
       );
       if (!standIn) notices.push(DOC_EMPTY_RETRY_NOTE);
       if (input.series?.length) {

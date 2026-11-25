@@ -56,6 +56,22 @@ describe('compileDocQuery — operator table', () => {
     ]);
   });
 
+  it.each(['(flu or pandemic)', '(flu Or pandemic)', '(flu oR pandemic)'])(
+    'separates the elements of %j, as GDELT reads or in any case',
+    (query) => {
+      expect(plan(query)).toEqual(plan('(flu OR pandemic)'));
+    },
+  );
+
+  it('keeps a lowercase or that joins nothing as a keyword', () => {
+    const word = (text: string) => ({ kind: 'keyword', text, phrase: false });
+    expect(plan('(argent OR or) france').clauses).toEqual([
+      { anyOf: [word('argent'), word('or')], negated: false },
+      { anyOf: [word('france')], negated: false },
+    ]);
+    expect(plan('prix or').clauses.flatMap((c) => c.anyOf)).toEqual([word('prix'), word('or')]);
+  });
+
   it('compiles -theme:X, (theme:A OR theme:B), and a negated phrase', () => {
     expect(plan('-theme:MANMADE_DISASTER').clauses).toEqual([
       { anyOf: [{ kind: 'theme', theme: 'MANMADE_DISASTER' }], negated: true },
@@ -270,8 +286,10 @@ describe('compileDocQuery — refusals name the element as written', () => {
     ['()', '()', /empty or ends with OR/],
     ['(flu OR)', '(flu OR)', /empty or ends with OR/],
     ['(OR flu)', '(OR flu)', /between two elements/],
-    ['(flu pandemic)', '(flu pandemic)', /separated by the capitalized word OR/],
-    ['(flu or pandemic)', '(flu or pandemic)', /separated by the capitalized word OR/],
+    ['(flu or)', '(flu or)', /empty or ends with OR/],
+    ['(flu or OR pandemic)', '(flu or OR pandemic)', /between two elements/],
+    ['(flu pandemic)', '(flu pandemic)', /must be separated by OR\./],
+    ['(or flu)', '(or flu)', /must be separated by OR\./],
     ['-(flu OR pandemic)', '-(flu OR pandemic)', /cannot exclude an OR group/],
     ['(flu OR -pandemic)', '-pandemic', /inside an OR group/],
     ['--flu', '--flu', /single -/],

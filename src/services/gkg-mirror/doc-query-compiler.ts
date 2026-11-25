@@ -6,14 +6,17 @@
  *
  * Grammar (GDELT DOC 2.0): space-separated elements, all required. An element is a word, a
  * `"quoted phrase"`, an operator (`name:value`, `name:"value"`), or a tone comparison
- * (`tone<-5`); a leading `-` excludes it. `(a OR b …)` ORs elements, separated by the capitalized
- * word `OR`, and cannot nest. Operator names are matched case-insensitively.
+ * (`tone<-5`); a leading `-` excludes it. `(a OR b …)` ORs elements, separated by `OR` in any case,
+ * and cannot nest. A capitalized `OR` outside parentheses is refused; the DOC tools group or refuse
+ * such a query before it reaches here (`query-grammar.ts`). Operator names are matched
+ * case-insensitively.
  *
  * Caller text never reaches FTS5 as syntax: {@link ftsMatchText} emits every keyword, phrase, and
  * theme as an FTS5 string literal under a column filter chosen here.
  * @module services/gkg-mirror/doc-query-compiler
  */
 
+import { type ElementToken, isCapitalOr, isOrWord, scanQuery } from '../gdelt/query-grammar.js';
 import { resolveDocCountry } from './countries.js';
 import { GKG_KEYWORD_COLUMNS } from './gkg-mirror-schema.js';
 import { resolveDocLanguage } from './languages.js';
@@ -65,82 +68,8 @@ const IMAGE_OPERATORS = new Set([
 const IMAGE_OPERATOR_DETAIL =
   'Image operators search image annotations, which the GKG mirror does not store.';
 
-// ─── Scanner ──────────────────────────────────────────────────────────────────
-
-/**
- * One scanned token with its source span. An `element` is a word, a quoted phrase (`word: ''`),
- * or a word ending in `:` or a bare `-` with the phrase that directly follows it attached
- * (`near20:"a b"`, `-"bird flu"`).
- */
-type Token =
-  | { type: '('; start: number; end: number }
-  | { type: ')'; start: number; end: number }
-  | {
-      type: 'element';
-      start: number;
-      end: number;
-      word: string;
-      phrase?: { text: string; closed: boolean };
-    };
-
-function isSpace(code: number): boolean {
-  return (
-    code === 32 || (code >= 9 && code <= 13) || (code > 127 && /\s/.test(String.fromCharCode(code)))
-  );
-}
-
-/** One pass, left to right; every index is visited a bounded number of times. */
-function scan(query: string): Token[] {
-  const tokens: Token[] = [];
-  const length = query.length;
-  let i = 0;
-
-  /** Read a phrase opening at `start` (a `"`); returns its text and the index past it. */
-  const readPhrase = (start: number) => {
-    const close = query.indexOf('"', start + 1);
-    return close === -1
-      ? { text: query.slice(start + 1), closed: false, end: length }
-      : { text: query.slice(start + 1, close), closed: true, end: close + 1 };
-  };
-
-  while (i < length) {
-    const code = query.charCodeAt(i);
-    if (isSpace(code)) {
-      i += 1;
-    } else if (code === 40) {
-      tokens.push({ type: '(', start: i, end: i + 1 });
-      i += 1;
-    } else if (code === 41) {
-      tokens.push({ type: ')', start: i, end: i + 1 });
-      i += 1;
-    } else if (code === 34) {
-      const { text, closed, end } = readPhrase(i);
-      tokens.push({ type: 'element', start: i, end, word: '', phrase: { text, closed } });
-      i = end;
-    } else {
-      let j = i;
-      while (j < length) {
-        const c = query.charCodeAt(j);
-        if (isSpace(c) || c === 34 || c === 40 || c === 41) break;
-        j += 1;
-      }
-      const word = query.slice(i, j);
-      if (query.charCodeAt(j) === 34 && (word === '-' || word.endsWith(':'))) {
-        const { text, closed, end } = readPhrase(j);
-        tokens.push({ type: 'element', start: i, end, word, phrase: { text, closed } });
-        i = end;
-      } else {
-        tokens.push({ type: 'element', start: i, end: j, word });
-        i = j;
-      }
-    }
-  }
-  return tokens;
-}
-
 // ─── Element compilation ─────────────────────────────────────────────────────
 
-type ElementToken = Extract<Token, { type: 'element' }>;
 type CompiledElement = { negated: boolean; predicate: MirrorPredicate } | { detail: string };
 
 const THEME_VALUE = /^[A-Z0-9_-]+$/;
@@ -161,10 +90,6 @@ function parseToneValue(text: string): number | undefined {
     else return;
   }
   return digits > 0 ? Number(text) : undefined;
-}
-
-function isOrWord(token: Token): boolean {
-  return token.type === 'element' && token.word === 'OR' && !token.phrase;
 }
 
 function compileOperator(name: string, value: string): MirrorPredicate | { detail: string } {
@@ -289,7 +214,7 @@ function compileElement(token: ElementToken): CompiledElement {
  */
 export function compileDocQuery(query: string): MirrorCompileResult {
   if (query.length > MAX_QUERY_LENGTH) return TOO_LONG_REFUSAL;
-  const tokens = scan(query);
+  const tokens = scanQuery(query);
   const clauses: MirrorClause[] = [];
   let predicateCount = 0;
 
@@ -341,11 +266,11 @@ export function compileDocQuery(query: string): MirrorCompileResult {
           return fail(
             group.start,
             groupEnd(group.open),
-            'Elements inside parentheses must be separated by the capitalized word OR.',
+            'Elements inside parentheses must be separated by OR.',
           );
         }
         group.expectElement = true;
-      } else if (isOrWord(token)) {
+      } else if (isCapitalOr(token)) {
         return fail(group.start, groupEnd(group.open), 'An OR must sit between two elements.');
       } else {
         const compiled = compileElement(token);
@@ -372,7 +297,7 @@ export function compileDocQuery(query: string): MirrorCompileResult {
       group = { open: t, start: token.start, anyOf: [], expectElement: true };
       continue;
     }
-    if (isOrWord(token)) {
+    if (isCapitalOr(token)) {
       return fail(
         token.start,
         token.end,

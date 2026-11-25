@@ -20,6 +20,7 @@ import {
   renderLimitClamp,
 } from '../limit-clamp.js';
 import { escapeMarkdown, quoteText, renderNotice, renderQueryEcho } from '../markdown-escape.js';
+import { effectiveQuerySchema, GROUPED_QUERY_NOTE, resolveEffectiveQuery } from '../query-input.js';
 import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
 import { describeStationRangeMisses, parseStationIds } from '../station-ids.js';
 import { describeTvCoveredWindow } from '../tv-covered-window.js';
@@ -51,7 +52,7 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
     {
       reason: 'invalid_query',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'A stations entry is not a station ID, GDELT rejected the query, or the TV timespan is malformed.',
+      when: 'A stations entry is not a station ID, the query has OR outside parentheses with no single reading, GDELT rejected the query, or the TV timespan is malformed.',
       recovery:
         'Read the recovery hint for the rejected rule; use gdelt_list_tv_stations for station IDs, networks, and markets.',
       thrownBy: 'service',
@@ -79,7 +80,7 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
       .string()
       .min(1)
       .describe(
-        'TV transcript query. Supports phrases, Boolean OR, station:CNN, network:CBS, market:"National", show:"Bloomberg Best", and context:"vaccine".',
+        'TV transcript query. Supports phrases, Boolean OR in parentheses, station:CNN, network:CBS, market:"National", show:"Bloomberg Best", and context:"vaccine".',
       ),
     stations: z
       .array(z.string())
@@ -168,13 +169,13 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
     truncated: z.boolean().describe('True when additional rows remain after this page.'),
   }),
   enrichment: {
-    effectiveQuery: z.string().describe('Echoed query for follow-up calls.'),
+    effectiveQuery: effectiveQuerySchema,
     limitClamp: limitClampSchema,
     notice: z
       .string()
       .optional()
       .describe(
-        'When no rows matched: the resolved timespan window; for each selected station whose monitoring range the window misses, that range and how to search inside it; and how to check station monitoring ranges. When an explicit startDatetime or endDatetime falls inside a UTC period of the ranking resolution: the resolution and the UTC window the values cover. On show rankings, that values are percentages of matching clips and ellipsized labels may not work as show: selectors. On station rankings whose page has rows without a station ID, why: the station catalog did not load, or has no entry for the named labels. Absent on a non-empty station ranking whose rows on the page all carry station IDs and whose window is a timespan or sits on period boundaries.',
+        `${GROUPED_QUERY_NOTE} When no rows matched: the resolved timespan window; for each selected station whose monitoring range the window misses, that range and how to search inside it; and how to check station monitoring ranges. When an explicit startDatetime or endDatetime falls inside a UTC period of the ranking resolution: the resolution and the UTC window the values cover. On show rankings, that values are percentages of matching clips and ellipsized labels may not work as show: selectors. On station rankings whose page has rows without a station ID, why: the station catalog did not load, or has no entry for the named labels. Absent when the query ran as given, on a non-empty station ranking whose rows on the page all carry station IDs and whose window is a timespan or sits on period boundaries.`,
       ),
     staleResponse: staleResponseSchema,
   },
@@ -194,6 +195,7 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
       throw ctx.fail('invalid_query', 'Invalid TV timespan.', {
         recovery: { hint: timespanFault },
       });
+    const { query, notice: groupedNotice } = resolveEffectiveQuery(input.query);
     ctx.log.info('gdelt_get_tv_breakdown', { query: input.query, breakdownBy: input.breakdownBy });
     const svc = getGdeltTvService();
     const sent =
@@ -202,7 +204,7 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
         : undefined;
     const result = await svc.getTvBreakdown(
       {
-        query: input.query,
+        query,
         breakdownBy: input.breakdownBy,
         normalize: input.normalize,
         ...(stationIds.length > 0 && { stations: stationIds }),
@@ -228,7 +230,7 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
     const rows = ordered.slice(input.offset, input.offset + limit);
     const nextOffset =
       input.offset + rows.length < totalRows ? input.offset + rows.length : undefined;
-    const notices: string[] = [];
+    const notices: string[] = groupedNotice ? [groupedNotice] : [];
     if (totalRows === 0) {
       // A catalog this call already failed to load is not requested again.
       const window = resolveEffectiveWindow(input);
@@ -239,7 +241,7 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
       const rangeMisses =
         window && ranges ? describeStationRangeMisses(stationIds, ranges, window) : '';
       notices.push(
-        `No TV rankings for ${quoteText(input.query)}.${describeResolvedTimespan(input)}${rangeMisses} Check station monitoring ranges with gdelt_list_tv_stations or broaden the query.`,
+        `No TV rankings for ${quoteText(query)}.${describeResolvedTimespan(input)}${rangeMisses} Check station monitoring ranges with gdelt_list_tv_stations or broaden the query.`,
       );
     } else {
       const covered = describeTvCoveredWindow('Ranking values', input, result.dateResolution);
@@ -258,7 +260,7 @@ export const gdeltGetTvBreakdown = tool('gdelt_get_tv_breakdown', {
             : `Station IDs could not be resolved for labels ${unresolved.map((row) => quoteText(row.label)).join(', ')}; labels and values are preserved. Find IDs with gdelt_list_tv_stations.`,
         );
     }
-    ctx.enrich.echo(input.query);
+    ctx.enrich.echo(query);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
     return {
       rows,

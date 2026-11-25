@@ -35,7 +35,12 @@ import {
   renderNotice,
   renderQueryEcho,
 } from '../markdown-escape.js';
-import { queryInputSchema } from '../query-input.js';
+import {
+  effectiveQuerySchema,
+  GROUPED_QUERY_NOTE,
+  queryInputSchema,
+  resolveEffectiveQuery,
+} from '../query-input.js';
 import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
 import { discloseWindowClamp, renderWindowClamp, windowClampSchema } from '../window-clamp.js';
 
@@ -163,7 +168,7 @@ export const gdeltSearchSentences = tool('gdelt_search_sentences', {
     {
       reason: 'invalid_query',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'GDELT rejected the query — a DOC-only operator, sourcelang:, an overly short, long, or common keyword, or malformed syntax — or the timespan is not a whole number followed by min, h, hours, d, or days, or is shorter than 31 minutes.',
+      when: 'The query has OR outside parentheses with no single reading, GDELT rejected the query — a DOC-only operator, sourcelang:, an overly short, long, or common keyword, or malformed syntax — or the timespan is not a whole number followed by min, h, hours, d, or days, or is shorter than 31 minutes.',
       recovery:
         'Read the recovery hint for the rule that failed, then fix the query or the timespan and retry.',
       thrownBy: 'service',
@@ -237,7 +242,7 @@ export const gdeltSearchSentences = tool('gdelt_search_sentences', {
   }),
 
   enrichment: {
-    effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
+    effectiveQuery: effectiveQuerySchema,
     totalCount: z.number().describe('Number of matches returned in this response.'),
     timespan: z
       .string()
@@ -251,7 +256,7 @@ export const gdeltSearchSentences = tool('gdelt_search_sentences', {
       .string()
       .optional()
       .describe(
-        'Guidance on this page: when nothing matched, how to broaden the query or window; when GDELT returned matches outside an explicit window — it reads window bounds only to the minute, and a window under 60 minutes goes out widened — how many were dropped; when continuationWindow is present, that this page is not every match; when the page reached past the far edge of its window, that it holds every match in it; and when no narrower window reaches further matches, why, and whether a larger maxRecords helps — or, at the 200 ceiling, that continuationWindow skips the rest of the one minute every match on the page fell in.',
+        `${GROUPED_QUERY_NOTE} Guidance on this page: when nothing matched, how to broaden the query or window; when GDELT returned matches outside an explicit window — it reads window bounds only to the minute, and a window under 60 minutes goes out widened — how many were dropped; when continuationWindow is present, that this page is not every match; when the page reached past the far edge of its window, that it holds every match in it; and when no narrower window reaches further matches, why, and whether a larger maxRecords helps — or, at the 200 ceiling, that continuationWindow skips the rest of the one minute every match on the page fell in.`,
       ),
     continuationWindow: z
       .object({
@@ -291,6 +296,7 @@ export const gdeltSearchSentences = tool('gdelt_search_sentences', {
       throw ctx.fail('invalid_query', plan.message, { recovery: { hint: plan.hint } });
     }
 
+    const { query, notice: groupedNotice } = resolveEffectiveQuery(input.query);
     const maxRecords = clampToCap(ctx, 'maxRecords', input.maxRecords, MAX_RECORDS_CEILING);
     if (plan.clamp) discloseWindowClamp(ctx, plan.clamp);
     const { request } = plan;
@@ -298,7 +304,7 @@ export const gdeltSearchSentences = tool('gdelt_search_sentences', {
 
     const upstream = await getGdeltContextService().searchSentences(
       {
-        query: input.query,
+        query,
         maxRecords,
         sort: input.sort,
         quotesOnly: input.quotesOnly,
@@ -329,7 +335,7 @@ export const gdeltSearchSentences = tool('gdelt_search_sentences', {
       now,
     );
 
-    ctx.enrich.echo(input.query);
+    ctx.enrich.echo(query);
     ctx.enrich.total(matches.length);
     if (plan.kind === 'timespan') ctx.enrich({ timespan: plan.timespan });
     const continuationWindow =
@@ -342,12 +348,12 @@ export const gdeltSearchSentences = tool('gdelt_search_sentences', {
      * Every notice segment for this response accumulates here and is flushed once —
      * ctx.enrich.notice is last-wins, so a second call would silently drop the first.
      */
-    const notices: string[] = [];
+    const notices: string[] = groupedNotice ? [groupedNotice] : [];
     if (upstream.length === 0) {
       notices.push(
-        `No sentence matched ${quoteText(input.query)} ${describeWindow(plan)}. The Context API matches only when every query term falls inside one sentence, and it searches English-language coverage of the last 72 hours: drop a term or an operator${input.quotesOnly ? ', turn quotesOnly off,' : ''} or widen the window. For the DOC-only filters (sourcecountry:, sourcelang:, theme:, tone) or older coverage, use gdelt_search_articles.`,
+        `No sentence matched ${quoteText(query)} ${describeWindow(plan)}. The Context API matches only when every query term falls inside one sentence, and it searches English-language coverage of the last 72 hours: drop a term or an operator${input.quotesOnly ? ', turn quotesOnly off,' : ''} or widen the window. For the DOC-only filters (sourcecountry:, sourcelang:, theme:, tone) or older coverage, use gdelt_search_articles.`,
       );
-      if (DOMAIN_OPERATOR.test(input.query)) {
+      if (DOMAIN_OPERATOR.test(query)) {
         notices.push(
           'The Context API answered every live domain: and domainis: query with no matches, even for domains that carried the query terms; filter by domain with gdelt_search_articles.',
         );

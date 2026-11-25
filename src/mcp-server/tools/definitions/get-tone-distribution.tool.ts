@@ -27,7 +27,12 @@ import {
   renderNotice,
   renderQueryEcho,
 } from '../markdown-escape.js';
-import { queryInputSchema } from '../query-input.js';
+import {
+  effectiveQuerySchema,
+  GROUPED_QUERY_NOTE,
+  queryInputSchema,
+  resolveEffectiveQuery,
+} from '../query-input.js';
 import {
   DOC_EMPTY_RETRY_NOTE,
   docProvenanceEnrichment,
@@ -115,9 +120,9 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
     {
       reason: 'invalid_query',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'GDELT rejected the query string as malformed — bad keyword length, unbalanced parentheses, or an illegal character.',
+      when: 'The query has OR outside parentheses with no single reading, or GDELT rejected the query string as malformed — bad keyword length, unbalanced parentheses, or an illegal character.',
       recovery:
-        'Read the recovery hint for the specific rule GDELT rejected, then fix the query and retry.',
+        'Read the recovery hint for the specific rule the query broke, then fix the query and retry.',
       thrownBy: 'service',
     },
     {
@@ -142,7 +147,7 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
   input: z
     .object({
       query: queryInputSchema(
-        'Search query using GDELT syntax. Same operators as gdelt_search_articles: phrases, boolean OR, sourcecountry:, sourcelang:, domain:, theme: (GKG theme identifiers come from gdelt_search_themes).',
+        'Search query using GDELT syntax. Same operators as gdelt_search_articles: phrases, boolean OR in parentheses, sourcecountry:, sourcelang:, domain:, theme: (GKG theme identifiers come from gdelt_search_themes).',
       ),
       timespan: z
         .string()
@@ -257,7 +262,7 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
   // Reaches structuredContent and content[] automatically; never in the domain return.
   enrichment: {
     limitClamp: limitClampSchema,
-    effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
+    effectiveQuery: effectiveQuerySchema,
     totalCount: z
       .number()
       .describe('Total number of articles across all histogram bins, not only this page.'),
@@ -273,11 +278,12 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
       .string()
       .optional()
       .describe(
-        'Guidance when no articles matched in the window — how to broaden the query or extend the ' +
+        `${GROUPED_QUERY_NOTE} ` +
+          'Guidance when no articles matched in the window — how to broaden the query or extend the ' +
           'window — or, when this response is one page of several, which bins it returned out of how ' +
           "many. When the server's local GKG mirror answered (source: gkg_mirror), why, and how its " +
-          "figures differ from the DOC API's. Absent when the DOC API answered and the whole " +
-          'histogram fit in one response.',
+          "figures differ from the DOC API's. Absent when the query ran as given, the DOC API " +
+          'answered with articles, and the whole histogram fit in one response.',
       ),
     ...docProvenanceEnrichment,
   },
@@ -295,12 +301,13 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
       throw ctx.fail('invalid_date_range', dateRangeFault);
     }
 
+    const { query, notice: groupedNotice } = resolveEffectiveQuery(input.query);
     ctx.log.info('gdelt_get_tone_distribution', { query: input.query });
     const limit = clampToCap(ctx, 'limit', input.limit, 400);
 
     const { result: bins, standIn } = await routeToneDistribution(
       {
-        query: input.query,
+        query,
         ...(input.timespan && { timespan: input.timespan }),
         ...(input.startDatetime && { startDatetime: input.startDatetime }),
         ...(input.endDatetime && { endDatetime: input.endDatetime }),
@@ -368,7 +375,7 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
     const nextOffset = end < units.length ? end : undefined;
     const histogram = isEmpty ? [] : units.slice(input.offset, end);
 
-    ctx.enrich.echo(input.query);
+    ctx.enrich.echo(query);
     ctx.enrich.total(totalCount);
     ctx.enrich({
       ...(input.startDatetime && { startDatetime: input.startDatetime }),
@@ -377,10 +384,10 @@ export const gdeltGetToneDistribution = tool('gdelt_get_tone_distribution', {
 
     // Every notice segment for this response accumulates here and is flushed once —
     // ctx.enrich.notice is last-wins, so a second call would silently drop the first.
-    const notices: string[] = [];
+    const notices: string[] = groupedNotice ? [groupedNotice] : [];
     if (isEmpty) {
       notices.push(
-        `No tone data for ${quoteText(input.query)}. Broaden the query or extend the time range to include more matching articles.`,
+        `No tone data for ${quoteText(query)}. Broaden the query or extend the time range to include more matching articles.`,
       );
       if (!standIn) notices.push(DOC_EMPTY_RETRY_NOTE);
       if (input.bins?.length) {

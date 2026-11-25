@@ -22,6 +22,7 @@ import {
   renderLimitClamp,
 } from '../limit-clamp.js';
 import { escapeMarkdown, quoteText, renderNotice, renderQueryEcho } from '../markdown-escape.js';
+import { effectiveQuerySchema, GROUPED_QUERY_NOTE, resolveEffectiveQuery } from '../query-input.js';
 import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
 import { describeStationRangeMisses, parseStationIds } from '../station-ids.js';
 import { describeTvCoveredWindow } from '../tv-covered-window.js';
@@ -73,9 +74,9 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
     {
       reason: 'invalid_query',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'A stations entry is not a station ID, GDELT rejected the query — no station was selected, or the query string is malformed — or the TV timespan is malformed.',
+      when: 'A stations entry is not a station ID, the query has OR outside parentheses with no single reading, GDELT rejected the query — no station was selected, or the query string is malformed — or the TV timespan is malformed.',
       recovery:
-        'Read the recovery hint for the specific rule GDELT rejected; when no station was selected, list valid IDs with gdelt_list_tv_stations.',
+        'Read the recovery hint for the specific rule the query broke; when no station was selected, list valid IDs with gdelt_list_tv_stations.',
       thrownBy: 'service',
     },
     {
@@ -180,13 +181,13 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
   // Agent-facing context — query echo, count clamp, and sampling or no-data notice.
   // Reaches structuredContent and content[] automatically; never in the domain return.
   enrichment: {
-    effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
+    effectiveQuery: effectiveQuerySchema,
     limitClamp: limitClampSchema,
     notice: z
       .string()
       .optional()
       .describe(
-        `On every non-empty result, that terms and scores come from ${SAMPLE_SCOPE} — compare windows or stations with a separate, narrower call for each — and, when an explicit startDatetime or endDatetime falls inside a UTC period of the resolution GDELT picks from the window length, the resolution and the UTC window the terms and scores cover. When no clips matched, so there is no vocabulary to report: the resolved timespan window; for each selected station whose monitoring range the window misses, that range and how to search inside it; and how to broaden the query or check station monitoring dates.`,
+        `${GROUPED_QUERY_NOTE} On every non-empty result, that terms and scores come from ${SAMPLE_SCOPE} — compare windows or stations with a separate, narrower call for each — and, when an explicit startDatetime or endDatetime falls inside a UTC period of the resolution GDELT picks from the window length, the resolution and the UTC window the terms and scores cover. When no clips matched, so there is no vocabulary to report: the resolved timespan window; for each selected station whose monitoring range the window misses, that range and how to search inside it; and how to broaden the query or check station monitoring dates.`,
       ),
     staleResponse: staleResponseSchema,
   },
@@ -212,6 +213,7 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       });
     }
 
+    const { query, notice: groupedNotice } = resolveEffectiveQuery(input.query);
     ctx.log.info('gdelt_get_tv_context', { query: input.query });
     const svc = getGdeltTvService();
 
@@ -221,7 +223,7 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
         : undefined;
     const result = await svc.getTvContext(
       {
-        query: input.query,
+        query,
         ...(stationIds.length > 0 && { stations: stationIds }),
         ...(input.timespan && { timespan: input.timespan }),
         ...sent,
@@ -229,7 +231,7 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       ctx,
     );
 
-    ctx.enrich.echo(input.query);
+    ctx.enrich.echo(query);
     const limit = clampToCap(ctx, 'limit', input.limit, 25_000);
     const totalTerms = result.words.length;
     if (totalTerms > 0 && input.offset >= totalTerms) {
@@ -251,7 +253,7 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
 
     // Every notice segment for this response accumulates here and is flushed once —
     // ctx.enrich.notice is last-wins, so a second call would silently drop the first.
-    const notices: string[] = [];
+    const notices: string[] = groupedNotice ? [groupedNotice] : [];
     if (result.words.length === 0) {
       const window = resolveEffectiveWindow(input);
       const ranges =
@@ -259,7 +261,7 @@ export const gdeltGetTvContext = tool('gdelt_get_tv_context', {
       const rangeMisses =
         window && ranges ? describeStationRangeMisses(stationIds, ranges, window) : '';
       notices.push(
-        `No TV context data for ${quoteText(input.query)}.${describeResolvedTimespan(input)}${rangeMisses} Archive coverage varies by station — verify monitoring dates with gdelt_list_tv_stations and choose a matching window, or broaden the query.`,
+        `No TV context data for ${quoteText(query)}.${describeResolvedTimespan(input)}${rangeMisses} Archive coverage varies by station — verify monitoring dates with gdelt_list_tv_stations and choose a matching window, or broaden the query.`,
       );
     } else {
       notices.push(SAMPLING_NOTICE);

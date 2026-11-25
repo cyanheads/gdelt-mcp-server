@@ -23,6 +23,7 @@ import {
 } from '../limit-clamp.js';
 import { escapeMarkdown, quoteText, renderNotice, renderQueryEcho } from '../markdown-escape.js';
 import { peakOf } from '../peak-of.js';
+import { effectiveQuerySchema, GROUPED_QUERY_NOTE, resolveEffectiveQuery } from '../query-input.js';
 import { renderStaleResponse, staleResponseSchema } from '../stale-response.js';
 import {
   describeStationRangeMisses,
@@ -70,9 +71,9 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
     {
       reason: 'invalid_query',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'A stations entry is not a station ID, GDELT rejected the query — no station was selected, or the query string is malformed — or the TV timespan is malformed.',
+      when: 'A stations entry is not a station ID, the query has OR outside parentheses with no single reading, GDELT rejected the query — no station was selected, or the query string is malformed — or the TV timespan is malformed.',
       recovery:
-        'Read the recovery hint for the specific rule GDELT rejected; when no station was selected, list valid IDs with gdelt_list_tv_stations.',
+        'Read the recovery hint for the specific rule the query broke; when no station was selected, list valid IDs with gdelt_list_tv_stations.',
       thrownBy: 'service',
     },
     {
@@ -101,7 +102,7 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       .describe(
         'Search query for TV transcript content. Supports TV operators: ' +
           'station:CNN, network:CBS, market:"National", show:"Anderson Cooper", context:"vaccine". ' +
-          'Boolean OR and phrase operators also work.',
+          'Boolean OR in parentheses ((flu OR pandemic)) and phrases also work.',
       ),
     stations: z
       .array(z.string())
@@ -260,14 +261,14 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
   // unresolved station IDs. Reaches structuredContent and content[] automatically; never in
   // the domain return.
   enrichment: {
-    effectiveQuery: z.string().describe('Echoed query string for use in follow-up calls.'),
+    effectiveQuery: effectiveQuerySchema,
     totalCount: z.number().describe('Number of station series returned.'),
     limitClamp: limitClampSchema,
     notice: z
       .string()
       .optional()
       .describe(
-        'When smoothing is above 1, that leading steps without a full window have no values and peaks may lag. When the query matched no TV coverage: the resolved timespan window; for each selected station whose monitoring range the window misses, that range and how to search inside it; and how to check station coverage. When an explicit startDatetime or endDatetime falls inside a UTC period of the response resolution: the resolution and the UTC window the values cover. When a returned series has no station ID, why: GDELT returned it without a station label, or its station catalog did not load or has no entry for the named label — with how to look the ID up. Absent when coverage was returned, smoothing is at most 1, the window is a timespan or sits on period boundaries, and every series carries its station ID or combined is true.',
+        `${GROUPED_QUERY_NOTE} When smoothing is above 1, that leading steps without a full window have no values and peaks may lag. When the query matched no TV coverage: the resolved timespan window; for each selected station whose monitoring range the window misses, that range and how to search inside it; and how to check station coverage. When an explicit startDatetime or endDatetime falls inside a UTC period of the response resolution: the resolution and the UTC window the values cover. When a returned series has no station ID, why: GDELT returned it without a station label, or its station catalog did not load or has no entry for the named label — with how to look the ID up. Absent when the query ran as given, coverage was returned, smoothing is at most 1, the window is a timespan or sits on period boundaries, and every series carries its station ID or combined is true.`,
       ),
     staleResponse: staleResponseSchema,
   },
@@ -293,6 +294,7 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       });
     }
 
+    const { query, notice: groupedNotice } = resolveEffectiveQuery(input.query);
     ctx.log.info('gdelt_search_tv', { query: input.query, stations: stationIds });
     const svc = getGdeltTvService();
 
@@ -313,7 +315,7 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
 
     const result = await svc.searchTv(
       {
-        query: input.query,
+        query,
         ...(stationIds.length > 0 && { stations: stationIds }),
         ...(input.timespan && { timespan: input.timespan }),
         ...sent,
@@ -349,12 +351,12 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
     const [start] = sortedPageDates;
     const end = sortedPageDates.at(-1);
 
-    ctx.enrich.echo(input.query);
+    ctx.enrich.echo(query);
     ctx.enrich.total(page.series.length);
 
     // Every notice segment for this response accumulates here and is flushed once —
     // ctx.enrich.notice is last-wins, so a second call would silently drop the first.
-    const notices: string[] = [];
+    const notices: string[] = groupedNotice ? [groupedNotice] : [];
     if (input.smoothing != null && input.smoothing > 1) {
       notices.push(
         `Trailing moving average width ${input.smoothing} requires that many source steps, so leading steps without a full window cannot produce values; peaks may lag.`,
@@ -370,7 +372,7 @@ export const gdeltSearchTv = tool('gdelt_search_tv', {
       const rangeMisses =
         window && ranges ? describeStationRangeMisses(stationIds, ranges, window) : '';
       notices.push(
-        `No TV coverage for ${quoteText(input.query)}.${describeResolvedTimespan(input)}${rangeMisses} Archive coverage varies by station — verify monitoring dates with gdelt_list_tv_stations and choose a matching window, or broaden the query.`,
+        `No TV coverage for ${quoteText(query)}.${describeResolvedTimespan(input)}${rangeMisses} Archive coverage varies by station — verify monitoring dates with gdelt_list_tv_stations and choose a matching window, or broaden the query.`,
       );
     } else {
       // The resolution GDELT answered in: the one it reported, else dateres, else the one

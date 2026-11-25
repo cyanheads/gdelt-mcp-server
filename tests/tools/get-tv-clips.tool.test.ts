@@ -940,7 +940,7 @@ describe('gdelt_get_tv_clips station IDs', () => {
     );
     // The drop notice fires on an uncut page too, so the absence condition names the drop.
     expect(gdeltGetTvClips.enrichment?.notice?.description).toMatch(
-      /Absent when a non-empty result set is below the cap, no clip was dropped as out of window, and every clip carries its station ID\.$/,
+      /Absent when the query ran as given, a non-empty result set is below the cap, no clip was dropped as out of window, and every clip carries its station ID\.$/,
     );
   });
 

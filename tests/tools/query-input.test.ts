@@ -1,12 +1,13 @@
 /**
  * @fileoverview The shared non-blank `query` input: what it refuses and accepts, the pattern it
- * advertises, and its cost on caller-sized values.
+ * advertises, its cost on caller-sized values, and the query a call runs for the one it was given.
  * @module tests/tools/query-input.test
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { describe, expect, it } from 'vitest';
-import { queryInputSchema } from '@/mcp-server/tools/query-input.js';
+import { queryInputSchema, resolveEffectiveQuery } from '@/mcp-server/tools/query-input.js';
 import { expectLinearCost, fill, REGEX_SAFE_SIZES } from '../helpers/linear-cost.js';
 
 const schema = queryInputSchema('Search query.');
@@ -51,4 +52,42 @@ describe('queryInputSchema — cost on caller-sized values', () => {
       },
     );
   }, 0);
+});
+
+/** Which queries are grouped or refused is tabled in query-grammar.test.ts. */
+describe('resolveEffectiveQuery', () => {
+  it.each([
+    'climate',
+    ' bird flu ',
+    '(flu OR pandemic)\tsourcecountry:US',
+    '"life or death"',
+    'prix or',
+  ])('runs %j as given, surrounding whitespace included, with no notice', (query) => {
+    expect(resolveEffectiveQuery(query)).toEqual({ query });
+  });
+
+  it('runs terms joined by OR as one group and says so, quoting the group as text', () => {
+    expect(resolveEffectiveQuery('"SOL" or "BTC"')).toEqual({
+      query: '("SOL" OR "BTC")',
+      notice:
+        'GDELT accepts OR, in any case, only inside parentheses, so this query ran as "(\\"SOL\\" OR \\"BTC\\")".',
+    });
+  });
+
+  it('refuses an OR with no single reading as invalid_query, saying how to write it', () => {
+    let thrown: unknown;
+    try {
+      resolveEffectiveQuery('climate OR energy sourcelang:english');
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(McpError);
+    expect(thrown).toMatchObject({
+      code: JsonRpcErrorCode.ValidationError,
+      data: {
+        reason: 'invalid_query',
+        recovery: { hint: expect.stringMatching(/^Wrap terms joined by OR in parentheses/) },
+      },
+    });
+  });
 });
