@@ -1,6 +1,6 @@
 # gdelt-mcp-server - Directory Structure
 
-Generated on: 2026-11-18 07:05:26
+Generated on: 2026-11-25 01:41:01
 
 ```text
 gdelt-mcp-server/
@@ -199,6 +199,7 @@ gdelt-mcp-server/
 │   │   │   ├── gdelt-response-cache.ts
 │   │   │   ├── gdelt-theme-service.ts
 │   │   │   ├── gdelt-tv-service.ts
+│   │   │   ├── query-grammar.ts
 │   │   │   └── types.ts
 │   │   └── gkg-mirror/
 │   │       ├── countries.ts
@@ -275,6 +276,7 @@ gdelt-mcp-server/
 │   │   ├── gkg-mirror-startup.test.ts
 │   │   ├── gkg-mirror-store.test.ts
 │   │   ├── languages.test.ts
+│   │   ├── query-grammar.test.ts
 │   │   └── request-contract.test.ts
 │   └── tools/
 │       ├── context-window.test.ts
@@ -292,6 +294,7 @@ gdelt-mcp-server/
 │       ├── markdown-escape.test.ts
 │       ├── markdown-render.ts
 │       ├── missing-timesteps.test.ts
+│       ├── or-grouping.test.ts
 │       ├── peak-of.test.ts
 │       ├── query-input.test.ts
 │       ├── search-articles.tool.test.ts

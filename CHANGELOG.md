@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.10.2](changelog/0.10.x/0.10.2.md) — 2026-11-24
+
+A query of terms joined by OR outside parentheses runs as one group on all nine query tools, and other bare OR is refused before any request. A capped DOC window under 60 minutes continues through the mirror's 15-minute slots, and the mirror states its match count.
+
 ## [0.10.1](changelog/0.10.x/0.10.1.md) — 2026-11-18
 
 Coverage timelines and breakdowns report timesteps GDELT left out as missingTimesteps, breakdown series carry sum, pointCount, and peak, and a DOC window under 30 minutes is never sent to DOC. A rate limit holds only its own API's calls, and TV tools no longer count the period after an on-the-hour end.
